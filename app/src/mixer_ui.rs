@@ -1,0 +1,294 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//! Mixer (Pegel, Kanalfader, Kopfhörer) und Auto-Fade-Bereich.
+
+use eframe::egui::{self, Align2, Color32, Rect, RichText, Sense, Stroke, pos2, vec2};
+use fw_engine::{CURVE_KNOTS, Curve, HeadMode, Motor};
+
+use crate::meter::Meter;
+use crate::i18n::tr;
+use crate::theme;
+use crate::{fonts, hw, settings};
+
+pub struct MixerModel<'a> {
+    pub meters: &'a [Meter; 3],
+    pub volume: [f32; 2],
+    pub head_mode: HeadMode,
+    pub head_mix: f32,
+    pub head_volume: f32,
+    pub master_volume: f32,
+    pub audio_ok: bool,
+    /// Ein eigenes Kopfhörergerät ist offen: dann gibt es „Gerät“ statt „Ausg. 3/4“.
+    pub head_device: bool,
+}
+
+pub enum MixerAction {
+    Volume(usize, f32),
+    HeadMode(HeadMode),
+    HeadMix(f32),
+    HeadVolume(f32),
+    MasterVolume(f32),
+}
+
+pub fn section_title(ui: &mut egui::Ui, text: &'static str) {
+    ui.vertical_centered(|ui| ui.label(RichText::new(tr(text)).font(fonts::bold(15.0)).extra_letter_spacing(2.5)));
+}
+
+fn small(text: &'static str) -> RichText {
+    RichText::new(tr(text)).font(fonts::bold(10.5)).color(theme::dim()).extra_letter_spacing(0.8)
+}
+
+/// Vergrößerung für Tasten und Schrift, wenn die Mittelspalte breiter wird.
+fn scale(ui: &egui::Ui) -> f32 {
+    (ui.available_width() / 230.0).clamp(1.0, 1.3)
+}
+
+pub fn show_mixer(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerAction>) {
+    let k = scale(ui);
+    section_title(ui, "MIXER");
+
+    // Pegelbrücke: LED A | Fader A | MAIN | Fader B | LED B
+    // Maße wachsen mit der Breite der Mittelspalte
+    let w = ui.available_width();
+    let h = (w * 0.45).clamp(120.0, 200.0);
+    let (rect, _) = ui.allocate_exact_size(vec2(w, h + 18.0), Sense::hover());
+    let led_w = (w * 0.055).clamp(14.0, 24.0);
+    let main_w = led_w * 1.7;
+    let bar = Rect::from_min_size(rect.min, vec2(w, h));
+    let led_a = Rect::from_min_size(bar.min, vec2(led_w, h));
+    let led_b = Rect::from_min_size(pos2(bar.right() - led_w, bar.top()), vec2(led_w, h));
+    let led_m = Rect::from_center_size(pos2(bar.center().x, bar.center().y), vec2(main_w, h));
+    let fader_w = (w * 0.16).clamp(40.0, 60.0);
+    let fa_center = (led_a.right() + led_m.left()) / 2.0;
+    let fb_center = (led_m.right() + led_b.left()) / 2.0;
+    let fad_a = Rect::from_center_size(pos2(fa_center, bar.center().y), vec2(fader_w, h));
+    let fad_b = Rect::from_center_size(pos2(fb_center, bar.center().y), vec2(fader_w, h));
+
+    let p = ui.painter().clone();
+    // Meter sitzen in eingelassenen Schächten
+    for r in [led_a, led_m, led_b] {
+        hw::well(&p, r.expand(2.0), 3.0);
+    }
+    m.meters[0].paint(&p, led_a);
+    m.meters[2].paint(&p, led_m);
+    m.meters[1].paint(&p, led_b);
+    for (deck, r) in [(0usize, fad_a), (1, fad_b)] {
+        if let (_, Some(v)) = hw::vertical_fader(ui, r, ("chfader", deck), m.volume[deck], settings::DEFAULT_CHANNEL_VOLUME, false) {
+            out.push(MixerAction::Volume(deck, v));
+        }
+    }
+    let ly = rect.bottom() - 7.0;
+    p.text(pos2(fa_center, ly), Align2::CENTER_CENTER, "A", fonts::bold(13.0), theme::deck_color(0));
+    p.text(pos2(bar.center().x, ly), Align2::CENTER_CENTER, "MAIN", fonts::bold(11.0), theme::dim());
+    p.text(pos2(fb_center, ly), Align2::CENTER_CENTER, "B", fonts::bold(13.0), theme::deck_color(1));
+
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        ui.label(small("MASTER"));
+        if let (_, Some(v)) = hw::mini_fader(ui, "master", m.master_volume, settings::DEFAULT_MASTER_VOLUME, 0.0, 1.0, ui.available_width() - 4.0) {
+            out.push(MixerAction::MasterVolume(v));
+        }
+    });
+
+    ui.label(small("KOPFHÖRER"));
+    ui.horizontal(|ui| {
+        let bw = (ui.available_width() - 12.0) / 3.0;
+        let third = if m.head_device {
+            (HeadMode::Device, "Gerät", "Eigenes Kopfhörergerät aus den Einstellungen")
+        } else {
+            (HeadMode::Outputs34, "Ausg. 3/4", "Mehrkanal-Interface: Kopfhörer auf Ausgang 3/4")
+        };
+        for (mode, label, tip) in [
+            (HeadMode::Off, "Aus", "Kein Kopfhörersignal"),
+            (HeadMode::Split, "Split L/R", "Eine Soundkarte: links Master, rechts Kopfhörer"),
+            third,
+        ] {
+            let on = m.head_mode == mode;
+            if hw::button(ui, vec2(bw, 26.0 * k), tr(label), fonts::bold(11.5 * k), hw::Look::Color(theme::yellow()), on, true).on_hover_text(tr(tip)).clicked() {
+                out.push(MixerAction::HeadMode(mode));
+            }
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label(small("CUE"));
+        let (resp, new) = hw::mini_fader(ui, "headmix", m.head_mix, settings::DEFAULT_HEAD_MIX, 0.0, 1.0, ui.available_width() - 34.0);
+        resp.on_hover_text(tr("Mischung Vorhören ↔ Master"));
+        if let Some(v) = new {
+            out.push(MixerAction::HeadMix(v));
+        }
+        ui.label(small("MST"));
+    });
+    ui.horizontal(|ui| {
+        ui.label(small("PEGEL"));
+        if let (_, Some(v)) = hw::mini_fader(ui, "headvol", m.head_volume, settings::DEFAULT_HEAD_VOLUME, 0.0, 1.0, ui.available_width() - 4.0) {
+            out.push(MixerAction::HeadVolume(v));
+        }
+    });
+    // Das aktive Gerät steht in den Einstellungen; hier nur ein Hinweis, wenn es fehlt
+    if !m.audio_ok {
+        ui.colored_label(theme::cue(), tr("Keine Audio-Ausgabe gefunden"));
+    }
+}
+
+pub struct FadeModel<'a> {
+    pub auto: bool,
+    pub fade_secs: f32,
+    pub curve: Curve,
+    pub crossfader: f32,
+    pub status: &'a str,
+    pub motor: Motor,
+}
+
+pub enum FadeAction {
+    Auto(bool),
+    FadeSecs(f32),
+    Curve(Curve),
+    Crossfader(f32),
+    FadeNow,
+    Motor(Motor),
+}
+
+pub fn show_fade(ui: &mut egui::Ui, m: &FadeModel<'_>, out: &mut Vec<FadeAction>) {
+    let k = scale(ui);
+    ui.horizontal(|ui| {
+        // Überblendzeit als LCD, die Überschrift steht im Display
+        let scale = (ui.available_width() / 230.0).clamp(1.0, 1.5);
+        let (lcd, _) = ui.allocate_exact_size(vec2(96.0, 40.0) * scale, Sense::hover());
+        hw::well(ui.painter(), lcd, 4.0);
+        ui.painter().text(lcd.left_top() + vec2(6.0, 4.0), Align2::LEFT_TOP, tr("AUTO-FADE"), fonts::bold(9.0 * scale), theme::well_ink().gamma_multiply(0.6));
+        hw::lcd_text(ui.painter(), lcd.right_bottom() - vec2(8.0, 5.0), Align2::RIGHT_BOTTOM, &format!("{:4.1}", m.fade_secs), 17.0 * scale, theme::well_ink());
+        ui.label(small("SEK."));
+        let (resp, new) = hw::mini_fader(ui, "fadesecs", m.fade_secs, settings::DEFAULT_FADE_SECS, 1.0, 20.0, ui.available_width() - 4.0);
+        resp.on_hover_text(tr("Überblendzeit"));
+        if let Some(v) = new {
+            out.push(FadeAction::FadeSecs((v * 2.0).round() / 2.0));
+        }
+    });
+
+    // Blendkurve: Linien lassen sich ziehen, Rechtsklick setzt auf „Weich“ zurück
+    // Flaches Breitformat, nach oben begrenzt, damit die Box auf großen Monitoren nicht wuchtig wird
+    let cw = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(vec2(cw, (cw * 0.36).clamp(84.0, 130.0)), Sense::click_and_drag());
+    if let Some(c) = curve_editor(ui, &resp, rect, m.curve) {
+        out.push(FadeAction::Curve(c));
+    }
+    let resp = resp.on_hover_cursor(egui::CursorIcon::ResizeVertical).on_hover_text(tr("Linien ziehen formt die Blendkurve, Rechtsklick setzt sie zurück"));
+    if resp.secondary_clicked() {
+        out.push(FadeAction::Curve(Curve::Soft));
+    }
+    let p = ui.painter();
+    hw::well(p, rect, 4.0);
+    for (deck, color) in [(0usize, theme::deck_color(0)), (1, theme::deck_color(1))] {
+        let pts: Vec<_> = (0..=48)
+            .map(|i| {
+                let x = i as f32 / 48.0 * 2.0 - 1.0;
+                let (a, b) = m.curve.gains(x);
+                let g = if deck == 0 { a } else { b };
+                pos2(rect.left() + i as f32 / 48.0 * rect.width(), rect.bottom() - 5.0 - g * (rect.height() - 10.0))
+            })
+            .collect();
+        p.add(egui::Shape::line(pts, Stroke::new(2.0, color)));
+    }
+    // Stützpunkte als kleine Griffe, bei eigener Kurve deutlicher
+    let handle = if matches!(m.curve, Curve::Custom(_)) { 3.5 } else { 2.5 };
+    for (k, g) in CURVE_KNOTS.iter().zip(m.curve.points()) {
+        // B ist das Spiegelbild: gleicher Pegel an der gespiegelten Stelle
+        let y = rect.bottom() - 5.0 - g * (rect.height() - 10.0);
+        p.circle_filled(pos2(rect.left() + k * rect.width(), y), handle, theme::deck_color(0));
+        p.circle_filled(pos2(rect.left() + (1.0 - k) * rect.width(), y), handle, theme::deck_color(1));
+    }
+    let xm = rect.left() + (m.crossfader + 1.0) / 2.0 * rect.width();
+    p.line_segment([pos2(xm, rect.top()), pos2(xm, rect.bottom())], Stroke::new(1.5, Color32::WHITE));
+
+    // Kurventasten unten mittig in der Box: dort verläuft bei keiner Kurve eine Linie
+    let bw = rect.width() * 0.25;
+    let bh = 20.0 * k;
+    let left = rect.center().x - 1.5 * bw - 4.0;
+    for (i, (c, label)) in [(Curve::Soft, "Weich"), (Curve::Linear, "Linear"), (Curve::Cut, "Hart")].into_iter().enumerate() {
+        let r = Rect::from_min_size(pos2(left + i as f32 * (bw + 4.0), rect.bottom() - bh - 5.0), vec2(bw, bh));
+        let on = m.curve == c;
+        if ui.put(r, |ui: &mut egui::Ui| hw::button(ui, r.size(), tr(label), fonts::bold(10.5 * k), hw::Look::Color(theme::yellow()), on, true)).clicked() {
+            out.push(FadeAction::Curve(c));
+        }
+    }
+
+    // Crossfader
+    // A und B direkt auf die Höhe der Fadermitte gezeichnet, damit beide gleich sitzen
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
+    let label_w = 16.0;
+    let rect = Rect::from_min_max(pos2(row.left() + label_w, row.top()), pos2(row.right() - label_w, row.bottom()));
+    let (resp, new) = hw::horizontal_fader(ui, rect, "crossfader", m.crossfader, 0.0);
+    resp.on_hover_text(tr("Crossfader"));
+    if let Some(x) = new {
+        out.push(FadeAction::Crossfader(x));
+    }
+    let p = ui.painter();
+    p.text(pos2(row.left() + label_w / 2.0 - 2.0, row.center().y), Align2::CENTER_CENTER, "A", fonts::bold(14.0), theme::deck_color(0));
+    p.text(pos2(row.right() - label_w / 2.0 + 2.0, row.center().y), Align2::CENTER_CENTER, "B", fonts::bold(14.0), theme::deck_color(1));
+
+    ui.horizontal(|ui| {
+        let bw = (ui.available_width() - 6.0) / 2.0;
+        if hw::button(ui, vec2(bw, 34.0 * k), "AUTO", fonts::bold(14.0 * k), hw::Look::Color(theme::play()), m.auto, true).clicked() {
+            out.push(FadeAction::Auto(!m.auto));
+        }
+        if hw::button(ui, vec2(bw, 34.0 * k), tr("FADEN"), fonts::bold(14.0 * k), hw::Look::Plain, false, true).clicked() {
+            out.push(FadeAction::FadeNow);
+        }
+    });
+    ui.vertical_centered(|ui| ui.label(RichText::new(m.status).size(12.0).color(theme::dim())));
+
+    egui::CollapsingHeader::new(small("MOTOR · ANLAUF & AUSLAUF")).id_salt("motor").show(ui, |ui| {
+        let mut motor = m.motor;
+        let mut changed = false;
+        ui.spacing_mut().slider_width = ui.available_width() - 110.0;
+        ui.horizontal(|ui| {
+            ui.label(small("ANLAUF "));
+            let r = ui.add(egui::Slider::new(&mut motor.spin_up_secs, 0.1..=2.0).step_by(0.05).suffix(" s"));
+            if r.secondary_clicked() || r.double_clicked() {
+                motor.spin_up_secs = Motor::default().spin_up_secs;
+                changed = true;
+            }
+            changed |= r.changed();
+        });
+        ui.horizontal(|ui| {
+            ui.label(small("AUSLAUF"));
+            let r = ui.add(egui::Slider::new(&mut motor.spin_down_secs, 0.2..=4.0).step_by(0.1).suffix(" s"));
+            if r.secondary_clicked() || r.double_clicked() {
+                motor.spin_down_secs = Motor::default().spin_down_secs;
+                changed = true;
+            }
+            changed |= r.changed();
+        });
+        if changed {
+            out.push(FadeAction::Motor(motor));
+        }
+    });
+}
+
+/// Ziehen an einer Linie der Blendkurve. Gegriffen wird beim Drücken der nächstgelegene Stützpunkt
+/// der näheren Linie; B ist das Spiegelbild von A, darum wirkt Ziehen an B auf den gespiegelten Punkt.
+fn curve_editor(ui: &egui::Ui, resp: &egui::Response, rect: Rect, curve: Curve) -> Option<Curve> {
+    let id = resp.id.with("griff");
+    let pos = resp.interact_pointer_pos()?;
+    let to_p = |x: f32| ((x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+    let to_g = |y: f32| ((rect.bottom() - 5.0 - y) / (rect.height() - 10.0)).clamp(0.0, 1.0);
+    if resp.drag_started() {
+        let p = to_p(pos.x);
+        let (ga, gb) = curve.gains(p * 2.0 - 1.0);
+        let g = to_g(pos.y);
+        // Welche Linie ist näher? Auf B gegriffen heißt: Punkt an der gespiegelten Stelle von A.
+        // Weil B(p) = A(1 − p), ist die Höhe dort genau der Stützpunkt von A.
+        let pa = if (g - ga).abs() <= (g - gb).abs() { p } else { 1.0 - p };
+        let idx = CURVE_KNOTS.iter().enumerate().min_by(|a, b| (a.1 - pa).abs().total_cmp(&(b.1 - pa).abs())).map(|(i, _)| i).unwrap_or(0);
+        ui.data_mut(|d| d.insert_temp(id, idx));
+    }
+    if !resp.dragged() {
+        return None;
+    }
+    let idx: usize = ui.data(|d| d.get_temp(id))?;
+    let mut pts = curve.points();
+    let target = to_g(pos.y);
+    let upper = if idx == 0 { 1.0 } else { pts[idx - 1] };
+    let lower = if idx == 3 { 0.0 } else { pts[idx + 1] };
+    pts[idx] = target.clamp(lower, upper);
+    Some(Curve::Custom(pts))
+}

@@ -1,0 +1,10 @@
+[package]
+name = "fw-engine"
+description = "Echtzeit-Audio-Engine von FadeWerk DJ: Decks mit Motor und Scratch, Mixer, Crossfader, Vorhören"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+rtrb.workspace = true
