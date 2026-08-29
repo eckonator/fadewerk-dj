@@ -171,10 +171,14 @@ pub fn brushed() -> bool {
     BRUSHED.load(Ordering::Relaxed)
 }
 
-/// Hintergrund ausgewählter Listenzeilen: deutlich kräftiger als die Zebra-Streifen.
+/// Farbe der Auswahl in Listen (Rahmen). Gelb wie die Modus-Tasten, damit sie sich von A und B abhebt.
+pub fn select_accent() -> Color32 {
+    skin().yellow
+}
+
+/// Hintergrund ausgewählter Listenzeilen: in der Auswahlfarbe getönt, durchscheinend auch auf Stahl.
 pub fn row_selected() -> Color32 {
-    let s = skin();
-    if brushed() { s.ink.gamma_multiply(if s.dark { 0.24 } else { 0.2 }) } else { mix(s.panel2, s.ink, if s.dark { 0.32 } else { 0.22 }) }
+    select_accent().gamma_multiply(if skin().dark { 0.22 } else { 0.28 })
 }
 
 /// Hintergrund einer Listenzeile unter der Maus; auf Stahl durchscheinend.

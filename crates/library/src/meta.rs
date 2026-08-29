@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use std::path::Path;
 
+use lofty::config::WriteOptions;
 use lofty::prelude::*;
+use lofty::tag::Tag;
 
 /// Angaben zu einem Titel aus Tags und Dateieigenschaften.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -51,9 +53,171 @@ pub fn read_meta(path: &Path) -> anyhow::Result<TrackMeta> {
     Ok(meta)
 }
 
+/// Bearbeitbare Tag-Felder als Text, wie sie im Editor stehen. Leer = Feld entfernen.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TagFields {
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub album_artist: String,
+    pub genre: String,
+    pub year: String,
+    pub track: String,
+    pub bpm: String,
+    pub comment: String,
+}
+
+impl TagFields {
+    /// Felder mit ihrem Schlüssel im Tag, in der Reihenfolge des Editors.
+    fn keyed(&self) -> [(ItemKey, &String); 8] {
+        [
+            (ItemKey::TrackTitle, &self.title),
+            (ItemKey::TrackArtist, &self.artist),
+            (ItemKey::AlbumTitle, &self.album),
+            (ItemKey::AlbumArtist, &self.album_artist),
+            (ItemKey::Genre, &self.genre),
+            (ItemKey::RecordingDate, &self.year),
+            (ItemKey::TrackNumber, &self.track),
+            (ItemKey::Comment, &self.comment),
+        ]
+    }
+}
+
+/// Technische Angaben zur Datei (nur zum Anzeigen).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FileInfo {
+    pub format: String,
+    /// Art des Tags, in den geschrieben wird, z. B. „ID3v2“.
+    pub tag_format: String,
+    pub duration_secs: f64,
+    pub bitrate_kbps: Option<u32>,
+    pub sample_rate: Option<u32>,
+    pub bit_depth: Option<u8>,
+    pub channels: Option<u8>,
+    pub size_bytes: u64,
+}
+
+/// Liest alle bearbeitbaren Tag-Felder und die Dateiangaben.
+pub fn read_tags(path: &Path) -> anyhow::Result<(TagFields, FileInfo)> {
+    let file = lofty::read_from_path(path)?;
+    let props = file.properties();
+    let info = FileInfo {
+        format: format!("{:?}", file.file_type()),
+        tag_format: format!("{:?}", file.primary_tag_type()),
+        duration_secs: props.duration().as_secs_f64(),
+        bitrate_kbps: props.audio_bitrate(),
+        sample_rate: props.sample_rate(),
+        bit_depth: props.bit_depth(),
+        channels: props.channels(),
+        size_bytes: std::fs::metadata(path).map(|m| m.len()).unwrap_or(0),
+    };
+    let mut f = TagFields::default();
+    if let Some(tag) = file.primary_tag().or_else(|| file.first_tag()) {
+        let get = |k: ItemKey| tag.get_string(k).map(|s| s.trim().to_owned()).unwrap_or_default();
+        f.title = get(ItemKey::TrackTitle);
+        f.artist = get(ItemKey::TrackArtist);
+        f.album = get(ItemKey::AlbumTitle);
+        f.album_artist = get(ItemKey::AlbumArtist);
+        f.genre = get(ItemKey::Genre);
+        f.year = get(ItemKey::RecordingDate);
+        if f.year.is_empty() {
+            f.year = get(ItemKey::Year);
+        }
+        f.track = get(ItemKey::TrackNumber);
+        f.bpm = get(ItemKey::IntegerBpm);
+        if f.bpm.is_empty() {
+            f.bpm = get(ItemKey::Bpm);
+        }
+        f.comment = get(ItemKey::Comment);
+    }
+    Ok((f, info))
+}
+
+/// Schreibt die Felder in den Haupt-Tag der Datei (legt ihn an, wenn es keinen gibt).
+/// Leere Felder werden entfernt. Der Ton der Datei bleibt unverändert.
+pub fn write_tags(path: &Path, fields: &TagFields) -> anyhow::Result<()> {
+    let mut file = lofty::read_from_path(path)?;
+    if file.primary_tag().is_none() {
+        let kind = file.primary_tag_type();
+        file.insert_tag(Tag::new(kind));
+    }
+    let tag = file.primary_tag_mut().ok_or_else(|| anyhow::anyhow!("Kein Tag in dieser Datei möglich"))?;
+    for (key, value) in fields.keyed() {
+        let v = value.trim();
+        if v.is_empty() {
+            tag.remove_key(key);
+        } else {
+            tag.insert_text(key, v.to_owned());
+        }
+    }
+    // BPM als ganze Zahl, wo das Format es so vorsieht (ID3v2 TBPM), sonst als Text
+    tag.remove_key(ItemKey::IntegerBpm);
+    tag.remove_key(ItemKey::Bpm);
+    let bpm = fields.bpm.trim().replace(',', ".");
+    if !bpm.is_empty() {
+        let int = bpm.parse::<f32>().map(|b| format!("{:.0}", b)).unwrap_or_else(|_| bpm.clone());
+        if !tag.insert_text(ItemKey::IntegerBpm, int) {
+            tag.insert_text(ItemKey::Bpm, bpm);
+        }
+    }
+    file.save_to_path(path, WriteOptions::default())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Kleinste gültige WAV-Datei: 0,1 s Stille, 8 kHz, mono, 16 Bit.
+    fn write_wav(path: &Path) {
+        let samples = 800u32;
+        let data_len = samples * 2;
+        let mut b = Vec::new();
+        b.extend_from_slice(b"RIFF");
+        b.extend_from_slice(&(36 + data_len).to_le_bytes());
+        b.extend_from_slice(b"WAVEfmt ");
+        b.extend_from_slice(&16u32.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&8000u32.to_le_bytes());
+        b.extend_from_slice(&16000u32.to_le_bytes());
+        b.extend_from_slice(&2u16.to_le_bytes());
+        b.extend_from_slice(&16u16.to_le_bytes());
+        b.extend_from_slice(b"data");
+        b.extend_from_slice(&data_len.to_le_bytes());
+        b.resize(b.len() + data_len as usize, 0);
+        std::fs::write(path, b).unwrap();
+    }
+
+    #[test]
+    fn writes_and_reads_back_tags() {
+        let path = std::env::temp_dir().join(format!("fw-tags-{}.wav", std::process::id()));
+        write_wav(&path);
+        let fields = TagFields {
+            title: "Ice Blue".into(),
+            artist: "FadeWerk".into(),
+            album: "Demo".into(),
+            genre: "House".into(),
+            year: "2026".into(),
+            track: "3".into(),
+            bpm: "124".into(),
+            ..Default::default()
+        };
+        write_tags(&path, &fields).unwrap();
+        let (back, info) = read_tags(&path).unwrap();
+        assert_eq!(back.title, "Ice Blue");
+        assert_eq!(back.artist, "FadeWerk");
+        assert_eq!(back.album, "Demo");
+        assert_eq!(back.genre, "House");
+        assert_eq!(back.track, "3");
+        assert_eq!(back.bpm, "124");
+        assert!((info.duration_secs - 0.1).abs() < 0.01);
+        // Ein geleertes Feld verschwindet
+        write_tags(&path, &TagFields { genre: String::new(), ..back }).unwrap();
+        assert_eq!(read_tags(&path).unwrap().0.genre, "");
+        assert_eq!(read_meta(&path).unwrap().title, "Ice Blue");
+        std::fs::remove_file(&path).unwrap();
+    }
 
     #[test]
     fn splits_artist_and_title_from_filename() {

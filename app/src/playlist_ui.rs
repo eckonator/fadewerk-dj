@@ -23,6 +23,7 @@ pub enum PlaylistAction {
     /// Titel auf dem Kopfhörer vorhören (läuft über den Vorhör-Player des Ordnerbrowsers).
     Preview(PathBuf),
     StopPreview,
+    EditTags(PathBuf),
 }
 
 const ROW_H: f32 = 48.0;
@@ -117,6 +118,11 @@ pub fn show(
                 out.push(PlaylistAction::Load(i));
             }
             resp.context_menu(|ui| {
+                if ui.button(tr("Titelinfo & Tags …")).clicked() {
+                    out.push(PlaylistAction::EditTags(path.clone()));
+                    ui.close();
+                }
+                ui.separator();
                 if ui.button(tr("Aus der Playlist entfernen")).clicked() {
                     out.push(PlaylistAction::Remove(i));
                     ui.close();
