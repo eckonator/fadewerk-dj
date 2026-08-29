@@ -17,9 +17,12 @@ written in Rust. Click a folder and start playing: no database, no library impor
 
 - **Two decks, each with its own playlist**, and **auto-fade**: when the playing track reaches
   the fade time, the other deck starts and the crossfader blends over. The finished deck then
-  loads its next track. Fade curve smooth, linear, sharp or drawn by hand.
+  loads its next track. Fade curve smooth, linear, sharp or drawn by hand. Optional **bass swap**:
+  the incoming track starts without bass and the basses swap halfway through the fade.
 - **No import**: click a folder and all tracks, including subfolders, are there instantly.
   Search across title, artist, album and path. Tags, BPM and waveform are analysed in the background.
+  Select several tracks or folders (⌘/Ctrl-click, Shift-click) and drag them into a playlist, or use
+  the right-click menu: append, play next, shuffle in, spread across A and B, show in Finder.
 - **A turntable per deck**: drag the platter or the waveform to scratch forwards and backwards,
   hold it to stop the record, tap the waveform to play or pause.
 - **Motor**: start, pause and stop spin up and down like a real turntable
@@ -29,7 +32,8 @@ written in Rust. Click a folder and start playing: no database, no library impor
 - **Pre-listening** per deck, in the playlists and right in the folder browser. Headphones via
   split output (left master, right headphones), on outputs 3/4 of a multichannel interface,
   or on a separate second audio device.
-- **Mixer** with LED meters (A, main, B), channel faders, master and headphone mix.
+- **Mixer** with LED meters (A, main, B), channel faders, master and headphone mix, and a
+  **3-band EQ per deck** (isolator, −26 to +6 dB) with kill buttons.
   Right-click or double-click resets any fader to its default.
 - **Playlists**: fill and reorder by drag & drop, also between A and B; drop tracks straight onto
   a deck. Playlists and settings are kept when you quit.
@@ -39,7 +43,8 @@ written in Rust. Click a folder and start playing: no database, no library impor
 
 ## Download
 
-Ready-to-run builds are on the [Releases](../../releases) page:
+Ready-to-run builds are on the [Releases](../../releases) page. The **Development build**
+pre-release is rebuilt automatically from the latest commit on `main`.
 
 | System | File | Notes |
 |---|---|---|

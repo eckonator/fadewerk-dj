@@ -1,17 +1,22 @@
-# Baut FadeWerk DJ für macOS, Windows und Linux und legt einen Release-Entwurf auf GitHub an.
+# Baut FadeWerk DJ für macOS, Windows und Linux.
 #
-# Auslösen: Tag pushen, z. B.
-#   git tag v0.1.0 && git push origin v0.1.0
-# oder von Hand unter „Actions → Release → Run workflow“ (dann ohne Release, nur Artefakte).
-#
-# Der Release wird als Entwurf angelegt; nach dem Prüfen auf GitHub „Publish release“ klicken.
+# - Jeder Push auf main: Vorab-Release „Development build“ (Tag `dev`), der vorherige wird ersetzt.
+# - Tag pushen, z. B. `git tag v0.1.0 && git push origin v0.1.0`: Release-Entwurf für diese Version;
+#   nach dem Prüfen auf GitHub „Publish release“ klicken.
+# - Von Hand unter „Actions → Release → Run workflow“: nur Artefakte, kein Release.
 
 name: Release
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
+
+# Bei schnell aufeinanderfolgenden Pushes nur den neuesten Stand bauen
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -125,4 +130,29 @@ jobs:
         with:
           draft: true
           generate_release_notes: true
+          files: pkg/*
+
+  dev-release:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: pkg
+          merge-multiple: true
+      # Den vorherigen Entwicklungsstand samt Tag entfernen, damit `dev` auf den neuen Commit zeigt
+      - name: Alten Development build entfernen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete dev --cleanup-tag --yes --repo "$GITHUB_REPOSITORY" || true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dev
+          target_commitish: ${{ github.sha }}
+          name: Development build
+          prerelease: true
+          body: |
+            Automatic build of the latest commit on `main` (${{ github.sha }}).
+            Not a release: may contain unfinished features. For installation notes see the README.
           files: pkg/*

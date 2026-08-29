@@ -5,6 +5,7 @@
 //! - `FW_DEMO=1` verteilt die Titel des Startordners auf beide Playlists und startet Player A.
 //! - `FW_SKIN=nacht|classic|tag|neon` und `FW_LANG=de|en` überschreiben Skin und Sprache (ohne zu speichern).
 //! - `FW_PREVIEW=1` hört in der Demo den zweiten Titel vor.
+//! - `FW_SELECT=1` wählt in der Demo im Ordnerbrowser den 2. bis 4. Titel aus.
 //! - `FW_STEEL=1` schaltet gebürsteten Stahl ein (ohne zu speichern).
 //! - `FW_SETTINGS=audio|sprache|aussehen|ueber` öffnet das Einstellungsfenster auf dieser Seite.
 //! - `FW_SIZE=2400x1350` setzt die Fenstergröße (in `main.rs`).
@@ -20,6 +21,8 @@ use crate::theme::SkinId;
 
 /// Bilder, bis das Bildschirmfoto ausgelöst wird (Zeit zum Dekodieren der Demo-Titel).
 const SCREENSHOT_AFTER_FRAMES: u64 = 240;
+/// Mindestwartezeit, damit kurze Hinweise (3 s) wieder verschwunden sind.
+const SCREENSHOT_AFTER_SECS: f32 = 4.5;
 
 #[derive(Default)]
 pub struct DevTools {
@@ -30,6 +33,7 @@ pub struct DevTools {
     pub steel: bool,
     pub settings_tab: Option<String>,
     frame: u64,
+    started: Option<std::time::Instant>,
     requested: bool,
 }
 
@@ -52,6 +56,7 @@ impl DevTools {
             steel: std::env::var_os("FW_STEEL").is_some(),
             settings_tab: std::env::var("FW_SETTINGS").ok(),
             frame: 0,
+            started: None,
             requested: false,
         }
     }
@@ -67,10 +72,14 @@ impl DevTools {
     pub fn on_frame(&mut self, ctx: &egui::Context) {
         let Some(path) = self.screenshot.clone() else { return };
         self.frame += 1;
-        if !self.requested && self.frame >= SCREENSHOT_AFTER_FRAMES {
+        // Auch nach Zeit: Hinweise (3 s) sollen verschwunden sein, egal wie schnell gezeichnet wird
+        let started = *self.started.get_or_insert_with(std::time::Instant::now);
+        if !self.requested && self.frame >= SCREENSHOT_AFTER_FRAMES && started.elapsed().as_secs_f32() >= SCREENSHOT_AFTER_SECS {
             ctx.send_viewport_cmd(ViewportCommand::Screenshot(Default::default()));
             self.requested = true;
         }
+        // Weiterzeichnen, auch wenn sich nichts bewegt, sonst kommt der Zeitpunkt nie
+        ctx.request_repaint();
         let shot = ctx.input(|i| {
             i.events.iter().find_map(|e| match e {
                 Event::Screenshot { image, .. } => Some(image.clone()),

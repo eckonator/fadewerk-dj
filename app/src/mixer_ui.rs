@@ -2,7 +2,7 @@
 //! Mixer (Pegel, Kanalfader, Kopfhörer) und Auto-Fade-Bereich.
 
 use eframe::egui::{self, Align2, Color32, Rect, RichText, Sense, Stroke, pos2, vec2};
-use fw_engine::{CURVE_KNOTS, Curve, HeadMode, Motor};
+use fw_engine::{CURVE_KNOTS, Curve, HeadMode, Motor, eq};
 
 use crate::meter::Meter;
 use crate::i18n::tr;
@@ -19,6 +19,9 @@ pub struct MixerModel<'a> {
     pub audio_ok: bool,
     /// Ein eigenes Kopfhörergerät ist offen: dann gibt es „Gerät“ statt „Ausg. 3/4“.
     pub head_device: bool,
+    /// EQ je Player in dB und Kill-Tasten, Reihenfolge Bässe, Mitten, Höhen.
+    pub eq_db: [[f32; 3]; 2],
+    pub eq_kill: [[bool; 3]; 2],
 }
 
 pub enum MixerAction {
@@ -27,6 +30,8 @@ pub enum MixerAction {
     HeadMix(f32),
     HeadVolume(f32),
     MasterVolume(f32),
+    Eq { deck: usize, band: usize, db: f32 },
+    EqKill { deck: usize, band: usize, on: bool },
 }
 
 pub fn section_title(ui: &mut egui::Ui, text: &'static str) {
@@ -45,11 +50,13 @@ fn scale(ui: &egui::Ui) -> f32 {
 pub fn show_mixer(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerAction>) {
     let k = scale(ui);
     section_title(ui, "MIXER");
+    eq_strip(ui, m, out);
 
     // Pegelbrücke: LED A | Fader A | MAIN | Fader B | LED B
     // Maße wachsen mit der Breite der Mittelspalte
     let w = ui.available_width();
-    let h = (w * 0.45).clamp(120.0, 200.0);
+    // Etwas flacher seit der EQ darüber sitzt, damit die Spalte auf kleinen Fenstern nicht überläuft
+    let h = (w * 0.4).clamp(110.0, 180.0);
     let (rect, _) = ui.allocate_exact_size(vec2(w, h + 18.0), Sense::hover());
     let led_w = (w * 0.055).clamp(14.0, 24.0);
     let main_w = led_w * 1.7;
@@ -129,6 +136,47 @@ pub fn show_mixer(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerActi
     }
 }
 
+/// EQ-Reihe über der Pegelbrücke: links A, rechts B, je Höhen, Mitten, Bässe mit Kill-Taste darunter.
+fn eq_strip(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerAction>) {
+    let w = ui.available_width();
+    let d = (w * 0.12).clamp(28.0, 40.0);
+    let (label_h, kill_h) = (12.0, 15.0);
+    let (rect, _) = ui.allocate_exact_size(vec2(w, label_h + d + 3.0 + kill_h), Sense::hover());
+    let group_w = (w - (w * 0.1).max(24.0)) / 2.0;
+    let slot = group_w / 3.0;
+    // 0 dB steht auf 12 Uhr: die linke Hälfte des Wegs senkt bis −26 dB, die rechte hebt bis +6 dB
+    let to_norm = |db: f32| if db <= 0.0 { 0.5 * (1.0 - db / settings::EQ_MIN_DB) } else { 0.5 + 0.5 * db / settings::EQ_MAX_DB };
+    let to_db = |n: f32| if n <= 0.5 { settings::EQ_MIN_DB * (1.0 - 2.0 * n) } else { settings::EQ_MAX_DB * (2.0 * n - 1.0) };
+    let knob_y = rect.top() + label_h + d / 2.0;
+    let p = ui.painter().clone();
+    p.text(pos2(rect.center().x, knob_y), Align2::CENTER_CENTER, "EQ", fonts::bold(11.0), theme::dim());
+    for deck in 0..2 {
+        let gx = if deck == 0 { rect.left() } else { rect.right() - group_w };
+        for (i, (band, name)) in [(eq::HIGH, "HI"), (eq::MID, "MID"), (eq::LOW, "LOW")].into_iter().enumerate() {
+            let cx = gx + slot * (i as f32 + 0.5);
+            p.text(pos2(cx, rect.top() + label_h / 2.0), Align2::CENTER_CENTER, tr(name), fonts::bold(9.0), theme::dim());
+            let db = m.eq_db[deck][band];
+            let killed = m.eq_kill[deck][band];
+            let kr = Rect::from_center_size(pos2(cx, knob_y), vec2(d, d));
+            // Ein abgeschaltetes Band zeigt seinen Bogen in Rot
+            let color = if killed { theme::cue() } else { theme::deck_color(deck) };
+            let (resp, new) = hw::knob(ui, kr, ("eq", deck, band), to_norm(db), to_norm(0.0), color);
+            resp.on_hover_text(format!("{} {:+.1} dB", tr(name), db));
+            if let Some(n) = new {
+                // Nahe 0 dB einrasten, damit die Mitte leicht zu treffen ist
+                let v = to_db(n);
+                out.push(MixerAction::Eq { deck, band, db: if v.abs() < 0.6 { 0.0 } else { v } });
+            }
+            let br = Rect::from_center_size(pos2(cx, kr.bottom() + 3.0 + kill_h / 2.0), vec2((d + 6.0).min(slot - 3.0), kill_h));
+            let b = ui.put(br, |ui: &mut egui::Ui| hw::button(ui, br.size(), "KILL", fonts::bold(8.5), hw::Look::Color(theme::cue()), killed, true));
+            if b.on_hover_text(tr("Band ganz herausnehmen")).clicked() {
+                out.push(MixerAction::EqKill { deck, band, on: !killed });
+            }
+        }
+    }
+    ui.add_space(2.0);
+}
+
 pub struct FadeModel<'a> {
     pub auto: bool,
     pub fade_secs: f32,
@@ -136,6 +184,7 @@ pub struct FadeModel<'a> {
     pub crossfader: f32,
     pub status: &'a str,
     pub motor: Motor,
+    pub bass_swap: bool,
 }
 
 pub enum FadeAction {
@@ -145,6 +194,7 @@ pub enum FadeAction {
     Crossfader(f32),
     FadeNow,
     Motor(Motor),
+    BassSwap(bool),
 }
 
 pub fn show_fade(ui: &mut egui::Ui, m: &FadeModel<'_>, out: &mut Vec<FadeAction>) {
@@ -226,12 +276,18 @@ pub fn show_fade(ui: &mut egui::Ui, m: &FadeModel<'_>, out: &mut Vec<FadeAction>
     p.text(pos2(row.right() - label_w / 2.0 + 2.0, row.center().y), Align2::CENTER_CENTER, "B", fonts::bold(14.0), theme::deck_color(1));
 
     ui.horizontal(|ui| {
-        let bw = (ui.available_width() - 6.0) / 2.0;
+        let avail = ui.available_width() - 12.0;
+        let bw = avail * 0.36;
         if hw::button(ui, vec2(bw, 34.0 * k), "AUTO", fonts::bold(14.0 * k), hw::Look::Color(theme::play()), m.auto, true).clicked() {
             out.push(FadeAction::Auto(!m.auto));
         }
         if hw::button(ui, vec2(bw, 34.0 * k), tr("FADEN"), fonts::bold(14.0 * k), hw::Look::Plain, false, true).clicked() {
             out.push(FadeAction::FadeNow);
+        }
+        let tip = tr("Beim Überblenden kommt der neue Titel ohne Bässe herein, in der Mitte tauschen die Bässe. Klingt sauberer als ein reiner Lautstärke-Fade.");
+        let swap = hw::button(ui, vec2(avail - 2.0 * bw, 34.0 * k), "BASS\nSWAP", fonts::bold(10.0 * k), hw::Look::Color(theme::yellow()), m.bass_swap, true);
+        if swap.on_hover_text(tip).clicked() {
+            out.push(FadeAction::BassSwap(!m.bass_swap));
         }
     });
     ui.vertical_centered(|ui| ui.label(RichText::new(m.status).size(12.0).color(theme::dim())));

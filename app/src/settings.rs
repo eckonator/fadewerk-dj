@@ -17,6 +17,9 @@ pub const DEFAULT_MASTER_VOLUME: f32 = 0.9;
 pub const DEFAULT_HEAD_VOLUME: f32 = 0.8;
 pub const DEFAULT_HEAD_MIX: f32 = 0.0;
 pub const DEFAULT_FADE_SECS: f32 = 8.0;
+/// Regelbereich des EQ in dB. Ganz zu ist nicht ganz stumm, dafür gibt es die Kill-Tasten.
+pub const EQ_MIN_DB: f32 = -26.0;
+pub const EQ_MAX_DB: f32 = 6.0;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -27,6 +30,8 @@ pub struct Settings {
     pub brushed_steel: bool,
     /// Höhe des Ordnerbrowsers in Punkten, 0 = automatisch (ein knappes Drittel des Fensters).
     pub browser_height: f32,
+    /// Breite des Ordnerbaums im Browser in Punkten, 0 = Standard.
+    pub tree_width: f32,
     /// Kennung des Ausgabegeräts (cpal `DeviceId`), `None` = Systemstandard.
     pub output_device: Option<String>,
     /// Eigenes Kopfhörergerät, `None` = Kopfhörer über Split L/R oder Ausgang 3/4 des Master-Geräts.
@@ -44,6 +49,10 @@ pub struct Settings {
     pub master_volume: f32,
     pub head_volume: f32,
     pub head_mix: f32,
+    /// EQ je Player in dB, Reihenfolge Bässe, Mitten, Höhen.
+    pub eq_db: [[f32; 3]; 2],
+    /// Beim Auto-Fade die Bässe in der Mitte der Überblendung tauschen.
+    pub bass_swap: bool,
     /// Vom Nutzer hinzugefügte Musikordner.
     pub folders: Vec<PathBuf>,
 }
@@ -55,6 +64,7 @@ impl Default for Settings {
             skin: SkinId::Nacht,
             brushed_steel: false,
             browser_height: 0.0,
+            tree_width: 0.0,
             output_device: None,
             head_device: None,
             buffer_frames: None,
@@ -67,6 +77,8 @@ impl Default for Settings {
             master_volume: DEFAULT_MASTER_VOLUME,
             head_volume: DEFAULT_HEAD_VOLUME,
             head_mix: DEFAULT_HEAD_MIX,
+            eq_db: [[0.0; 3]; 2],
+            bass_swap: false,
             folders: Vec::new(),
         }
     }

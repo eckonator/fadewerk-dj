@@ -72,8 +72,8 @@ pub static SKINS: [Skin; 4] = [
         well_ink: rgb(0xe6ebf5),
         line: rgb(0x243049),
         ink: rgb(0xe6ebf5),
-        dim: rgb(0x8693ab),
-        faint: rgb(0x56627b),
+        dim: rgb(0xa9b4c8),
+        faint: rgb(0x7d89a3),
         deck_a: rgb(0xf2a33a),
         deck_b: rgb(0x58c4ee),
         cue: rgb(0xe5484d),
@@ -94,8 +94,8 @@ pub static SKINS: [Skin; 4] = [
         well_ink: rgb(0x8be4ff),
         line: rgb(0x5c626c),
         ink: rgb(0xf1f3f6),
-        dim: rgb(0xb9bfc8),
-        faint: rgb(0x80868f),
+        dim: rgb(0xd0d4db),
+        faint: rgb(0xa2a8b1),
         deck_a: rgb(0xff9a1f),
         deck_b: rgb(0x47c6ff),
         cue: rgb(0xe8352f),
@@ -116,8 +116,9 @@ pub static SKINS: [Skin; 4] = [
         well_ink: rgb(0xeef2f8),
         line: rgb(0xc6cdd9),
         ink: rgb(0x172033),
-        dim: rgb(0x566179),
-        faint: rgb(0x8a93a5),
+        // Kräftiger als in dunklen Skins: auf hellem Grund wirken Grautöne sonst verwaschen
+        dim: rgb(0x3a4459),
+        faint: rgb(0x5f6a80),
         deck_a: rgb(0xd97b10),
         deck_b: rgb(0x1689c2),
         cue: rgb(0xd33a3f),
@@ -138,8 +139,8 @@ pub static SKINS: [Skin; 4] = [
         well_ink: rgb(0xf1ecff),
         line: rgb(0x2f2852),
         ink: rgb(0xf1ecff),
-        dim: rgb(0x9a90c4),
-        faint: rgb(0x5d5487),
+        dim: rgb(0xbbb2e2),
+        faint: rgb(0x877cb8),
         deck_a: rgb(0xff4fa3),
         deck_b: rgb(0x2ee6c8),
         cue: rgb(0xff4060),
@@ -170,6 +171,12 @@ pub fn brushed() -> bool {
     BRUSHED.load(Ordering::Relaxed)
 }
 
+/// Hintergrund ausgewählter Listenzeilen: deutlich kräftiger als die Zebra-Streifen.
+pub fn row_selected() -> Color32 {
+    let s = skin();
+    if brushed() { s.ink.gamma_multiply(if s.dark { 0.24 } else { 0.2 }) } else { mix(s.panel2, s.ink, if s.dark { 0.32 } else { 0.22 }) }
+}
+
 /// Hintergrund einer Listenzeile unter der Maus; auf Stahl durchscheinend.
 pub fn row_hover() -> Color32 {
     if brushed() { skin().ink.gamma_multiply(0.08) } else { skin().panel2 }
@@ -182,8 +189,14 @@ pub fn well() -> Color32 { skin().well }
 pub fn well_ink() -> Color32 { skin().well_ink }
 pub fn line() -> Color32 { skin().line }
 pub fn ink() -> Color32 { skin().ink }
-pub fn dim() -> Color32 { skin().dim }
-pub fn faint() -> Color32 { skin().faint }
+/// Nebentext. Auf Stahl näher an `ink`, weil die Schleifspuren sonst die Schrift schlucken.
+pub fn dim() -> Color32 {
+    if brushed() { mix(skin().dim, skin().ink, 0.35) } else { skin().dim }
+}
+/// Schwacher Text (Nummern, Spaltenköpfe). Auf Stahl ebenfalls kräftiger.
+pub fn faint() -> Color32 {
+    if brushed() { mix(skin().faint, skin().ink, 0.35) } else { skin().faint }
+}
 pub fn cue() -> Color32 { skin().cue }
 pub fn play() -> Color32 { skin().play }
 pub fn yellow() -> Color32 { skin().yellow }

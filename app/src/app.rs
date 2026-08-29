@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use eframe::egui::{self, Align2, CornerRadius, Frame, Margin, RichText, Stroke, vec2};
 use egui_extras::{Size, StripBuilder};
-use fw_engine::{AutoFade, Command, Controller, Curve, HeadMode, Motor, PREVIEW, TrackAudio};
+use fw_engine::{AutoFade, Command, Controller, Curve, HeadMode, Motor, PREVIEW, TrackAudio, db_to_gain, eq};
 use fw_library::{Library, Response, TrackMeta, Waveform};
 
 use crate::audio::{self, AudioOut, HeadOut};
@@ -110,6 +110,12 @@ pub struct FadeWerkDjApp {
     head_mix: f32,
     head_volume: f32,
     master_volume: f32,
+    /// EQ je Player in dB und Kill-Tasten (Bässe, Mitten, Höhen).
+    eq_db: [[f32; 3]; 2],
+    eq_kill: [[bool; 3]; 2],
+    /// Zuletzt an die Engine geschickte EQ-Faktoren; NaN erzwingt erneutes Senden.
+    eq_sent: [[f32; 3]; 2],
+    bass_swap: bool,
     meters: [Meter; 3],
     preview: Option<PreviewView>,
     next_token: u64,
@@ -146,7 +152,7 @@ impl FadeWerkDjApp {
             lib,
             decks: Default::default(),
             playlists: Default::default(),
-            browser: Browser::new(start_dir, &settings.folders),
+            browser: Browser::new(start_dir, &settings.folders, settings.tree_width),
             metas: HashMap::new(),
             meta_requested: HashSet::new(),
             bpms: HashMap::new(),
@@ -158,6 +164,10 @@ impl FadeWerkDjApp {
             head_mix: settings.head_mix,
             head_volume: settings.head_volume,
             master_volume: settings.master_volume,
+            eq_db: settings.eq_db,
+            eq_kill: [[false; 3]; 2],
+            eq_sent: [[f32::NAN; 3]; 2],
+            bass_swap: settings.bass_swap,
             meters: Default::default(),
             preview: None,
             next_token: 1,
@@ -222,6 +232,8 @@ impl FadeWerkDjApp {
                 app.load_index(0, 0, true, false);
                 app.load_index(1, 0, false, false);
             }
+            // FW_SELECT=1: im Browser den 2. bis 4. Titel auswählen, um die Auswahl zu prüfen
+            app.browser.demo_select = std::env::var_os("FW_SELECT").is_some();
             // FW_PREVIEW=1: den zweiten Titel vorhören, um die Vorhör-Anzeige zu prüfen
             if std::env::var_os("FW_PREVIEW").is_some()
                 && let Some(t) = tracks.get(1)
@@ -247,6 +259,33 @@ impl FadeWerkDjApp {
             self.ctl.send(Command::SetPfl { deck: d, on: v.pfl });
             self.ctl.send(Command::SetPitch { deck: d, pitch: v.pitch_pct / 100.0 });
             self.ctl.send(Command::SetRepeatTrack { deck: d, on: v.repeat == Repeat::Track });
+        }
+        self.eq_sent = [[f32::NAN; 3]; 2];
+        self.push_eq();
+    }
+
+    /// Schickt geänderte EQ-Werte an die Engine. Mit Bass-Swap sind während einer Überblendung erst
+    /// die Bässe des neuen Titels aus, ab der Mitte die des alten.
+    fn push_eq(&mut self) {
+        let mut swap = [1.0f32; 2];
+        if self.bass_swap
+            && let Some(f) = self.autofade.fade()
+        {
+            let late = f.progress() >= 0.5;
+            swap[f.to] = if late { 1.0 } else { 0.0 };
+            swap[f.from] = if late { 0.0 } else { 1.0 };
+        }
+        for (d, swap) in swap.into_iter().enumerate() {
+            for band in 0..3 {
+                let mut gain = if self.eq_kill[d][band] { 0.0 } else { db_to_gain(self.eq_db[d][band]) };
+                if band == eq::LOW {
+                    gain *= swap;
+                }
+                if gain != self.eq_sent[d][band] {
+                    self.eq_sent[d][band] = gain;
+                    self.ctl.send(Command::SetEq { deck: d, band, gain });
+                }
+            }
         }
     }
 
@@ -389,6 +428,8 @@ impl FadeWerkDjApp {
         s.master_volume = self.master_volume;
         s.head_volume = self.head_volume;
         s.head_mix = self.head_mix;
+        s.eq_db = self.eq_db;
+        s.bass_swap = self.bass_swap;
         if s != self.settings {
             self.settings = s;
             self.save_due = Some(now + 1.0);
@@ -751,6 +792,8 @@ impl FadeWerkDjApp {
                 self.master_volume = v;
                 self.ctl.send(Command::SetMasterVolume(v));
             }
+            MixerAction::Eq { deck, band, db } => self.eq_db[deck][band] = db,
+            MixerAction::EqKill { deck, band, on } => self.eq_kill[deck][band] = on,
         }
     }
 
@@ -772,6 +815,7 @@ impl FadeWerkDjApp {
                 self.motor = m;
                 self.ctl.send(Command::SetMotor(m));
             }
+            FadeAction::BassSwap(on) => self.bass_swap = on,
         }
     }
 
@@ -788,8 +832,7 @@ impl FadeWerkDjApp {
                 self.playlists[d].remove(i);
             }
             PlaylistAction::Shuffle => {
-                let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |t| t.as_nanos() as u64);
-                self.playlists[d].shuffle_upcoming(seed);
+                self.playlists[d].shuffle_upcoming(shuffle_seed());
             }
             PlaylistAction::Clear => {
                 let keep = self.has_track(d) && self.ctl.shared.decks[d].is_playing();
@@ -857,6 +900,45 @@ impl FadeWerkDjApp {
                 self.fill_if_empty(list, first);
                 self.notify(trf("{} Titel in Playlist {}", &[&n, &theme::deck_letter(list)]), now);
             }
+            BrowserAction::AddShuffled { list, mut paths } => {
+                shuffle(&mut paths);
+                self.browser_action(BrowserAction::Add { list, paths }, now);
+            }
+            BrowserAction::AddNext { list, paths } => {
+                let n = paths.len();
+                let pl = &mut self.playlists[list];
+                let at = pl.current.map_or(0, |c| c + 1).min(pl.entries.len());
+                pl.insert(at, paths);
+                self.fill_if_empty(list, at);
+                self.notify(trf("{} Titel als Nächstes in Playlist {}", &[&n, &theme::deck_letter(list)]), now);
+            }
+            BrowserAction::Distribute(paths) => {
+                // Mit dem Player beginnen, der als Nächstes einblendet: Spielt A, ist B dran
+                let st = &self.ctl.shared.decks;
+                let start = usize::from(st[0].is_playing() && !st[1].is_playing());
+                let n = paths.len();
+                let mut split: [Vec<PathBuf>; 2] = Default::default();
+                for (k, p) in paths.into_iter().enumerate() {
+                    split[(start + k) % 2].push(p);
+                }
+                for (list, paths) in split.into_iter().enumerate() {
+                    let first = self.playlists[list].entries.len();
+                    self.playlists[list].push(paths);
+                    self.fill_if_empty(list, first);
+                }
+                self.notify(trf("{} Titel auf Playlist A und B verteilt", &[&n]), now);
+            }
+            BrowserAction::LoadDeck { deck, path } => self.drop_on_deck(deck, DragItem::Files(vec![path]), now),
+            BrowserAction::Reveal(path) => {
+                if let Err(e) = reveal(&path) {
+                    log::warn!("Anzeigen im Dateimanager: {e}");
+                    self.notify(trf("Lässt sich nicht anzeigen: {}", &[&e]), now);
+                }
+            }
+            BrowserAction::TreeWidth(w) => {
+                self.settings.tree_width = w;
+                self.save_settings();
+            }
             BrowserAction::Preview(path) => {
                 let token = self.token();
                 self.preview = Some(PreviewView { path: path.clone(), token, ended_seen: 0 });
@@ -918,6 +1000,7 @@ impl eframe::App for FadeWerkDjApp {
         self.poll_library(now);
         self.handle_track_ends();
         self.step_autofade(dt);
+        self.push_eq();
         let levels = self.ctl.shared.take_levels();
         for (m, l) in self.meters.iter_mut().zip(levels) {
             m.update(l, dt, now);
@@ -931,10 +1014,10 @@ impl eframe::App for FadeWerkDjApp {
         let mut deck_drops: Vec<(usize, DragItem)> = Vec::new();
 
         // Neu geöffneter Ordner: Titel samt Unterordnern im Hintergrund suchen
-        if let Some(dir) = self.browser.take_pending_scan() {
+        if let Some(dirs) = self.browser.take_pending_scan() {
             let token = self.token();
             self.browser.begin_scan(token);
-            self.lib.scan(token, dir);
+            self.lib.scan(token, dirs);
         }
 
         // Ordnerbrowser unten
@@ -945,6 +1028,7 @@ impl eframe::App for FadeWerkDjApp {
             preview: self.preview.as_ref().map(|p| p.path.as_path()),
             preview_pos: preview_st.position_secs(),
             preview_dur: preview_st.duration_secs(),
+            deck_playing: [self.ctl.shared.decks[0].is_playing(), self.ctl.shared.decks[1].is_playing()],
         };
         // Höhe merken; ohne gespeicherten Wert 240 pt, auf hohen Monitoren mehr (bei 1400 pt Höhe etwa 450)
         let browser_h = if self.settings.browser_height > 0.0 {
@@ -1011,6 +1095,8 @@ impl eframe::App for FadeWerkDjApp {
             master_volume: self.master_volume,
             audio_ok: self.audio_error.is_none(),
             head_device: self.head_audio.is_some(),
+            eq_db: self.eq_db,
+            eq_kill: self.eq_kill,
         };
         let status = self.fade_status();
         let fade_model = FadeModel {
@@ -1020,6 +1106,7 @@ impl eframe::App for FadeWerkDjApp {
             crossfader: self.crossfader,
             status: &status,
             motor: self.motor,
+            bass_swap: self.bass_swap,
         };
         let playlists = &self.playlists;
         let metas = &self.metas;
@@ -1147,6 +1234,33 @@ impl eframe::App for FadeWerkDjApp {
         // DJ-Software: Teller, Wellenform und Pegel laufen ständig
         ctx.request_repaint();
     }
+}
+
+fn shuffle_seed() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |t| t.as_nanos() as u64)
+}
+
+fn shuffle(paths: &mut Vec<PathBuf>) {
+    let mut pl = Playlist { entries: std::mem::take(paths), current: None };
+    pl.shuffle_upcoming(shuffle_seed());
+    *paths = pl.entries;
+}
+
+/// Zeigt eine Datei oder einen Ordner im Dateimanager des Systems.
+fn reveal(path: &Path) -> std::io::Result<()> {
+    use std::process::Command as Cmd;
+    if cfg!(target_os = "macos") {
+        Cmd::new("open").arg("-R").arg(path).spawn()?;
+    } else if cfg!(windows) {
+        let mut arg = std::ffi::OsString::from("/select,");
+        arg.push(path);
+        Cmd::new("explorer").arg(arg).spawn()?;
+    } else {
+        // Ohne einheitliches „Datei markieren“ unter Linux: den Ordner öffnen
+        let dir = if path.is_dir() { path } else { path.parent().unwrap_or(path) };
+        Cmd::new("xdg-open").arg(dir).spawn()?;
+    }
+    Ok(())
 }
 
 fn curve_from(i: u8, points: [f32; 4]) -> Curve {
