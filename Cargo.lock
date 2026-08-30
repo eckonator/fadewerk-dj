@@ -1478,6 +1478,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
+ "dirs",
  "fw-engine",
  "lofty",
  "log",

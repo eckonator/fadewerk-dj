@@ -146,6 +146,19 @@ mod tests {
     }
 
     #[test]
+    fn play_next_moves_behind_current() {
+        // Titel 4 hinter den laufenden Titel 1: 0 1 4 2 3, der laufende bleibt markiert
+        let mut p = pl(5, Some(1));
+        p.move_entry(4, 2);
+        assert_eq!(names(&p), "01423");
+        assert_eq!(p.current, Some(1));
+        // Ein schon gespielter Titel (0) wandert ebenfalls hinter den laufenden
+        p.move_entry(0, 2);
+        assert_eq!(names(&p), "10423");
+        assert_eq!(p.current, Some(0));
+    }
+
+    #[test]
     fn moving_down_and_up_keeps_current_track() {
         let mut p = pl(5, Some(2));
         p.move_entry(0, 5); // 0 ans Ende

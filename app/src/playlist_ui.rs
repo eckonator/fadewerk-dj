@@ -24,6 +24,8 @@ pub enum PlaylistAction {
     Preview(PathBuf),
     StopPreview,
     EditTags(PathBuf),
+    /// Titel direkt hinter den geladenen verschieben.
+    PlayNext(usize),
 }
 
 const ROW_H: f32 = 48.0;
@@ -34,6 +36,8 @@ pub fn show(
     list: usize,
     pl: &Playlist,
     deck_has_track: bool,
+    // Spielt der Player dieser Playlist gerade? Dann lässt er sich nicht neu laden.
+    deck_playing: bool,
     preview: Option<&Path>,
     metas: &HashMap<PathBuf, TrackMeta>,
     bpms: &HashMap<PathBuf, f32>,
@@ -118,6 +122,18 @@ pub fn show(
                 out.push(PlaylistAction::Load(i));
             }
             resp.context_menu(|ui| {
+                let load = ui.add_enabled(!deck_playing, egui::Button::new(trf("In Player {} laden", &[&theme::deck_letter(list)])));
+                if load.on_disabled_hover_text(tr("Spielt gerade. Erst stoppen.")).clicked() {
+                    out.push(PlaylistAction::Load(i));
+                    ui.close();
+                }
+                // Schon geladen oder ohnehin als Nächstes dran: nichts zu verschieben
+                let movable = pl.current != Some(i) && i != next;
+                if ui.add_enabled(movable, egui::Button::new(tr("Als Nächstes spielen"))).clicked() {
+                    out.push(PlaylistAction::PlayNext(i));
+                    ui.close();
+                }
+                ui.separator();
                 if ui.button(tr("Titelinfo & Tags …")).clicked() {
                     out.push(PlaylistAction::EditTags(path.clone()));
                     ui.close();

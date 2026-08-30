@@ -13,3 +13,4 @@ log.workspace = true
 crossbeam-channel.workspace = true
 symphonia = { version = "0.6", features = ["all"] }
 lofty = "0.25"
+dirs = "7"

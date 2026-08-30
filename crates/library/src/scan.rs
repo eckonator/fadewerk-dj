@@ -43,6 +43,34 @@ pub fn list_dir(path: &Path) -> std::io::Result<DirListing> {
     Ok(out)
 }
 
+/// Ordner, in denen keine Musik liegt und die eine Suche über ganze Laufwerke nicht betreten soll:
+/// System, Programme, Papierkorb, Entwickler-Ordner. Gilt nur für Unterordner beim Durchsuchen;
+/// wählt der Nutzer so einen Ordner selbst aus, wird er trotzdem gezeigt.
+pub fn is_system_dir(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else { return false };
+    let lower = name.to_lowercase();
+    // Überall: Papierkorb, Programmdaten, Entwickler-Ordner
+    if matches!(lower.as_str(), "$recycle.bin" | "system volume information" | "appdata" | "node_modules" | "__pycache__") {
+        return true;
+    }
+    let parent = path.parent();
+    // Direkt unter einem Laufwerk (`/`, `C:\`)
+    let at_drive_root = parent.is_some_and(|p| p.parent().is_none());
+    if at_drive_root
+        && matches!(
+            lower.as_str(),
+            "system" | "library" | "applications" | "private" | "cores" | "volumes" | "windows" | "program files"
+                | "program files (x86)" | "programdata" | "recovery" | "perflogs" | "proc" | "sys" | "dev" | "usr"
+                | "bin" | "sbin" | "etc" | "var" | "boot" | "lib" | "lib64" | "opt" | "run" | "snap" | "tmp" | "srv"
+        )
+    {
+        return true;
+    }
+    // Direkt im Benutzerordner: macOS-Bibliothek und Programme
+    let in_home = parent.is_some_and(|p| dirs::home_dir().is_some_and(|h| h == p));
+    in_home && matches!(lower.as_str(), "library" | "applications")
+}
+
 /// Sucht Audiodateien in `root` und allen Unterordnern, Ordner für Ordner in sortierter Reihenfolge
 /// (erst die Titel eines Ordners, dann seine Unterordner). `emit` bekommt die Titel je Ordner,
 /// `keep_going` erlaubt den Abbruch zwischen zwei Ordnern. Verknüpfte Ordner werden nur einmal besucht.
@@ -64,7 +92,7 @@ pub fn walk_audio(root: &Path, mut keep_going: impl FnMut() -> bool, mut emit: i
         }
         if depth < MAX_DEPTH {
             // Rückwärts auf den Stapel, damit der alphabetisch erste Unterordner zuerst dran ist
-            stack.extend(listing.dirs.into_iter().rev().map(|d| (d, depth + 1)));
+            stack.extend(listing.dirs.into_iter().filter(|d| !is_system_dir(d)).rev().map(|d| (d, depth + 1)));
         }
     }
 }
@@ -96,6 +124,22 @@ mod tests {
         assert_eq!(names(&l.dirs), ["a Album", "B Album"]);
         assert_eq!(names(&l.tracks), ["01 a.flac", "02 b.mp3"]);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn skips_system_folders() {
+        let root = if cfg!(windows) { Path::new("C:\\") } else { Path::new("/") };
+        assert!(is_system_dir(&root.join(if cfg!(windows) { "Windows" } else { "System" })));
+        assert!(is_system_dir(&root.join("Program Files")));
+        assert!(is_system_dir(Path::new("/x/y/node_modules")));
+        assert!(is_system_dir(&root.join("Users").join("dj").join("AppData")));
+        // Gleiche Namen tiefer in der Musiksammlung sind erlaubt
+        assert!(!is_system_dir(&root.join("Musik").join("System")));
+        assert!(!is_system_dir(&root.join("Musik").join("Library")));
+        if let Some(home) = dirs::home_dir() {
+            assert!(is_system_dir(&home.join("Library")));
+            assert!(!is_system_dir(&home.join("Music")));
+        }
     }
 
     #[test]

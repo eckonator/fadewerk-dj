@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui::{self, Button, CursorIcon, Key, RichText, Sense, vec2};
 use egui_extras::{Column, TableBuilder};
-use fw_library::{SCAN_LIMIT, TrackMeta, list_dir};
+use fw_library::{SCAN_LIMIT, TrackMeta, is_system_dir, list_dir};
 
 use crate::deck_ui::fmt_time;
 use crate::playlist::DragItem;
@@ -31,6 +31,10 @@ pub enum BrowserAction {
     EditTags(PathBuf),
     /// Der Nutzer hat die Breite des Ordnerbaums geändert.
     TreeWidth(f32),
+    /// Laufende Suche abbrechen.
+    StopScan,
+    /// Gemerkte Einstellungen „Mit Unterordnern“ je Ordner (nur Abweichungen vom Standard).
+    FolderRecursion(Vec<(PathBuf, bool)>),
     Preview(PathBuf),
     StopPreview,
     PreviewSeek(f64),
@@ -100,18 +104,22 @@ pub struct Browser {
     scanning: bool,
     limited: bool,
     scan_token: u64,
-    pending_scan: Option<Vec<PathBuf>>,
+    pending_scan: Option<Vec<(PathBuf, bool)>>,
     error: Option<String>,
     filter: String,
     /// Für diesen Suchtext wurden die Tags aller Titel schon angefordert.
     meta_requested_for: String,
     subdirs: HashMap<PathBuf, Vec<PathBuf>>,
+    /// „Mit Unterordnern“ je Ordner, nur wo der Nutzer vom Standard abweicht (siehe [`default_recursive`]).
+    recursion: HashMap<PathBuf, bool>,
+    /// Der Nutzer hat die Suche angehalten.
+    stopped: bool,
 }
 
 impl Browser {
     /// `user_roots` sind gespeicherte, vom Nutzer hinzugefügte Ordner, `tree_width` die gespeicherte
     /// Breite des Ordnerbaums (0 = Standard).
-    pub fn new(start_dir: Option<PathBuf>, user_roots: &[PathBuf], tree_width: f32) -> Self {
+    pub fn new(start_dir: Option<PathBuf>, user_roots: &[PathBuf], tree_width: f32, recursion: &[(PathBuf, bool)]) -> Self {
         let mut roots = Vec::new();
         let fixed = |label, path| Root { label: Some(label), path, user: false };
         if let Some(m) = dirs::audio_dir() {
@@ -144,6 +152,8 @@ impl Browser {
             filter: String::new(),
             meta_requested_for: String::new(),
             subdirs: HashMap::new(),
+            recursion: recursion.iter().cloned().collect(),
+            stopped: false,
         };
         match start_dir {
             Some(dir) => {
@@ -221,14 +231,40 @@ impl Browser {
                 }
             }
         }
-        // Liegt ein ausgewählter Ordner in einem anderen ausgewählten, wird er nicht doppelt durchsucht
-        let roots: Vec<PathBuf> = readable.iter().filter(|p| !readable.iter().any(|q| q != *p && p.starts_with(q))).cloned().collect();
+        self.stopped = false;
+        // Liegt ein ausgewählter Ordner in einem anderen, der mit Unterordnern durchsucht wird,
+        // wird er nicht doppelt gesucht
+        let roots: Vec<(PathBuf, bool)> = readable
+            .iter()
+            .filter(|p| !readable.iter().any(|q| q != *p && p.starts_with(q) && self.recursive(q)))
+            .map(|p| (p.clone(), self.recursive(p)))
+            .collect();
         self.scanning = !roots.is_empty();
         self.pending_scan = (!roots.is_empty()).then_some(roots);
     }
 
-    /// Ordner, für die eine Suche gestartet werden soll.
-    pub fn take_pending_scan(&mut self) -> Option<Vec<PathBuf>> {
+    /// Wird dieser Ordner mit Unterordnern durchsucht?
+    fn recursive(&self, path: &Path) -> bool {
+        self.recursion.get(path).copied().unwrap_or_else(|| default_recursive(path))
+    }
+
+    /// Schalter „Mit Unterordnern“ für alle ausgewählten Ordner.
+    fn set_recursive(&mut self, on: bool, out: &mut Vec<BrowserAction>) {
+        for p in self.selected.clone() {
+            if on == default_recursive(&p) {
+                self.recursion.remove(&p);
+            } else {
+                self.recursion.insert(p, on);
+            }
+        }
+        let mut list: Vec<(PathBuf, bool)> = self.recursion.iter().map(|(p, r)| (p.clone(), *r)).collect();
+        list.sort();
+        out.push(BrowserAction::FolderRecursion(list));
+        self.rescan();
+    }
+
+    /// Ordner, für die eine Suche gestartet werden soll, je mit „Unterordner ja/nein“.
+    pub fn take_pending_scan(&mut self) -> Option<Vec<(PathBuf, bool)>> {
         self.pending_scan.take()
     }
 
@@ -305,7 +341,7 @@ impl Browser {
                 if ui.button(tr("Ordner hinzufügen …")).clicked() {
                     out.push(BrowserAction::AddRoot);
                 }
-                ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(tr("Suchen (mit Unterordnern)")).desired_width(200.0));
+                ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(tr("Suchen")).desired_width(200.0));
                 ui.label(RichText::new(tr("⏺ Live gelesen, keine Datenbank")).size(12.0).color(theme::play()));
                 if !self.selected.is_empty() {
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -512,9 +548,22 @@ impl Browser {
             if !sel_rows.is_empty() {
                 ui.label(RichText::new(trf("· {} ausgewählt", &[&sel_rows.len()])).font(fonts::list(12.5)).color(theme::ink()));
             }
+            let all_recursive = dirs.iter().all(|d| self.recursive(d));
+            let mut rec = all_recursive;
+            let tip = tr("Auch alle Unterordner durchsuchen. Bei Laufwerken und dem Benutzerordner ist das anfangs aus, damit nicht die ganze Platte durchsucht wird. Systemordner werden immer ausgelassen.");
+            if ui.checkbox(&mut rec, tr("Mit Unterordnern")).on_hover_text(tip).changed() {
+                self.set_recursive(rec, out);
+            }
             if self.scanning {
                 ui.add(egui::Spinner::new().size(14.0));
                 ui.label(RichText::new(tr("Durchsucht Unterordner …")).size(12.0).color(theme::dim()));
+                if ui.small_button(tr("Stopp")).on_hover_text(tr("Suche anhalten, gefundene Titel bleiben")).clicked() {
+                    self.scanning = false;
+                    self.stopped = true;
+                    out.push(BrowserAction::StopScan);
+                }
+            } else if self.stopped {
+                ui.label(RichText::new(tr("Suche angehalten")).size(12.0).color(theme::yellow()));
             } else if self.limited {
                 ui.label(RichText::new(trf("Nur die ersten {} Titel. Für mehr einen Unterordner wählen.", &[&SCAN_LIMIT])).size(12.0).color(theme::yellow()));
             }
@@ -538,7 +587,13 @@ impl Browser {
 
         if self.tracks.is_empty() {
             ui.add_space(20.0);
-            let text = if self.scanning { tr("Suche läuft …") } else { tr("Keine Audiodateien in diesem Ordner und seinen Unterordnern.") };
+            let text = if self.scanning {
+                tr("Suche läuft …")
+            } else if !dirs.iter().all(|d| self.recursive(d)) {
+                tr("Keine Audiodateien direkt in diesem Ordner. „Mit Unterordnern“ durchsucht auch die Ordner darin.")
+            } else {
+                tr("Keine Audiodateien in diesem Ordner und seinen Unterordnern.")
+            };
             ui.vertical_centered(|ui| ui.label(RichText::new(text).color(theme::faint())));
             return;
         }
@@ -766,6 +821,22 @@ fn track_menu(ui: &mut egui::Ui, paths: &[PathBuf], ctx: &BrowserCtx<'_>, out: &
     }
 }
 
+/// Standard für „Mit Unterordnern“: an für normale Ordner, aus für Laufwerke, den Benutzerordner,
+/// den Laufwerks-Sammelordner und Systemordner. Dort würde eine Suche sonst die ganze Platte lesen.
+pub fn default_recursive(path: &Path) -> bool {
+    // Wurzel eines Laufwerks: `/`, `C:\`
+    if path.parent().is_none() {
+        return false;
+    }
+    if dirs::home_dir().is_some_and(|h| h == path) || is_system_dir(path) {
+        return false;
+    }
+    // Eingehängte Laufwerke und ihr Sammelordner: /Volumes, /Volumes/X, /media, /media/user/X, /mnt/X
+    let parts: Vec<_> = path.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+    let mount = |base: &str, depth: usize| parts.get(1).is_some_and(|p| p == base) && parts.len() <= depth;
+    !(mount("Volumes", 3) || mount("media", 4) || mount("mnt", 3) || (mount("run", 5) && parts.get(2).is_some_and(|p| p == "media")))
+}
+
 pub fn reveal_label() -> &'static str {
     if cfg!(target_os = "macos") {
         tr("Im Finder zeigen")
@@ -823,4 +894,27 @@ fn preview_bar(ui: &mut egui::Ui, rect: egui::Rect, path: &Path, ctx: &BrowserCt
             });
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subfolders_off_for_drives_and_home() {
+        let root = if cfg!(windows) { PathBuf::from("C:\\") } else { PathBuf::from("/") };
+        assert!(!default_recursive(&root));
+        if let Some(home) = dirs::home_dir() {
+            assert!(!default_recursive(&home));
+            assert!(default_recursive(&home.join("Music")));
+            assert!(!default_recursive(&home.join("Library")));
+        }
+        if !cfg!(windows) {
+            assert!(!default_recursive(Path::new("/Volumes")));
+            assert!(!default_recursive(Path::new("/Volumes/USB-Stick")));
+            assert!(default_recursive(Path::new("/Volumes/USB-Stick/Musik")));
+            assert!(!default_recursive(Path::new("/media/dj/STICK")));
+            assert!(default_recursive(Path::new("/media/dj/STICK/Musik")));
+        }
+    }
 }

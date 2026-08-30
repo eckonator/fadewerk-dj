@@ -10,6 +10,6 @@ pub mod waveform;
 pub mod worker;
 
 pub use meta::{FileInfo, TagFields, TrackMeta, read_tags, write_tags};
-pub use scan::{list_dir, walk_audio, DirListing};
+pub use scan::{DirListing, is_system_dir, list_dir, walk_audio};
 pub use waveform::Waveform;
 pub use worker::{Library, Loaded, Response, SCAN_LIMIT};
