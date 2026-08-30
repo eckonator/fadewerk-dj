@@ -31,6 +31,8 @@ pub enum SettingsAction {
     Language(Lang),
     Skin(SkinId),
     Brushed(bool),
+    OpenGl(bool),
+    RevealLog,
 }
 
 pub struct SettingsCtx<'a> {
@@ -107,7 +109,7 @@ impl SettingsUi {
                     Tab::Audio => self.audio_tab(ui, c, out),
                     Tab::Language => language_tab(ui, c, out),
                     Tab::Look => look_tab(ui, c, out),
-                    Tab::About => self.about_tab(ui),
+                    Tab::About => self.about_tab(ui, out),
                 }
                 if self.tab != Tab::About {
                     ui.add_space(10.0);
@@ -118,7 +120,7 @@ impl SettingsUi {
     }
 
     /// Copyright, Lizenz und Fremdbestandteile („Appropriate Legal Notices“ nach GPL-3.0 Abschnitt 0).
-    fn about_tab(&mut self, ui: &mut egui::Ui) {
+    fn about_tab(&mut self, ui: &mut egui::Ui, out: &mut Vec<SettingsAction>) {
         ui.horizontal(|ui| {
             ui.label(RichText::new("FadeWerk DJ").font(crate::fonts::bold(22.0)));
             ui.label(RichText::new(trf("Version {}", &[&env!("CARGO_PKG_VERSION")])).color(theme::dim()));
@@ -135,6 +137,15 @@ impl SettingsUi {
             ui.label(tr("Quellcode:"));
             ui.hyperlink(env!("CARGO_PKG_REPOSITORY"));
         });
+        if let Some(log) = crate::diagnose::log_path() {
+            ui.horizontal(|ui| {
+                ui.label(tr("Logdatei:"));
+                if ui.small_button(crate::browser::reveal_label()).clicked() {
+                    out.push(SettingsAction::RevealLog);
+                }
+            });
+            ui.add(egui::Label::new(RichText::new(log.display().to_string()).size(11.5).color(theme::dim())).wrap());
+        }
 
         ui.add_space(10.0);
         ui.label(RichText::new(tr("Verwendete Fremdbestandteile")).strong());
@@ -293,4 +304,14 @@ fn look_tab(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction
         out.push(SettingsAction::Brushed(brushed));
     }
     ui.label(RichText::new(tr("Gehäuseflächen wirken wie gebürstetes Metall in den Farben des Skins.")).size(11.5).color(theme::dim()));
+    ui.add_space(10.0);
+    let mut opengl = c.settings.opengl;
+    if ui.checkbox(&mut opengl, RichText::new(tr("Grafik über OpenGL")).size(14.0)).changed() {
+        out.push(SettingsAction::OpenGl(opengl));
+    }
+    ui.label(
+        RichText::new(tr("Für Rechner, auf denen das Fenster nicht zuverlässig startet (etwa virtuelle Maschinen). Wirkt nach einem Neustart."))
+            .size(11.5)
+            .color(theme::dim()),
+    );
 }

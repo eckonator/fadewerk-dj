@@ -59,6 +59,8 @@ pub struct Settings {
     pub folders: Vec<PathBuf>,
     /// Fenster beim Start im Vollbild öffnen (zuletzt so verlassen).
     pub fullscreen: bool,
+    /// Grafik über OpenGL statt wgpu (für Rechner, auf denen wgpu nicht zuverlässig startet).
+    pub opengl: bool,
 }
 
 impl Default for Settings {
@@ -86,6 +88,7 @@ impl Default for Settings {
             bass_swap: false,
             folders: Vec::new(),
             fullscreen: false,
+            opengl: false,
         }
     }
 }
@@ -115,7 +118,7 @@ const OLD_DIRS: [&str; 2] = ["FadeWerk", "Zweiklang"];
 /// Das Programm hieß früher „Zweiklang“ und kurz „FadeWerk“. Gibt es den neuen Ordner noch nicht,
 /// werden Einstellungen und Playlists aus dem neuesten alten Ordner einmalig übernommen
 /// (kopiert, der alte Ordner bleibt).
-fn migrate_old_dir() {
+pub fn migrate_old_dir() {
     let (Some(base), Some(new)) = (dirs::config_dir(), config_dir()) else { return };
     let Some(old) = OLD_DIRS.iter().map(|n| base.join(n)).find(|d| d.is_dir()) else { return };
     if new.exists() {
