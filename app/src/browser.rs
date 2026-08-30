@@ -42,6 +42,7 @@ pub enum BrowserAction {
     AddRoot,
     RemoveRoot(PathBuf),
     OpenSettings,
+    ToggleFullscreen,
 }
 
 pub struct BrowserCtx<'a> {
@@ -52,6 +53,8 @@ pub struct BrowserCtx<'a> {
     pub preview_dur: f64,
     /// Spielt Player A bzw. B gerade? Dann lässt er sich nicht neu laden.
     pub deck_playing: [bool; 2],
+    /// Läuft das Fenster im Vollbild?
+    pub fullscreen: bool,
 }
 
 /// Was ein Ordner-Kontextmenü mit allen Titeln der ausgewählten Ordner macht. Läuft die Suche
@@ -333,6 +336,9 @@ impl Browser {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button(RichText::new("⚙").size(15.0)).on_hover_text(tr("Einstellungen (⌘,)")).clicked() {
                     out.push(BrowserAction::OpenSettings);
+                }
+                if fullscreen_button(ui, ctx.fullscreen).clicked() {
+                    out.push(BrowserAction::ToggleFullscreen);
                 }
                 let tip = if cfg!(target_os = "macos") { tr("Ordner neu einlesen (⌘R)") } else { tr("Ordner neu einlesen (F5)") };
                 if ui.button(RichText::new("🔄").size(14.0)).on_hover_text(tip).clicked() {
@@ -917,4 +923,31 @@ mod tests {
             assert!(default_recursive(Path::new("/media/dj/STICK/Musik")));
         }
     }
+}
+
+/// Taste für das Vollbild: vier Ecken, die nach außen (Vollbild an) oder innen (Vollbild aus) zeigen.
+/// Selbst gezeichnet, weil die Schriften kein passendes Zeichen haben.
+fn fullscreen_button(ui: &mut egui::Ui, fullscreen: bool) -> egui::Response {
+    let tip = match (fullscreen, cfg!(target_os = "macos")) {
+        (false, true) => tr("Vollbild (⌃⌘F)"),
+        (false, false) => tr("Vollbild (F11)"),
+        (true, true) => tr("Vollbild beenden (⌃⌘F)"),
+        (true, false) => tr("Vollbild beenden (F11)"),
+    };
+    let h = ui.spacing().interact_size.y;
+    let resp = ui.add(egui::Button::new("").min_size(egui::vec2(h + 4.0, h))).on_hover_text(tip);
+    let color = ui.style().interact(&resp).fg_stroke.color;
+    let stroke = egui::Stroke::new(1.6, color);
+    let c = resp.rect.center();
+    let (r, l) = (5.5, 3.5);
+    for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+        let corner = c + egui::vec2(sx * r, sy * r);
+        // Vollbild an: Ecken zeigen nach außen; aus: der Winkel sitzt innen und zeigt zur Mitte
+        let (dx, dy) = if fullscreen { (sx * l, sy * l) } else { (-sx * l, -sy * l) };
+        let vertex = if fullscreen { corner - egui::vec2(sx * l, sy * l) } else { corner };
+        let p = ui.painter();
+        p.line_segment([vertex, vertex + egui::vec2(dx, 0.0)], stroke);
+        p.line_segment([vertex, vertex + egui::vec2(0.0, dy)], stroke);
+    }
+    resp
 }

@@ -57,6 +57,8 @@ pub struct Settings {
     pub bass_swap: bool,
     /// Vom Nutzer hinzugefügte Musikordner.
     pub folders: Vec<PathBuf>,
+    /// Fenster beim Start im Vollbild öffnen (zuletzt so verlassen).
+    pub fullscreen: bool,
 }
 
 impl Default for Settings {
@@ -83,6 +85,7 @@ impl Default for Settings {
             eq_db: [[0.0; 3]; 2],
             bass_swap: false,
             folders: Vec::new(),
+            fullscreen: false,
         }
     }
 }

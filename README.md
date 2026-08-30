@@ -38,7 +38,8 @@ written in Rust. Click a folder and start playing: no database, no library impor
 - **Playlists**: fill and reorder by drag & drop, also between A and B; drop tracks straight onto
   a deck. Playlists and settings are kept when you quit.
 - **Skins** Night, Classic, Day and Neon, optionally with a brushed steel look.
-  The layout adapts to the window size, including 4K monitors.
+  The layout adapts to the window size, including 4K monitors. **Full screen** via the button
+  in the folder browser, F11 or ⌃⌘F on macOS.
 - User interface in **English and German**.
 
 ## Download
