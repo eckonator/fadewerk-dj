@@ -70,8 +70,9 @@ scripts/make-icon.sh                    # regenerates the icons from assets/icon
 scripts/make-demo-tracks.py ~/Demo      # generates royalty-free demo tracks
 ```
 
-GitHub Actions builds a release for all three systems (`.github/workflows/release.yml`)
-as soon as a version tag is pushed: `git tag v0.1.0 && git push origin v0.1.0`.
+GitHub Actions builds all three systems on every push to `main` (`.github/workflows/release.yml`)
+and publishes them as release `v<version>`, with the version taken from `Cargo.toml`.
+A push without a version change replaces that release; raise `version` for a new one.
 
 ## Architecture
 
