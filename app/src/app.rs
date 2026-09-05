@@ -1044,6 +1044,10 @@ fn panel_frame(ui: &egui::Ui) -> Frame {
 impl eframe::App for FadeWerkDjApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // Die ersten Bilder sind gezeichnet: Der Grafikstart hat geklappt
+        if ctx.cumulative_frame_nr() >= 2 {
+            crate::diagnose::graphics_running();
+        }
         let now = ctx.input(|i| i.time);
         let dt = (now - self.last_time).clamp(0.0, 0.1) as f32;
         self.last_time = now;
