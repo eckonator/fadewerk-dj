@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" viewBox="0 0 640 480">
+  <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+  <!-- Hintergrund des macOS-Installationsfensters (DMG). Mittlerer Stahlton, damit die Finder-Beschriftungen
+       der Symbole im hellen (schwarz) und dunklen Modus (weiß) lesbar bleiben. Alles Wichtige steht in den oberen
+       400 pt: neuere Finder zeigen Tab- und Pfadleiste und verdecken damit ein Stück. Rendern: scripts/make-dmg-background.sh -->
+  <defs>
+    <style>
+      @font-face { font-family: "Chakra Petch"; font-weight: 500; src: url("fonts/ChakraPetch-Medium.ttf"); }
+      @font-face { font-family: "Chakra Petch"; font-weight: 600; src: url("fonts/ChakraPetch-SemiBold.ttf"); }
+      text { font-family: "Chakra Petch", sans-serif; }
+    </style>
+    <linearGradient id="steel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#aab3be"/>
+      <stop offset="1" stop-color="#8a94a1"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#fff" stop-opacity="0"/>
+      <stop offset="0.35" stop-color="#fff" stop-opacity="0.16"/>
+      <stop offset="0.5" stop-color="#fff" stop-opacity="0"/>
+      <stop offset="0.72" stop-color="#fff" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+    <pattern id="brush" width="640" height="6" patternUnits="userSpaceOnUse">
+      <rect y="0" width="640" height="1" fill="#fff" opacity="0.07"/>
+      <rect y="2" width="640" height="1" fill="#000" opacity="0.04"/>
+      <rect y="4" width="420" height="1" fill="#fff" opacity="0.05"/>
+      <rect x="300" y="5" width="340" height="1" fill="#000" opacity="0.05"/>
+    </pattern>
+    <linearGradient id="arrow" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#f2a33a"/>
+      <stop offset="1" stop-color="#58c4ee"/>
+    </linearGradient>
+    <filter id="drop" x="-20%" y="-50%" width="140%" height="200%">
+      <feDropShadow dx="0" dy="1.5" stdDeviation="1.2" flood-color="#000" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <rect width="640" height="480" fill="url(#steel)"/>
+  <rect width="640" height="480" fill="url(#brush)"/>
+  <rect width="640" height="480" fill="url(#sheen)"/>
+  <!-- Kante oben (Licht) und unten (Schatten) wie bei den Panels der App -->
+  <rect width="640" height="1.5" fill="#fff" opacity="0.45"/>
+  <rect y="478.5" width="640" height="1.5" fill="#000" opacity="0.25"/>
+
+  <!-- Kopfzeile -->
+  <text x="320" y="52" text-anchor="middle" font-size="26" font-weight="600" fill="#1b222d" letter-spacing="1">FadeWerk DJ</text>
+  <rect x="270" y="64" width="50" height="3" rx="1.5" fill="#f2a33a"/>
+  <rect x="320" y="64" width="50" height="3" rx="1.5" fill="#58c4ee"/>
+
+  <!-- Pfeil von der App (links) zu Programme (rechts) -->
+  <g filter="url(#drop)">
+    <rect x="248" y="183" width="122" height="14" rx="7" fill="url(#arrow)"/>
+    <path d="M366 168 L398 190 L366 212 Z" fill="#58c4ee" stroke="#58c4ee" stroke-width="4" stroke-linejoin="round"/>
+  </g>
+  <text x="320" y="238" text-anchor="middle" font-size="14" font-weight="600" fill="#1b222d" letter-spacing="0.5">DRAG TO APPLICATIONS</text>
+
+  <!-- Hinweis zum ersten Start (App ist nicht von Apple notarisiert) -->
+  <rect x="40" y="306" width="560" height="68" rx="8" fill="#1b222d" opacity="0.82"/>
+  <text x="320" y="331" text-anchor="middle" font-size="13" font-weight="600" fill="#f2a33a">macOS blocks the first launch?</text>
+  <text x="320" y="352" text-anchor="middle" font-size="12" font-weight="500" fill="#dfe5ee">System Settings → Privacy &amp; Security → scroll down → “Open Anyway”</text>
+  <text x="320" y="367" text-anchor="middle" font-size="11" font-weight="500" fill="#9aa6b6">or install with the one-line Terminal command from the README</text>
+</svg>
