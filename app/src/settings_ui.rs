@@ -32,6 +32,7 @@ pub enum SettingsAction {
     Skin(SkinId),
     Brushed(bool),
     OpenGl(bool),
+    Zoom(f32),
     RevealLog,
 }
 
@@ -304,6 +305,25 @@ fn look_tab(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction
         out.push(SettingsAction::Brushed(brushed));
     }
     ui.label(RichText::new(tr("Gehäuseflächen wirken wie gebürstetes Metall in den Farben des Skins.")).size(11.5).color(theme::dim()));
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(tr("Zoom")).size(14.0));
+        ui.add_space(6.0);
+        let z = c.settings.ui_zoom;
+        let font = egui::FontId::proportional(15.0);
+        if crate::hw::button(ui, vec2(32.0, 26.0), "−", font.clone(), crate::hw::Look::Plain, false, z > 0.71).clicked() {
+            out.push(SettingsAction::Zoom(z - 0.1));
+        }
+        ui.label(RichText::new(format!("{:.0} %", z * 100.0)).font(crate::fonts::lcd(15.0)).color(theme::ink()));
+        if crate::hw::button(ui, vec2(32.0, 26.0), "+", font.clone(), crate::hw::Look::Plain, false, z < 1.49).clicked() {
+            out.push(SettingsAction::Zoom(z + 0.1));
+        }
+        if crate::hw::button(ui, vec2(64.0, 26.0), "100 %", egui::FontId::proportional(13.0), crate::hw::Look::Plain, false, (z - 1.0).abs() > 0.01).clicked() {
+            out.push(SettingsAction::Zoom(1.0));
+        }
+    });
+    let tip = if cfg!(target_os = "macos") { tr("Ganze Oberfläche kleiner oder größer, auch mit ⌘ + und ⌘ − (⌘ 0 = 100 %).") } else { tr("Ganze Oberfläche kleiner oder größer, auch mit Strg + und Strg − (Strg 0 = 100 %).") };
+    ui.label(RichText::new(tip).size(11.5).color(theme::dim()));
     ui.add_space(10.0);
     let mut opengl = c.settings.opengl;
     if ui.checkbox(&mut opengl, RichText::new(tr("Grafik über OpenGL")).size(14.0)).changed() {

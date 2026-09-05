@@ -61,6 +61,10 @@ pub struct Settings {
     pub fullscreen: bool,
     /// Grafik über OpenGL statt wgpu (für Rechner, auf denen wgpu nicht zuverlässig startet).
     pub opengl: bool,
+    /// Zoom der ganzen Oberfläche (⌘/Strg + Plus/Minus), 1 = normal.
+    pub ui_zoom: f32,
+    /// Höhe der Player-Zeile in Punkten, vom Nutzer gezogen; 0 = automatisch.
+    pub deck_height: f32,
 }
 
 impl Default for Settings {
@@ -89,6 +93,8 @@ impl Default for Settings {
             folders: Vec::new(),
             fullscreen: false,
             opengl: false,
+            ui_zoom: 1.0,
+            deck_height: 0.0,
         }
     }
 }
