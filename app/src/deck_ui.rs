@@ -60,6 +60,8 @@ pub struct DeckModel<'a> {
     pub has_track: bool,
     pub loading: bool,
     pub waveform: Option<&'a Waveform>,
+    /// Cover aus den Tags; füllt dann fast die ganze Platte (Picture-Disc).
+    pub cover: Option<egui::TextureId>,
     pub pfl: bool,
     pub repeat: Repeat,
     pub loop_beats: Option<u32>,
@@ -329,9 +331,14 @@ fn paint_platter(ui: &egui::Ui, c: Pos2, r: f32, angle: f32, color: Color32, m: 
     for i in 0..72 {
         p.circle_filled(rot(i as f32 / 72.0 * TAU, r * 0.955), (r * 0.012).max(1.0), Color32::from_rgb(0xcf, 0xd6, 0xe4));
     }
-    // Vinyl mit Rillen
+    // Vinyl mit Rillen; mit Cover bleibt nur ein schmaler Rillenrand außen (Picture-Disc)
+    let cover = m.cover.filter(|_| m.has_track);
     p.circle_filled(c, r * 0.91, Color32::from_rgb(0x0b, 0x0b, 0x0e));
-    let mut rr = r * 0.36;
+    if let Some(tex) = cover {
+        paint_cover(p, c, r * COVER_RADIUS, angle, tex);
+        p.circle_stroke(c, r * COVER_RADIUS, Stroke::new((r * 0.008).max(1.0), Color32::from_black_alpha(200)));
+    }
+    let mut rr = if cover.is_some() { r * (COVER_RADIUS + 0.012) } else { r * 0.36 };
     let mut k = 0;
     while rr < r * 0.89 {
         p.circle_stroke(c, rr, Stroke::new(1.0, Color32::from_white_alpha(if k % 3 == 0 { 12 } else { 6 })));
@@ -346,9 +353,11 @@ fn paint_platter(ui: &egui::Ui, c: Pos2, r: f32, angle: f32, color: Color32, m: 
             .collect();
         p.add(egui::Shape::convex_polygon(pts, Color32::from_white_alpha(alpha), Stroke::NONE));
     }
-    // Label mit Titel, dreht mit
+    // Label mit Titel, dreht mit (entfällt, wenn das Cover die Platte füllt)
     let label_color = if m.has_track { color } else { theme::panel2() };
-    p.circle_filled(c, r * 0.33, label_color);
+    if cover.is_none() {
+        p.circle_filled(c, r * 0.33, label_color);
+    }
     let text_color = Color32::from_rgba_unmultiplied(10, 14, 22, 220);
     let label_text = |text: &str, size: f32, dy: f32| {
         let mut t: String = text.to_uppercase();
@@ -360,7 +369,10 @@ fn paint_platter(ui: &egui::Ui, c: Pos2, r: f32, angle: f32, color: Color32, m: 
         let pos = anchor - galley.size() / 2.0;
         p.add(TextShape::new(pos, galley, text_color).with_angle_and_anchor(angle, Align2::CENTER_CENTER));
     };
-    if m.has_track {
+    if cover.is_some() {
+        // Mittelloch der Picture-Disc
+        p.circle_filled(c, r * 0.05, Color32::from_black_alpha(150));
+    } else if m.has_track {
         label_text(m.title, (r * 0.085).max(8.0), -r * 0.1);
         label_text(m.artist, (r * 0.065).max(7.0), r * 0.1);
     } else {
@@ -370,11 +382,36 @@ fn paint_platter(ui: &egui::Ui, c: Pos2, r: f32, angle: f32, color: Color32, m: 
     }
     // Markierung, damit die Drehung sichtbar ist
     let a = -std::f32::consts::FRAC_PI_2;
-    p.line_segment([rot(a, r * 0.4), rot(a, r * 0.88)], Stroke::new((r * 0.02).max(1.5), Color32::from_white_alpha(230)));
+    let mark_from = if cover.is_some() { COVER_RADIUS + 0.012 } else { 0.4 };
+    p.line_segment([rot(a, r * mark_from), rot(a, r * 0.88)], Stroke::new((r * 0.02).max(1.5), Color32::from_white_alpha(230)));
     p.circle_filled(c, r * 0.03, Color32::from_rgb(0xcf, 0xd6, 0xe4));
     if grabbing || m.scratching {
         p.circle_stroke(c, r + 1.0, Stroke::new(2.5, color));
     }
+}
+
+/// Anteil des Tellerradius, den ein Cover bedeckt. Außen bleibt ein schmaler Rillenrand.
+const COVER_RADIUS: f32 = 0.82;
+
+/// Zeichnet das Cover als runde Scheibe, die mit der Platte dreht.
+fn paint_cover(p: &egui::Painter, c: Pos2, radius: f32, angle: f32, tex: egui::TextureId) {
+    const SEGMENTS: u32 = 96;
+    let mut mesh = egui::Mesh::with_texture(tex);
+    mesh.vertices.push(egui::epaint::Vertex { pos: c, uv: pos2(0.5, 0.5), color: Color32::WHITE });
+    for i in 0..=SEGMENTS {
+        // Bildwinkel φ erscheint auf dem Bildschirm bei φ + angle
+        let phi = i as f32 / SEGMENTS as f32 * TAU;
+        let t = phi + angle;
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: c + vec2(t.cos(), t.sin()) * radius,
+            uv: pos2(0.5 + 0.5 * phi.cos(), 0.5 + 0.5 * phi.sin()),
+            color: Color32::WHITE,
+        });
+        if i > 0 {
+            mesh.add_triangle(0, i, i + 1);
+        }
+    }
+    p.add(mesh);
 }
 
 fn controls(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, out: &mut Vec<DeckAction>) {

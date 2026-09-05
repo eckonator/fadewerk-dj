@@ -9,7 +9,7 @@ use fw_engine::TrackAudio;
 
 use crate::bpm::estimate_bpm;
 use crate::decode::decode_file;
-use crate::meta::{TrackMeta, read_meta};
+use crate::meta::{Cover, TrackMeta, read_cover, read_meta};
 use crate::scan::{list_dir, walk_audio};
 use crate::waveform::Waveform;
 
@@ -23,6 +23,8 @@ pub struct Loaded {
     pub audio: Arc<TrackAudio>,
     pub waveform: Waveform,
     pub bpm: Option<f32>,
+    /// Eingebettetes Cover für den Plattenteller.
+    pub cover: Option<Cover>,
 }
 
 /// Höchstzahl an Titeln pro Ordnersuche, damit ein Klick auf „Benutzerordner“ nicht ewig sucht.
@@ -171,5 +173,7 @@ fn load(job: &LoadJob) -> anyhow::Result<Loaded> {
     let bpm = meta.bpm.or_else(|| estimate_bpm(&audio));
     let mut meta = meta;
     meta.duration_secs = audio.duration_secs();
-    Ok(Loaded { deck: job.deck, token: job.token, path: job.path.clone(), meta, audio: Arc::new(audio), waveform, bpm })
+    // Beim Vorhören dreht keine Platte
+    let cover = if job.deck != fw_engine::PREVIEW { read_cover(&job.path) } else { None };
+    Ok(Loaded { deck: job.deck, token: job.token, path: job.path.clone(), meta, audio: Arc::new(audio), waveform, bpm, cover })
 }

@@ -24,7 +24,8 @@ written in Rust. Click a folder and start playing: no database, no library impor
   Select several tracks or folders (⌘/Ctrl-click, Shift-click) and drag them into a playlist, or use
   the right-click menu: append, play next, shuffle in, spread across A and B, show in Finder.
 - **A turntable per deck**: drag the platter or the waveform to scratch forwards and backwards,
-  hold it to stop the record, tap the waveform to play or pause.
+  hold it to stop the record, tap the waveform to play or pause. Embedded cover art turns the record
+  into a spinning picture disc.
 - **Motor**: start, pause and stop spin up and down like a real turntable
   (adjustable start and stop time). CUE jumps instantly.
 - **Transport per deck**: CUE, play/pause, stop, previous, next, repeat (off, track, list),

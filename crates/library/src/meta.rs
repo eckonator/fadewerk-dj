@@ -2,6 +2,7 @@
 use std::path::Path;
 
 use lofty::config::WriteOptions;
+use lofty::picture::PictureType;
 use lofty::prelude::*;
 use lofty::tag::Tag;
 
@@ -51,6 +52,46 @@ pub fn read_meta(path: &Path) -> anyhow::Result<TrackMeta> {
             .filter(|b| (40.0..=250.0).contains(b));
     }
     Ok(meta)
+}
+
+/// Kantenlänge, auf die Cover verkleinert werden. Reicht für den größten Plattenteller.
+pub const COVER_SIZE: u32 = 512;
+
+/// Eingebettetes Cover, quadratisch zugeschnitten, als RGBA-Pixel.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Cover {
+    pub size: u32,
+    pub rgba: Vec<u8>,
+}
+
+/// Liest das eingebettete Cover (bevorzugt „Front Cover“, sonst das erste Bild aus irgendeinem Tag).
+/// Ohne Bild oder bei unlesbaren Bilddaten `None`.
+pub fn read_cover(path: &Path) -> Option<Cover> {
+    let file = lofty::read_from_path(path).ok()?;
+    let pictures: Vec<_> = file.tags().iter().flat_map(|t| t.pictures()).collect();
+    let pic = pictures
+        .iter()
+        .find(|p| p.pic_type() == PictureType::CoverFront)
+        .or_else(|| pictures.first())?;
+    match decode_cover(pic.data()) {
+        Ok(c) => Some(c),
+        Err(e) => {
+            log::debug!("Cover in {} nicht lesbar: {e}", path.display());
+            None
+        }
+    }
+}
+
+/// Dekodiert JPEG/PNG, schneidet mittig quadratisch zu und verkleinert auf höchstens `COVER_SIZE`.
+pub fn decode_cover(data: &[u8]) -> anyhow::Result<Cover> {
+    let img = image::load_from_memory(data)?;
+    let (w, h) = (img.width(), img.height());
+    anyhow::ensure!(w > 0 && h > 0, "leeres Bild");
+    let side = w.min(h);
+    let img = img.crop_imm((w - side) / 2, (h - side) / 2, side, side);
+    let size = side.min(COVER_SIZE);
+    let img = if size < side { img.resize_exact(size, size, image::imageops::FilterType::Triangle) } else { img };
+    Ok(Cover { size, rgba: img.into_rgba8().into_raw() })
 }
 
 /// Bearbeitbare Tag-Felder als Text, wie sie im Editor stehen. Leer = Feld entfernen.
@@ -216,6 +257,39 @@ mod tests {
         write_tags(&path, &TagFields { genre: String::new(), ..back }).unwrap();
         assert_eq!(read_tags(&path).unwrap().0.genre, "");
         assert_eq!(read_meta(&path).unwrap().title, "Ice Blue");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// Hängt ein PNG als ID3v2-Cover an (WAV kann ID3v2 tragen).
+    pub(crate) fn embed_cover(path: &Path, w: u32, h: u32, pixel: impl Fn(u32, u32) -> [u8; 3]) {
+        let img = image::RgbImage::from_fn(w, h, |x, y| image::Rgb(pixel(x, y)));
+        let mut png = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        let mut file = lofty::read_from_path(path).unwrap();
+        let mut tag = Tag::new(lofty::tag::TagType::Id3v2);
+        tag.push_picture(
+            lofty::picture::Picture::unchecked(png)
+                .pic_type(PictureType::CoverFront)
+                .mime_type(lofty::picture::MimeType::Png)
+                .build(),
+        );
+        file.insert_tag(tag);
+        file.save_to_path(path, WriteOptions::default()).unwrap();
+    }
+
+    #[test]
+    fn reads_embedded_cover_cropped_square() {
+        let path = std::env::temp_dir().join(format!("fw-cover-{}.wav", std::process::id()));
+        write_wav(&path);
+        assert!(read_cover(&path).is_none());
+        // Breites Bild: links rot, Mitte grün, rechts blau → mittig zugeschnitten bleibt grün
+        embed_cover(&path, 900, 600, |x, _| if x < 150 { [255, 0, 0] } else if x < 750 { [0, 255, 0] } else { [0, 0, 255] });
+        let cover = read_cover(&path).expect("Cover");
+        assert_eq!(cover.size, COVER_SIZE);
+        assert_eq!(cover.rgba.len(), (COVER_SIZE * COVER_SIZE * 4) as usize);
+        assert_eq!(&cover.rgba[..4], &[0, 255, 0, 255]);
+        // Ton und Tags bleiben lesbar
+        assert!(read_meta(&path).is_ok());
         std::fs::remove_file(&path).unwrap();
     }
 
