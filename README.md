@@ -48,9 +48,23 @@ Ready-to-run builds are on the [Releases](../../releases) page, one release per 
 
 | System | File | Notes |
 |---|---|---|
-| macOS 11 or later (Apple Silicon and Intel) | `…-macOS.zip` | Unzip and move `FadeWerk DJ.app` to Applications. On first launch **right-click → Open**, because the app is not notarized by Apple. |
+| macOS 11 or later (Apple Silicon and Intel) | `…-macOS.zip` | Unzip and move `FadeWerk DJ.app` to Applications. The app is not notarized by Apple, so see [macOS: "cannot be verified"](#macos-cannot-be-verified) below. |
 | Windows 10/11 (64-bit) | `…-Windows.zip` | Unzip and run `FadeWerk DJ.exe`. SmartScreen warns about unknown apps: **More info → Run anyway**. |
 | Linux (x86_64) | `…-Linux-x86_64.tar.gz` | Unpack and run `./fadewerk-dj`. Needs ALSA (or PipeWire/PulseAudio with the ALSA layer). |
+
+### macOS: "cannot be verified"
+
+The app is signed ad hoc but not notarized (that needs a paid Apple Developer account).
+Files downloaded from the internet get a quarantine flag, and Gatekeeper then refuses to
+open the app. On recent macOS versions (Sequoia and later) *System Settings → Privacy &
+Security → Open Anyway* often does not help. Remove the flag in Terminal instead:
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/FadeWerk DJ.app"
+```
+
+Then open the app as usual. You need to do this once per downloaded version. The app is
+open source; you can also build it yourself (see below), which needs no workaround.
 
 ## Building
 
