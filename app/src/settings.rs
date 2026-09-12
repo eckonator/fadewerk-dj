@@ -65,6 +65,8 @@ pub struct Settings {
     pub ui_zoom: f32,
     /// Höhe der Player-Zeile in Punkten, vom Nutzer gezogen; 0 = automatisch.
     pub deck_height: f32,
+    /// Beim Start bei GitHub nach einer neuen Version fragen; `None` = noch nicht gefragt.
+    pub update_check: Option<bool>,
 }
 
 impl Default for Settings {
@@ -95,6 +97,7 @@ impl Default for Settings {
             opengl: false,
             ui_zoom: 1.0,
             deck_height: 0.0,
+            update_check: None,
         }
     }
 }

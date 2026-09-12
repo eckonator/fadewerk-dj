@@ -298,6 +298,20 @@ fn en(de: &str) -> Option<&'static str> {
         "Ziehen ändert die Höhe der Player, Doppelklick stellt sie wieder automatisch ein" => "Drag to change the height of the players, double-click to make it automatic again",
         "Für Rechner, auf denen das Fenster nicht zuverlässig startet (etwa virtuelle Maschinen). Wirkt nach einem Neustart." => "For computers where the window does not start reliably (such as virtual machines). Takes effect after a restart.",
         "Logdatei:" => "Log file:",
+        "Updates" => "Updates",
+        "Beim Start bei GitHub nach einer neuen Version suchen" => "Check GitHub for a new version at startup",
+        "Gesendet wird nur die Frage nach der neuesten Version, keine Daten über Titel oder Ordner. GitHub sieht dabei wie bei jedem Webseitenaufruf deine IP-Adresse." => {
+            "Only the request for the latest version is sent, no data about tracks or folders. As with any website visit, GitHub sees your IP address."
+        }
+        "Beim Start nach neuen Versionen suchen?" => "Check for new versions at startup?",
+        "Dabei fragt FadeWerk DJ nur bei GitHub nach der neuesten Version – ohne Daten über deine Musik." => {
+            "FadeWerk DJ only asks GitHub for the latest version – without any data about your music."
+        }
+        "Ja, prüfen" => "Yes, check",
+        "Nein" => "No",
+        "FadeWerk DJ {} ist verfügbar (installiert: {})." => "FadeWerk DJ {} is available (installed: {}).",
+        "Download-Seite öffnen" => "Open download page",
+        "Später" => "Later",
         "Logdatei nicht gefunden: {}" => "Log file not found: {}",
         "Einzelheiten stehen in der Logdatei:\n{}" => "Details are in the log file:\n{}",
         "FadeWerk DJ wurde wegen eines Fehlers beendet:\n\n{}\n({})" => "FadeWerk DJ was closed because of an error:\n\n{}\n({})",

@@ -32,6 +32,7 @@ pub enum SettingsAction {
     Skin(SkinId),
     Brushed(bool),
     OpenGl(bool),
+    UpdateCheck(bool),
     Zoom(f32),
     RevealLog,
 }
@@ -110,7 +111,7 @@ impl SettingsUi {
                     Tab::Audio => self.audio_tab(ui, c, out),
                     Tab::Language => language_tab(ui, c, out),
                     Tab::Look => look_tab(ui, c, out),
-                    Tab::About => self.about_tab(ui, out),
+                    Tab::About => self.about_tab(ui, c, out),
                 }
                 if self.tab != Tab::About {
                     ui.add_space(10.0);
@@ -121,7 +122,7 @@ impl SettingsUi {
     }
 
     /// Copyright, Lizenz und Fremdbestandteile („Appropriate Legal Notices“ nach GPL-3.0 Abschnitt 0).
-    fn about_tab(&mut self, ui: &mut egui::Ui, out: &mut Vec<SettingsAction>) {
+    fn about_tab(&mut self, ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction>) {
         ui.horizontal(|ui| {
             ui.label(RichText::new("FadeWerk DJ").font(crate::fonts::bold(22.0)));
             ui.label(RichText::new(trf("Version {}", &[&env!("CARGO_PKG_VERSION")])).color(theme::dim()));
@@ -147,6 +148,14 @@ impl SettingsUi {
             });
             ui.add(egui::Label::new(RichText::new(log.display().to_string()).size(11.5).color(theme::dim())).wrap());
         }
+
+        ui.add_space(10.0);
+        ui.label(RichText::new(tr("Updates")).strong());
+        let mut check = c.settings.update_check.unwrap_or(false);
+        if ui.checkbox(&mut check, RichText::new(tr("Beim Start bei GitHub nach einer neuen Version suchen")).size(14.0)).changed() {
+            out.push(SettingsAction::UpdateCheck(check));
+        }
+        ui.label(RichText::new(tr("Gesendet wird nur die Frage nach der neuesten Version, keine Daten über Titel oder Ordner. GitHub sieht dabei wie bei jedem Webseitenaufruf deine IP-Adresse.")).size(11.5).color(theme::dim()));
 
         ui.add_space(10.0);
         ui.label(RichText::new(tr("Verwendete Fremdbestandteile")).strong());

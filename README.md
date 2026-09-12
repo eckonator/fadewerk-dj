@@ -42,6 +42,9 @@ written in Rust. Click a folder and start playing: no database, no library impor
   The layout adapts to the window size, including 4K monitors. **Full screen** via the button
   in the folder browser, F11 or ⌃⌘F on macOS.
 - User interface in **English and German**.
+- **No telemetry, no account.** The only network request is an optional check for new versions on
+  GitHub. FadeWerk DJ asks once before enabling it (switch it on or off under *Settings → About*);
+  it sends nothing about your music or folders.
 
 ## Download
 
@@ -124,6 +127,8 @@ Code comments are in German; issues and contributions in English are welcome.
 | `FW_SKIN=nacht\|classic\|tag\|neon`, `FW_STEEL=1`, `FW_LANG=de\|en` | Look and language. |
 | `FW_PREVIEW=1` | Pre-listens to the second track in the demo. |
 | `FW_SETTINGS=audio\|sprache\|aussehen` | Opens the settings window. |
+| `FW_UPDATE_ASK=1` | Shows the question whether to check for updates. |
+| `FW_UPDATE_URL=file:///path/release.json` | Checks for updates against your own release JSON (`tag_name`, `html_url`). |
 
 With these switches FadeWerk DJ saves nothing.
 
