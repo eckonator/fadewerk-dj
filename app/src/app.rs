@@ -186,7 +186,12 @@ impl FadeWerkDjApp {
             lib,
             decks: Default::default(),
             playlists: Default::default(),
-            browser: Browser::new(start_dir, &settings.folders, settings.tree_width, &settings.folder_recursion),
+            browser: {
+                let mut b = Browser::new(start_dir, &settings.folders, settings.tree_width, &settings.folder_recursion);
+                b.set_columns(&settings.track_columns, &settings.column_widths);
+                b.set_search_memory(settings.remember_search, &settings.advanced_search);
+                b
+            },
             metas: HashMap::new(),
             meta_requested: HashSet::new(),
             bpms: HashMap::new(),
@@ -287,6 +292,15 @@ impl FadeWerkDjApp {
             }
             // FW_SELECT=1: im Browser den 2. bis 4. Titel auswählen, um die Auswahl zu prüfen
             app.browser.demo_select = std::env::var_os("FW_SELECT").is_some();
+            // FW_SEARCH="genre=Rock,year=1980-1989": erweiterte Suche vorbelegt öffnen
+            if let Ok(spec) = std::env::var("FW_SEARCH") {
+                app.browser.demo_search(&spec);
+            }
+            // FW_COLUMNS=album,genre,year: andere Spalten der Titelliste zeigen
+            if let Ok(cols) = std::env::var("FW_COLUMNS") {
+                let keys: Vec<String> = cols.split(',').map(|k| k.trim().to_owned()).collect();
+                app.browser.set_columns(&keys, &[]);
+            }
             // FW_TAGS=1: Fenster „Titelinfo & Tags“ für den ersten Titel öffnen
             if std::env::var_os("FW_TAGS").is_some()
                 && let Some(t) = tracks.first()
@@ -307,6 +321,7 @@ impl FadeWerkDjApp {
     fn push_mixer_state(&mut self) {
         self.ctl.send(Command::SetCrossfader(self.crossfader));
         self.ctl.send(Command::SetCurve(self.curve));
+        self.ctl.send(Command::SetRepeatFade(self.autofade.fade_secs));
         self.ctl.send(Command::SetMotor(self.motor));
         self.ctl.send(Command::SetMasterVolume(self.master_volume));
         self.ctl.send(Command::SetHeadVolume(self.head_volume));
@@ -329,6 +344,7 @@ impl FadeWerkDjApp {
         let mut swap = [1.0f32; 2];
         if self.bass_swap
             && let Some(f) = self.autofade.fade()
+            && f.is_handover()
         {
             let late = f.progress() >= 0.5;
             swap[f.to] = if late { 1.0 } else { 0.0 };
@@ -812,7 +828,12 @@ impl FadeWerkDjApp {
                 self.ctl.send(Command::TogglePlay { deck: d });
                 if starting && self.autofade.fade().is_none() {
                     let (ga, gb) = self.curve.gains(self.crossfader);
-                    if (if d == 0 { ga } else { gb }) > 0.5 {
+                    let gain = if d == 0 { ga } else { gb };
+                    let other_idle = !self.ctl.shared.decks[1 - d].is_playing();
+                    if self.autofade.enabled && other_idle && self.has_track(d) && self.crossfader != fw_engine::automix::side(d) {
+                        // Der andere Player steht: Crossfader zu diesem hinüberblenden
+                        self.autofade.glide_to(d, self.crossfader);
+                    } else if gain > 0.5 {
                         self.autofade.active = d;
                     }
                 }
@@ -952,7 +973,10 @@ impl FadeWerkDjApp {
     fn fade_action(&mut self, a: FadeAction, now: f64) {
         match a {
             FadeAction::Auto(on) => self.autofade.enabled = on,
-            FadeAction::FadeSecs(s) => self.autofade.fade_secs = s,
+            FadeAction::FadeSecs(s) => {
+                self.autofade.fade_secs = s;
+                self.ctl.send(Command::SetRepeatFade(s));
+            }
             FadeAction::Curve(c) => {
                 self.curve = c;
                 self.ctl.send(Command::SetCurve(c));
@@ -1099,6 +1123,16 @@ impl FadeWerkDjApp {
                 self.save_settings();
             }
             BrowserAction::EditTags(path) => self.tag_editor = Some(TagEditor::open(path)),
+            BrowserAction::SearchMemory(remember, search) => {
+                self.settings.remember_search = remember;
+                self.settings.advanced_search = search;
+                self.save_settings();
+            }
+            BrowserAction::TrackColumns(visible, widths) => {
+                self.settings.track_columns = visible;
+                self.settings.column_widths = widths;
+                self.save_settings();
+            }
             BrowserAction::TreeWidth(w) => {
                 self.settings.tree_width = w;
                 self.save_settings();
@@ -1156,6 +1190,10 @@ fn panel_frame(ui: &egui::Ui) -> Frame {
 }
 
 impl eframe::App for FadeWerkDjApp {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.dev.raw_input(raw_input);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         // Die ersten Bilder sind gezeichnet: Der Grafikstart hat geklappt

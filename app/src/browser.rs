@@ -10,6 +10,7 @@ use fw_library::{SCAN_LIMIT, TrackMeta, is_system_dir, list_dir};
 
 use crate::deck_ui::fmt_time;
 use crate::playlist::DragItem;
+use crate::search::{AdvancedSearch, Field};
 use crate::selection::Selection;
 use crate::i18n::{count_tracks, tr, trf};
 use crate::theme;
@@ -31,6 +32,10 @@ pub enum BrowserAction {
     EditTags(PathBuf),
     /// Der Nutzer hat die Breite des Ordnerbaums geändert.
     TreeWidth(f32),
+    /// Erweiterte Suche zum Speichern: „Suchfilter merken“ an/aus und die Suche (leer, wenn nicht gemerkt).
+    SearchMemory(bool, AdvancedSearch),
+    /// Sichtbare Spalten der Titelliste oder ihre Breiten haben sich geändert (Schlüssel, Breiten je Schlüssel).
+    TrackColumns(Vec<String>, Vec<(String, f32)>),
     /// Laufende Suche abbrechen.
     StopScan,
     /// Gemerkte Einstellungen „Mit Unterordnern“ je Ordner (nur Abweichungen vom Standard).
@@ -43,6 +48,96 @@ pub enum BrowserAction {
     RemoveRoot(PathBuf),
     OpenSettings,
     ToggleFullscreen,
+}
+
+/// Spalten der Titelliste mit veränderbarer Breite. Der Titel ist immer da, die übrigen sind wählbar;
+/// Vorhören, Nummer und die A/B-Tasten haben eine feste Breite. Reihenfolge hier = Reihenfolge in der Tabelle.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum TrackColumn {
+    Title,
+    Artist,
+    Album,
+    Genre,
+    Year,
+    Comment,
+    Subfolder,
+    FileName,
+    Format,
+    Bpm,
+    Time,
+}
+
+impl TrackColumn {
+    pub const ALL: [Self; 10] = [
+        Self::Artist,
+        Self::Album,
+        Self::Genre,
+        Self::Year,
+        Self::Comment,
+        Self::Subfolder,
+        Self::FileName,
+        Self::Format,
+        Self::Bpm,
+        Self::Time,
+    ];
+    pub const DEFAULT: [Self; 4] = [Self::Artist, Self::Subfolder, Self::Bpm, Self::Time];
+
+    /// Schlüssel in den Einstellungen (bleibt stabil, auch wenn sich die Anzeige ändert).
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Title => "title",
+            Self::Artist => "artist",
+            Self::Album => "album",
+            Self::Genre => "genre",
+            Self::Year => "year",
+            Self::Comment => "comment",
+            Self::Subfolder => "subfolder",
+            Self::FileName => "file",
+            Self::Format => "format",
+            Self::Bpm => "bpm",
+            Self::Time => "time",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        std::iter::once(Self::Title).chain(Self::ALL).find(|c| c.key() == key)
+    }
+
+    /// Anzeigename (deutscher Schlüssel für `tr`).
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Title => "Titel",
+            Self::Artist => "Interpret",
+            Self::Album => "Album",
+            Self::Genre => "Genre",
+            Self::Year => "Jahr",
+            Self::Comment => "Kommentar",
+            Self::Subfolder => "Unterordner",
+            Self::FileName => "Dateiname",
+            Self::Format => "Format",
+            Self::Bpm => "BPM",
+            Self::Time => "Zeit",
+        }
+    }
+
+    fn default_width(self) -> f32 {
+        match self {
+            Self::Title => 300.0,
+            Self::Artist | Self::Album | Self::Comment => 180.0,
+            Self::Genre => 110.0,
+            Self::Subfolder | Self::FileName => 200.0,
+            Self::Year | Self::Format | Self::Bpm => 52.0,
+            Self::Time => 48.0,
+        }
+    }
+
+    fn min_width(self) -> f32 {
+        match self {
+            Self::Title => 120.0,
+            Self::Year | Self::Format | Self::Bpm | Self::Time => 36.0,
+            _ => 60.0,
+        }
+    }
 }
 
 pub struct BrowserCtx<'a> {
@@ -102,6 +197,12 @@ pub struct Browser {
     /// Ordner-Aktion, die auf das Ende der Suche wartet.
     queued: Option<FolderOp>,
     tree_width: f32,
+    /// Sichtbare wählbare Spalten der Titelliste, in der Reihenfolge von [`TrackColumn::ALL`].
+    columns: Vec<TrackColumn>,
+    /// Vom Nutzer gezogene Spaltenbreiten; fehlt eine, gilt [`TrackColumn::default_width`].
+    widths: HashMap<TrackColumn, f32>,
+    /// Wird erhöht, wenn die Breiten zurückgesetzt werden; egui merkt sich die Tabelle sonst weiter.
+    table_gen: u32,
     /// Entwicklerschalter `FW_SELECT`: wählt zum Prüfen einige Titel aus.
     pub demo_select: bool,
     scanning: bool,
@@ -117,6 +218,17 @@ pub struct Browser {
     recursion: HashMap<PathBuf, bool>,
     /// Der Nutzer hat die Suche angehalten.
     stopped: bool,
+    /// Erweiterte Suche (Lupe neben dem Suchfeld, ⇧⌘F); filtert die Titelliste zusätzlich zur Schnellsuche.
+    adv: AdvancedSearch,
+    adv_open: bool,
+    /// Beim Öffnen das erste Feld fokussieren.
+    adv_focus: bool,
+    /// Oberkante des Browsers: das Suchfenster geht mittig über den Playern darüber auf.
+    players_bottom: f32,
+    /// Suche beim Schließen und Beenden behalten.
+    remember: bool,
+    /// Zuletzt gemeldeter Stand (`remember`, Suche), um Änderungen zum Speichern zu erkennen.
+    reported: (bool, AdvancedSearch),
 }
 
 impl Browser {
@@ -146,6 +258,9 @@ impl Browser {
             picked: Selection::default(),
             queued: None,
             tree_width: if tree_width > 0.0 { tree_width } else { DEFAULT_TREE_W },
+            columns: TrackColumn::DEFAULT.to_vec(),
+            widths: HashMap::new(),
+            table_gen: 0,
             demo_select: false,
             scanning: false,
             limited: false,
@@ -157,6 +272,12 @@ impl Browser {
             subdirs: HashMap::new(),
             recursion: recursion.iter().cloned().collect(),
             stopped: false,
+            adv: AdvancedSearch::default(),
+            adv_open: false,
+            adv_focus: false,
+            players_bottom: 0.0,
+            remember: true,
+            reported: (true, AdvancedSearch::default()),
         };
         match start_dir {
             Some(dir) => {
@@ -169,6 +290,178 @@ impl Browser {
             }
         }
         b
+    }
+
+    /// Übernimmt die gespeicherten Spalten der Titelliste (unbekannte Schlüssel fallen heraus).
+    pub fn set_columns(&mut self, visible: &[String], widths: &[(String, f32)]) {
+        let visible: Vec<TrackColumn> = visible.iter().filter_map(|k| TrackColumn::from_key(k)).collect();
+        self.columns = TrackColumn::ALL.into_iter().filter(|c| visible.contains(c)).collect();
+        // Der Titel ist immer da und steht nicht in der Auswahl
+        self.widths = widths
+            .iter()
+            .filter_map(|(k, w)| Some((TrackColumn::from_key(k)?, *w)))
+            .filter(|(_, w)| w.is_finite() && *w > 0.0)
+            .collect();
+    }
+
+    fn width(&self, c: TrackColumn) -> f32 {
+        self.widths.get(&c).copied().unwrap_or(c.default_width()).max(c.min_width())
+    }
+
+    fn columns_changed(&self, out: &mut Vec<BrowserAction>) {
+        let visible = self.columns.iter().map(|c| c.key().to_owned()).collect();
+        let mut widths: Vec<(String, f32)> = self.widths.iter().map(|(c, w)| (c.key().to_owned(), w.round())).collect();
+        widths.sort_by(|a, b| a.0.cmp(&b.0));
+        out.push(BrowserAction::TrackColumns(visible, widths));
+    }
+
+    /// Auswahl der Spalten (Rechtsklick auf den Tabellenkopf oder Taste „Spalten“).
+    fn columns_menu(&mut self, ui: &mut egui::Ui, out: &mut Vec<BrowserAction>) {
+        ui.label(RichText::new(tr("Spalten anzeigen")).size(11.0).color(theme::faint()));
+        let mut on = true;
+        ui.add_enabled(false, egui::Checkbox::new(&mut on, tr("Titel")));
+        for c in TrackColumn::ALL {
+            let mut on = self.columns.contains(&c);
+            if ui.checkbox(&mut on, tr(c.name())).changed() {
+                self.columns = TrackColumn::ALL.into_iter().filter(|x| if *x == c { on } else { self.columns.contains(x) }).collect();
+                self.columns_changed(out);
+            }
+        }
+        ui.separator();
+        if ui.add_enabled(!self.widths.is_empty(), Button::new(tr("Spaltenbreiten zurücksetzen"))).clicked() {
+            self.widths.clear();
+            self.table_gen += 1;
+            self.columns_changed(out);
+            ui.close();
+        }
+    }
+
+    /// Leiste mit den aktiven Feldern der erweiterten Suche; ein Klick entfernt das Feld.
+    fn filter_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(tr("FILTER")).size(10.5).color(theme::faint()));
+            let accent = theme::select_accent();
+            let set: Vec<Field> = Field::ALL.into_iter().filter(|f| self.adv.is_set(*f)).collect();
+            for f in set {
+                let text = format!("{}: {}  ×", tr(f.name()), self.adv.summary(f));
+                let b = Button::new(RichText::new(text).size(12.0).color(accent))
+                    .fill(accent.gamma_multiply(0.10))
+                    .stroke(egui::Stroke::new(1.0, accent.gamma_multiply(0.55)))
+                    .corner_radius(10.0);
+                if ui.add(b).on_hover_text(tr("Filter entfernen")).clicked() {
+                    self.adv.clear(f);
+                }
+            }
+            if ui.small_button(tr("Alle entfernen")).clicked() {
+                self.adv = AdvancedSearch::default();
+            }
+            if !self.adv_open && ui.small_button(tr("Bearbeiten …")).clicked() {
+                self.toggle_search();
+            }
+        });
+    }
+
+    /// Gespeicherte erweiterte Suche übernehmen.
+    pub fn set_search_memory(&mut self, remember: bool, search: &AdvancedSearch) {
+        self.remember = remember;
+        self.adv = if remember { search.clone() } else { AdvancedSearch::default() };
+        self.reported = (self.remember, self.adv.clone());
+    }
+
+    /// Entwicklerschalter `FW_SEARCH`: erweiterte Suche vorbelegt und offen.
+    pub fn demo_search(&mut self, spec: &str) {
+        self.adv = AdvancedSearch::from_dev_spec(spec);
+        self.adv_open = true;
+        self.adv_focus = true;
+    }
+
+    fn toggle_search(&mut self) {
+        if self.adv_open {
+            self.close_search();
+        } else {
+            self.adv_open = true;
+            self.adv_focus = true;
+        }
+    }
+
+    /// Ohne „Suchfilter merken“ endet die Suche mit dem Schließen des Fensters.
+    fn close_search(&mut self) {
+        self.adv_open = false;
+        if !self.remember {
+            self.adv = AdvancedSearch::default();
+        }
+    }
+
+    /// Fenster der erweiterten Suche. Sperrt nichts: die Liste filtert schon beim Tippen.
+    fn search_window(&mut self, ctx: &egui::Context) {
+        if !self.adv_open {
+            return;
+        }
+        let mut open = true;
+        let mut close = false;
+        let mut window = egui::Window::new(tr("Erweiterte Suche"))
+            .id(egui::Id::new("erweiterte-suche"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .pivot(egui::Align2::CENTER_CENTER);
+        // Beim Öffnen immer mittig über den Playern, damit die gefilterte Liste frei bleibt; danach verschiebbar
+        if self.adv_focus {
+            let screen = ctx.content_rect();
+            let bottom = if self.players_bottom > screen.top() { self.players_bottom } else { screen.bottom() };
+            window = window.current_pos(egui::pos2(screen.center().x, (screen.top() + bottom) / 2.0));
+        }
+        window
+            .frame(egui::Frame::window(&ctx.global_style()).fill(theme::panel()).inner_margin(egui::Margin::same(14)))
+            .show(ctx, |ui| {
+                ui.set_width(340.0);
+                let mut focus = std::mem::take(&mut self.adv_focus);
+                egui::Grid::new("erweiterte-suche-felder").num_columns(2).spacing(vec2(10.0, 8.0)).show(ui, |ui| {
+                    for f in Field::ALL {
+                        ui.label(RichText::new(tr(f.name())).color(theme::dim()));
+                        match self.adv.range_mut(f) {
+                            Some((from, to)) => {
+                                ui.horizontal(|ui| {
+                                    ui.add(egui::TextEdit::singleline(from).hint_text(tr("von")).desired_width(80.0));
+                                    ui.label(RichText::new("–").color(theme::faint()));
+                                    ui.add(egui::TextEdit::singleline(to).hint_text(tr("bis")).desired_width(80.0));
+                                });
+                            }
+                            None => {
+                                let r = ui.add(egui::TextEdit::singleline(self.adv.text_mut(f)).desired_width(240.0));
+                                // Beim Öffnen gleich ins erste Feld tippen können
+                                if std::mem::take(&mut focus) {
+                                    r.request_focus();
+                                }
+                            }
+                        }
+                        ui.end_row();
+                    }
+                });
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(tr("Sucht in den gewählten Ordnern. Bei Jahr und BPM fallen Titel ohne Angabe heraus; BPM kennt FadeWerk DJ aus den Tags oder nach dem Laden in einen Player."))
+                        .size(11.5)
+                        .color(theme::faint()),
+                );
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(!self.adv.is_empty(), Button::new(tr("Alles löschen"))).clicked() {
+                        self.adv = AdvancedSearch::default();
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button(tr("Fertig")).clicked() {
+                            close = true;
+                        }
+                        ui.add_space(6.0);
+                        ui.checkbox(&mut self.remember, tr("Suchfilter merken"))
+                            .on_hover_text(tr("Die Suchfilter bleiben nach dem Schließen des Fensters und nach einem Neustart erhalten."));
+                    });
+                });
+            });
+        if close || !open || ctx.input(|i| i.key_pressed(Key::Escape)) && ctx.memory(|m| m.focused().is_none()) {
+            self.close_search();
+        }
     }
 
     /// Fügt einen Ordner hinzu und öffnet ihn. `true`, wenn er neu in der Liste ist.
@@ -304,12 +597,25 @@ impl Browser {
     pub fn show(&mut self, ui: &mut egui::Ui, ctx: &BrowserCtx<'_>, out: &mut Vec<BrowserAction>) {
         // Nicht innerhalb von `ui.input` abfragen: egui hielte sonst dieselbe Sperre zweimal
         let typing = ui.ctx().egui_wants_keyboard_input();
-        let (refocused, refresh_key) = ui.input(|i| {
+        let (refocused, refresh_key, search_key) = ui.input(|i| {
             (
                 i.events.iter().any(|e| matches!(e, egui::Event::WindowFocused(true))),
                 !typing && ((i.modifiers.command && i.key_pressed(Key::R)) || i.key_pressed(Key::F5)),
+                i.modifiers.command && i.modifiers.shift && i.key_pressed(Key::F),
             )
         });
+        if search_key {
+            self.toggle_search();
+        }
+        self.players_bottom = ui.max_rect().top();
+        // Vor der Liste, damit Eingaben noch in diesem Bild filtern
+        self.search_window(&ui.ctx().clone());
+        // Geänderte Suche oder „Suchfilter merken“ zum Speichern melden (ohne Merken wird eine leere Suche gespeichert)
+        let now = (self.remember, if self.remember { self.adv.clone() } else { AdvancedSearch::default() });
+        if now != self.reported {
+            self.reported = now.clone();
+            out.push(BrowserAction::SearchMemory(now.0, now.1));
+        }
         if refresh_key {
             self.refresh();
         } else if refocused {
@@ -346,6 +652,10 @@ impl Browser {
                 }
                 if ui.button(tr("Ordner hinzufügen …")).clicked() {
                     out.push(BrowserAction::AddRoot);
+                }
+                // Rechts neben der Schnellsuche (das Layout läuft hier von rechts nach links)
+                if search_button(ui, self.adv_open || !self.adv.is_empty()).clicked() {
+                    self.toggle_search();
                 }
                 ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(tr("Suchen")).desired_width(200.0));
                 ui.label(RichText::new(tr("⏺ Live gelesen, keine Datenbank")).size(12.0).color(theme::play()));
@@ -490,10 +800,11 @@ impl Browser {
         let dirs = self.selected.clone();
         let f = self.filter.trim().to_lowercase();
         // Für die Suche nach Interpret und Titel einmal alle Tags im Hintergrund anfordern
-        if !f.is_empty() && self.meta_requested_for.is_empty() {
+        let searching = !f.is_empty() || !self.adv.is_empty();
+        if searching && self.meta_requested_for.is_empty() {
             out.extend(self.tracks.iter().filter(|p| !ctx.metas.contains_key(*p)).map(|p| BrowserAction::NeedMeta(p.clone())));
-            self.meta_requested_for = f.clone();
-        } else if f.is_empty() {
+            self.meta_requested_for = "x".into();
+        } else if !searching {
             self.meta_requested_for.clear();
         }
         // Alle Suchwörter müssen vorkommen, in beliebiger Reihenfolge
@@ -502,6 +813,21 @@ impl Browser {
             .tracks
             .iter()
             .filter(|p| {
+                if !self.adv.is_empty() {
+                    let fallback;
+                    let m = match ctx.metas.get(*p) {
+                        Some(m) => m,
+                        None => {
+                            fallback = TrackMeta::from_filename(p);
+                            &fallback
+                        }
+                    };
+                    let folder = p.parent().map(|d| d.to_string_lossy()).unwrap_or_default();
+                    let bpm = ctx.bpms.get(*p).copied().or(m.bpm);
+                    if !self.adv.matches(m, &folder, bpm) {
+                        return false;
+                    }
+                }
                 if words.is_empty() {
                     return true;
                 }
@@ -513,6 +839,10 @@ impl Browser {
                     hay.push_str(&m.artist.to_lowercase());
                     hay.push(' ');
                     hay.push_str(&m.album.to_lowercase());
+                    hay.push(' ');
+                    hay.push_str(&m.genre.to_lowercase());
+                    hay.push(' ');
+                    hay.push_str(&m.year);
                 }
                 words.iter().all(|w| hay.contains(w))
             })
@@ -545,7 +875,7 @@ impl Browser {
             };
             ui.label(RichText::new(folder).font(fonts::bold(17.0)));
             let total: f64 = rows.iter().filter_map(|p| ctx.metas.get(p)).map(|m| m.duration_secs).sum();
-            let count = if words.is_empty() {
+            let count = if words.is_empty() && self.adv.is_empty() {
                 count_tracks(rows.len(), &fmt_time(total))
             } else {
                 trf("{} von {} Titeln", &[&rows.len(), &self.tracks.len()])
@@ -591,6 +921,10 @@ impl Browser {
             });
         });
 
+        if !self.adv.is_empty() {
+            self.filter_bar(ui);
+        }
+
         if self.tracks.is_empty() {
             ui.add_space(20.0);
             let text = if self.scanning {
@@ -604,137 +938,246 @@ impl Browser {
             return;
         }
 
+        // Unterordner nur, wenn die Titel aus mehreren Ordnern kommen
+        let cols: Vec<TrackColumn> = std::iter::once(TrackColumn::Title)
+            .chain(self.columns.iter().copied().filter(|c| *c != TrackColumn::Subfolder || has_subfolders))
+            .collect();
+        let spacing = ui.spacing().item_spacing.x;
+        // Feste Spalten (Vorhören, Nummer, A/B) samt Abständen
+        let fixed_w = 30.0 + 40.0 + 80.0 + spacing * (cols.len() + 3) as f32;
+        let title_saved = self.widths.contains_key(&TrackColumn::Title);
+        let col_widths: Vec<f32> = cols
+            .iter()
+            .map(|c| match c {
+                // Ohne gezogene Breite füllt der Titel die Liste, so wie sie gerade breit ist
+                TrackColumn::Title if !title_saved => {
+                    let others: f32 = cols[1..].iter().map(|c| self.width(*c)).sum();
+                    (ui.available_width() - fixed_w - others).max(c.default_width().min(200.0))
+                }
+                c => self.width(*c),
+            })
+            .collect();
+        // Ändert sich die Breite der Liste, rechnet egui den Titel dann neu aus (nur ohne gezogene Breite)
+        let fill_key = if title_saved { 0 } else { (ui.available_width() / 4.0).round() as i32 };
+        // Tatsächliche Breiten der Spalten in diesem Bild, aus dem Tabellenkopf gemessen
+        let mut measured: Vec<f32> = Vec::new();
+        let mut header_resp: Option<egui::Response> = None;
+        let mut menu_button: Option<egui::Response> = None;
+        if rows.is_empty() && searching {
+            ui.add_space(20.0);
+            ui.vertical_centered(|ui| ui.label(RichText::new(tr("Keine Titel passen zur Suche.")).color(theme::faint())));
+            return;
+        }
         let picked = &mut self.picked;
-        // Rahmen der Auswahl erst nach der Tabelle zeichnen, sonst überdeckt die nächste Zeile ihn im Zwischenraum
-        let mut frames: Vec<(egui::Rect, bool, bool)> = Vec::new();
-        // Sichtbarer Bereich der Tabellenzeilen (ohne Kopf), zusammengesetzt aus den Zellen
-        let mut body_clip = egui::Rect::NOTHING;
+        let table_id = ("tracks", self.table_gen, fill_key, &cols);
         ui.visuals_mut().selection.bg_fill = theme::row_selected();
         // Text ausgewählter Zeilen behält seine Farbe (egui färbt ihn sonst einheitlich ein)
         ui.visuals_mut().selection.stroke.color = theme::ink();
-        TableBuilder::new(ui)
-            .id_salt("tracks")
-            .striped(true)
-            // Inhalt jeder Zelle senkrecht mittig zur Zebra-Zeile
-            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .sense(Sense::click_and_drag())
-            .auto_shrink([false, false])
-            // Ohne das hält egui die Tabelle mindestens 200 Punkte hoch und bläht den Ordnerbereich auf
-            .min_scrolled_height(0.0)
-            .column(Column::exact(30.0))
-            .column(Column::exact(40.0))
-            .column(Column::remainder().at_least(160.0).clip(true))
-            .column(Column::initial(180.0).at_least(80.0).clip(true))
-            .column(Column::initial(if has_subfolders { 200.0 } else { 1.0 }).at_least(1.0).clip(true))
-            .column(Column::exact(52.0))
-            .column(Column::exact(48.0))
-            .column(Column::exact(80.0))
-            .header(20.0, |mut h| {
-                for t in ["", "#", "TITEL", "INTERPRET", if has_subfolders { "UNTERORDNER" } else { "" }, "BPM", "ZEIT", ""] {
-                    h.col(|ui| {
-                        ui.label(RichText::new(tr(t)).size(10.5).color(theme::faint()));
-                    });
-                }
-            })
-            .body(|body| {
-                body.rows(26.0, rows.len(), |mut row| {
-                    let i = row.index();
-                    let path = &rows[i];
-                    let meta = ctx.metas.get(path);
-                    if meta.is_none() {
-                        out.push(BrowserAction::NeedMeta(path.clone()));
-                    }
-                    let fallback = TrackMeta::from_filename(path);
-                    let m = meta.unwrap_or(&fallback);
-                    let previewing = ctx.preview == Some(path.as_path());
-                    let in_sel = picked.contains(path);
-                    // Gilt eine Aktion dieser Zeile für die ganze Auswahl oder nur für diesen Titel?
-                    let targets = || if in_sel { sel_rows.clone() } else { vec![path.clone()] };
-                    row.set_selected(in_sel);
-                    row.col(|ui| {
-                        body_clip = body_clip.union(ui.clip_rect());
-                        if crate::hw::preview_button(ui, vec2(28.0, 20.0), previewing).clicked() {
-                            out.push(if previewing { BrowserAction::StopPreview } else { BrowserAction::Preview(path.clone()) });
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.label(RichText::new(format!("{:02}", i + 1)).monospace().size(11.0).color(theme::faint()));
-                    });
-                    row.col(|ui| {
-                        ui.add(egui::Label::new(RichText::new(&m.title).font(fonts::list(12.5))).truncate().selectable(false));
-                    });
-                    row.col(|ui| {
-                        ui.add(egui::Label::new(RichText::new(&m.artist).font(fonts::list(12.5)).color(theme::dim())).truncate().selectable(false));
-                    });
-                    row.col(|ui| {
-                        // Unterordner relativ zum ausgewählten Ordner, leer für Titel direkt darin
-                        ui.add(egui::Label::new(RichText::new(subfolder(&dirs, path)).font(fonts::list(12.0)).color(theme::faint())).truncate().selectable(false));
-                    });
-                    row.col(|ui| {
-                        let bpm = ctx.bpms.get(path).copied().or(m.bpm);
-                        let text = bpm.map(|b| format!("{b:.0}")).unwrap_or_else(|| "–".into());
-                        ui.label(RichText::new(text).monospace().size(12.0).color(theme::dim()));
-                    });
-                    row.col(|ui| {
-                        let t = if m.duration_secs > 0.0 { fmt_time(m.duration_secs) } else { "…".into() };
-                        ui.label(RichText::new(t).monospace().size(12.0).color(theme::dim()));
-                    });
-                    let mut right_edge = f32::INFINITY;
-                    row.col(|ui| {
-                        right_edge = ui.max_rect().right() + ui.spacing().item_spacing.x / 2.0;
-                        // Feste Größe, damit die Tasten in die Zeilenhöhe passen und mittig sitzen
-                        for list in [0usize, 1] {
-                            let letter = theme::deck_letter(list);
-                            let b = crate::hw::button(ui, vec2(30.0, 20.0), letter, fonts::bold(12.0), crate::hw::Look::Color(theme::deck_color(list)), false, true);
-                            let hint = if in_sel && sel_rows.len() > 1 {
-                                trf("Auswahl ({} Titel) in Playlist {}", &[&sel_rows.len(), &letter])
-                            } else {
-                                trf("In Playlist {}", &[&letter])
-                            };
-                            if b.on_hover_text(hint).clicked() {
-                                out.push(BrowserAction::Add { list, paths: targets() });
-                            }
-                        }
-                    });
-                    let resp = row.response();
-                    if in_sel {
-                        // Rahmen um die Auswahl; zusammenhängende Zeilen bekommen einen gemeinsamen Rahmen
-                        let above = i > 0 && picked.contains(&rows[i - 1]);
-                        let below = rows.get(i + 1).is_some_and(|p| picked.contains(p));
-                        // Die Zeilenfläche reicht über die letzte Spalte hinaus; der Rahmen endet an der Spalte
-                        // Wie die Hinterlegung über den halben Zeilenabstand hinweg, damit die Kanten durchlaufen
-                        let gap = resp.ctx.global_style().spacing.item_spacing.y / 2.0;
-                        let mut r = resp.rect.expand2(vec2(-1.0, gap)).shrink(0.75);
-                        r.max.x = r.max.x.min(right_edge - 1.5);
-                        frames.push((r, above, below));
-                    }
-                    if resp.clicked() {
-                        let m = resp.ctx.input(|i| i.modifiers);
-                        picked.click(&rows, path, m.command, m.shift);
-                    }
-                    if resp.secondary_clicked() && !in_sel {
-                        picked.select_only(path);
-                    }
-                    if resp.drag_started() {
-                        resp.dnd_set_drag_payload(DragItem::Files(targets()));
-                    }
-                    resp.context_menu(|ui| track_menu(ui, &targets(), ctx, out));
-                });
-            });
-        let stroke = egui::Stroke::new(1.5, theme::select_accent());
-        for (r, above, below) in frames {
-            let clip = egui::Rect::from_x_y_ranges(r.expand(2.0).x_range(), body_clip.y_range());
-            let p = egui::Painter::new(ui.ctx().clone(), ui.layer_id(), clip);
-            p.vline(r.left(), r.y_range(), stroke);
-            p.vline(r.right(), r.y_range(), stroke);
-            if !above {
-                p.hline(r.x_range(), r.top(), stroke);
+        // Sind die Spalten breiter als die Liste, lässt sie sich waagerecht schieben
+        egui::ScrollArea::horizontal().id_salt("tracks_h").auto_shrink([false, false]).show(ui, |ui| {
+            // Rahmen der Auswahl erst nach der Tabelle zeichnen, sonst überdeckt die nächste Zeile ihn im Zwischenraum
+            let mut frames: Vec<(egui::Rect, bool, bool)> = Vec::new();
+            // Sichtbarer Bereich der Tabellenzeilen (ohne Kopf), zusammengesetzt aus den Zellen
+            let mut body_clip = egui::Rect::NOTHING;
+            let mut table = TableBuilder::new(ui)
+                // Eigene Kennung je Spaltensatz, damit egui keine Breiten einer anderen Aufteilung übernimmt
+                .id_salt(table_id)
+                .striped(true)
+                // Inhalt jeder Zelle senkrecht mittig zur Zebra-Zeile
+                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                .sense(Sense::click_and_drag())
+                .auto_shrink([false, false])
+                // Ohne das hält egui die Tabelle mindestens 200 Punkte hoch und bläht den Ordnerbereich auf
+                .min_scrolled_height(0.0)
+                .column(Column::exact(30.0))
+                .column(Column::exact(40.0));
+            // Jede Spalte zieht man an ihrem rechten Rand; was rechts davon liegt, rückt mit
+            for (c, w) in cols.iter().zip(&col_widths) {
+                table = table.column(Column::initial(*w).at_least(c.min_width()).at_most(1200.0).clip(true).resizable(true));
             }
-            if !below {
-                p.hline(r.x_range(), r.bottom(), stroke);
+            table
+                .column(Column::exact(80.0))
+                // Leerer Rest rechts, damit das Ziehen einer Spalte keine andere verschiebt
+                .column(Column::remainder())
+                .header(20.0, |mut h| {
+                    let head = |ui: &mut egui::Ui, t: &str| {
+                        ui.add(egui::Label::new(RichText::new(t).size(10.5).color(theme::faint())).truncate().selectable(false));
+                    };
+                    h.col(|ui| head(ui, ""));
+                    h.col(|ui| head(ui, "#"));
+                    for c in &cols {
+                        h.col(|ui| {
+                            measured.push(ui.max_rect().width());
+                            head(ui, &tr(c.name()).to_uppercase());
+                        });
+                    }
+                    h.col(|ui| {
+                        let b = Button::new(RichText::new(tr("SPALTEN")).size(10.5).color(theme::faint())).frame(false);
+                        menu_button = Some(ui.add(b).on_hover_text(tr("Spalten auswählen (auch mit Rechtsklick auf den Tabellenkopf)")));
+                    });
+                    h.col(|_| {});
+                    header_resp = Some(h.response());
+                })
+                .body(|body| {
+                    body.rows(26.0, rows.len(), |mut row| {
+                        let i = row.index();
+                        let path = &rows[i];
+                        let meta = ctx.metas.get(path);
+                        if meta.is_none() {
+                            out.push(BrowserAction::NeedMeta(path.clone()));
+                        }
+                        let fallback = TrackMeta::from_filename(path);
+                        let m = meta.unwrap_or(&fallback);
+                        let previewing = ctx.preview == Some(path.as_path());
+                        let in_sel = picked.contains(path);
+                        // Gilt eine Aktion dieser Zeile für die ganze Auswahl oder nur für diesen Titel?
+                        let targets = || if in_sel { sel_rows.clone() } else { vec![path.clone()] };
+                        row.set_selected(in_sel);
+                        row.col(|ui| {
+                            body_clip = body_clip.union(ui.clip_rect());
+                            if crate::hw::preview_button(ui, vec2(28.0, 20.0), previewing).clicked() {
+                                out.push(if previewing { BrowserAction::StopPreview } else { BrowserAction::Preview(path.clone()) });
+                            }
+                        });
+                        row.col(|ui| {
+                            ui.label(RichText::new(format!("{:02}", i + 1)).monospace().size(11.0).color(theme::faint()));
+                        });
+                        // Voller Text der abgeschnittenen Zelle unter der Maus, als Tooltip der Zeile
+                        let mut tip: Option<String> = None;
+                        for c in &cols {
+                            row.col(|ui| {
+                                let text_cell = |t: &str, size: f32, color| RichText::new(t).font(fonts::list(size)).color(color);
+                                let number_cell = |t: &str| RichText::new(t).monospace().size(12.0).color(theme::dim());
+                                let text = match c {
+                                    TrackColumn::Title => text_cell(&m.title, 12.5, theme::ink()),
+                                    TrackColumn::Artist => text_cell(&m.artist, 12.5, theme::dim()),
+                                    TrackColumn::Album => text_cell(&m.album, 12.5, theme::dim()),
+                                    TrackColumn::Genre => text_cell(&m.genre, 12.0, theme::dim()),
+                                    TrackColumn::Year => number_cell(&m.year),
+                                    TrackColumn::Comment => text_cell(&m.comment, 12.0, theme::faint()),
+                                    // Unterordner relativ zum ausgewählten Ordner, leer für Titel direkt darin
+                                    TrackColumn::Subfolder => text_cell(&subfolder(&dirs, path), 12.0, theme::faint()),
+                                    TrackColumn::FileName => {
+                                        text_cell(&path.file_name().unwrap_or_default().to_string_lossy(), 12.0, theme::faint())
+                                    }
+                                    TrackColumn::Format => {
+                                        let ext = path.extension().unwrap_or_default().to_string_lossy().to_uppercase();
+                                        text_cell(&ext, 11.5, theme::faint())
+                                    }
+                                    TrackColumn::Bpm => {
+                                        let bpm = ctx.bpms.get(path).copied().or(m.bpm);
+                                        number_cell(&bpm.map(|b| format!("{b:.0}")).unwrap_or_else(|| "–".into()))
+                                    }
+                                    TrackColumn::Time => {
+                                        number_cell(&if m.duration_secs > 0.0 { fmt_time(m.duration_secs) } else { "…".into() })
+                                    }
+                                };
+                                elided_cell(ui, text, &mut tip);
+                            });
+                        }
+                        let mut right_edge = f32::INFINITY;
+                        row.col(|ui| {
+                            right_edge = ui.max_rect().right() + ui.spacing().item_spacing.x / 2.0;
+                            // Feste Größe, damit die Tasten in die Zeilenhöhe passen und mittig sitzen
+                            for list in [0usize, 1] {
+                                let letter = theme::deck_letter(list);
+                                let b = crate::hw::button(ui, vec2(30.0, 20.0), letter, fonts::bold(12.0), crate::hw::Look::Color(theme::deck_color(list)), false, true);
+                                let hint = if in_sel && sel_rows.len() > 1 {
+                                    trf("Auswahl ({} Titel) in Playlist {}", &[&sel_rows.len(), &letter])
+                                } else {
+                                    trf("In Playlist {}", &[&letter])
+                                };
+                                if b.on_hover_text(hint).clicked() {
+                                    out.push(BrowserAction::Add { list, paths: targets() });
+                                }
+                            }
+                        });
+                        row.col(|_| {});
+                        let mut resp = row.response();
+                        if let Some(t) = tip {
+                            resp = resp.on_hover_ui_at_pointer(|ui| {
+                                ui.label(t);
+                            });
+                        }
+                        if in_sel {
+                            // Rahmen um die Auswahl; zusammenhängende Zeilen bekommen einen gemeinsamen Rahmen
+                            let above = i > 0 && picked.contains(&rows[i - 1]);
+                            let below = rows.get(i + 1).is_some_and(|p| picked.contains(p));
+                            // Die Zeilenfläche reicht über die letzte Spalte hinaus; der Rahmen endet an der Spalte
+                            // Wie die Hinterlegung über den halben Zeilenabstand hinweg, damit die Kanten durchlaufen
+                            let gap = resp.ctx.global_style().spacing.item_spacing.y / 2.0;
+                            let mut r = resp.rect.expand2(vec2(-1.0, gap)).shrink(0.75);
+                            r.max.x = r.max.x.min(right_edge - 1.5);
+                            frames.push((r, above, below));
+                        }
+                        if resp.clicked() {
+                            let m = resp.ctx.input(|i| i.modifiers);
+                            picked.click(&rows, path, m.command, m.shift);
+                        }
+                        if resp.secondary_clicked() && !in_sel {
+                            picked.select_only(path);
+                        }
+                        if resp.drag_started() {
+                            resp.dnd_set_drag_payload(DragItem::Files(targets()));
+                        }
+                        resp.context_menu(|ui| track_menu(ui, &targets(), ctx, out));
+                    });
+                });
+            let stroke = egui::Stroke::new(1.5, theme::select_accent());
+            for (r, above, below) in frames {
+                let clip = egui::Rect::from_x_y_ranges(r.expand(2.0).x_range(), body_clip.y_range()).intersect(ui.clip_rect());
+                let p = egui::Painter::new(ui.ctx().clone(), ui.layer_id(), clip);
+                p.vline(r.left(), r.y_range(), stroke);
+                p.vline(r.right(), r.y_range(), stroke);
+                if !above {
+                    p.hline(r.x_range(), r.top(), stroke);
+                }
+                if !below {
+                    p.hline(r.x_range(), r.bottom(), stroke);
+                }
+            }
+        });
+        // Spaltenwahl: Rechtsklick auf den Kopf oder Taste „Spalten“; bleibt beim Anhaken offen
+        if let Some(h) = header_resp {
+            egui::Popup::context_menu(&h)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .show(|ui| self.columns_menu(ui, out));
+        }
+        if let Some(b) = menu_button {
+            egui::Popup::menu(&b)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .show(|ui| self.columns_menu(ui, out));
+        }
+        // Gezogene Breiten merken, sobald die Maus losgelassen ist
+        // Im unsichtbaren Messdurchgang von egui haben die Zellen noch keine Fläche
+        let valid = measured.len() == cols.len() && measured.iter().all(|w| w.is_finite() && *w > 0.0);
+        if valid && !ui.is_sizing_pass() && !ui.input(|i| i.pointer.any_down()) {
+            let mut changed = false;
+            for (c, (w, old)) in cols.iter().zip(measured.iter().zip(&col_widths)) {
+                if (w - old).abs() > 0.5 {
+                    self.widths.insert(*c, w.round());
+                    changed = true;
+                }
+            }
+            if changed {
+                self.columns_changed(out);
             }
         }
     }
+}
+
+/// Zelle mit Text, der bei zu schmaler Spalte mit „…“ endet. Ist er abgeschnitten und steht die Maus
+/// darüber, landet der volle Text in `tip`. Der eigene Tooltip des Labels kommt unter der anklickbaren
+/// Zeile nicht zuverlässig an, deshalb zeigt ihn die Zeile.
+fn elided_cell(ui: &mut egui::Ui, text: RichText, tip: &mut Option<String>) {
+    let full_w = egui::WidgetText::from(text.clone())
+        .into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::FontSelection::Default)
+        .size()
+        .x;
+    if full_w > ui.available_width() + 0.5 && ui.rect_contains_pointer(ui.max_rect()) {
+        *tip = Some(text.text().to_owned());
+    }
+    ui.add(egui::Label::new(text).truncate().show_tooltip_when_elided(false).selectable(false));
 }
 
 enum FolderMenu {
@@ -902,31 +1345,26 @@ fn preview_bar(ui: &mut egui::Ui, rect: egui::Rect, path: &Path, ctx: &BrowserCt
     });
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn subfolders_off_for_drives_and_home() {
-        let root = if cfg!(windows) { PathBuf::from("C:\\") } else { PathBuf::from("/") };
-        assert!(!default_recursive(&root));
-        if let Some(home) = dirs::home_dir() {
-            assert!(!default_recursive(&home));
-            assert!(default_recursive(&home.join("Music")));
-            assert!(!default_recursive(&home.join("Library")));
-        }
-        if !cfg!(windows) {
-            assert!(!default_recursive(Path::new("/Volumes")));
-            assert!(!default_recursive(Path::new("/Volumes/USB-Stick")));
-            assert!(default_recursive(Path::new("/Volumes/USB-Stick/Musik")));
-            assert!(!default_recursive(Path::new("/media/dj/STICK")));
-            assert!(default_recursive(Path::new("/media/dj/STICK/Musik")));
-        }
-    }
-}
 
 /// Taste für das Vollbild: vier Ecken, die nach außen (Vollbild an) oder innen (Vollbild aus) zeigen.
 /// Selbst gezeichnet, weil die Schriften kein passendes Zeichen haben.
+/// Lupe für die erweiterte Suche, selbst gezeichnet (das Zeichen fehlt in den Schriften).
+/// Leuchtet in der Auswahlfarbe, solange Filter aktiv sind oder das Fenster offen ist.
+fn search_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
+    let h = ui.spacing().interact_size.y;
+    let tip = if cfg!(target_os = "macos") { tr("Erweiterte Suche (⇧⌘F)") } else { tr("Erweiterte Suche (Strg+Umschalt+F)") };
+    let resp = ui.add(egui::Button::new("").min_size(egui::vec2(h + 4.0, h))).on_hover_text(tip);
+    let color = if active { theme::select_accent() } else { ui.style().interact(&resp).fg_stroke.color };
+    let stroke = egui::Stroke::new(1.7, color);
+    let c = resp.rect.center() + egui::vec2(-1.5, -1.5);
+    let r = 4.5;
+    let p = ui.painter();
+    p.circle_stroke(c, r, stroke);
+    let d = egui::vec2(1.0, 1.0).normalized();
+    p.line_segment([c + d * (r + 0.5), c + d * (r + 5.0)], egui::Stroke::new(2.2, color));
+    resp
+}
+
 fn fullscreen_button(ui: &mut egui::Ui, fullscreen: bool) -> egui::Response {
     let tip = match (fullscreen, cfg!(target_os = "macos")) {
         (false, true) => tr("Vollbild (⌃⌘F)"),
@@ -950,4 +1388,27 @@ fn fullscreen_button(ui: &mut egui::Ui, fullscreen: bool) -> egui::Response {
         p.line_segment([vertex, vertex + egui::vec2(0.0, dy)], stroke);
     }
     resp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subfolders_off_for_drives_and_home() {
+        let root = if cfg!(windows) { PathBuf::from("C:\\") } else { PathBuf::from("/") };
+        assert!(!default_recursive(&root));
+        if let Some(home) = dirs::home_dir() {
+            assert!(!default_recursive(&home));
+            assert!(default_recursive(&home.join("Music")));
+            assert!(!default_recursive(&home.join("Library")));
+        }
+        if !cfg!(windows) {
+            assert!(!default_recursive(Path::new("/Volumes")));
+            assert!(!default_recursive(Path::new("/Volumes/USB-Stick")));
+            assert!(default_recursive(Path::new("/Volumes/USB-Stick/Musik")));
+            assert!(!default_recursive(Path::new("/media/dj/STICK")));
+            assert!(default_recursive(Path::new("/media/dj/STICK/Musik")));
+        }
+    }
 }

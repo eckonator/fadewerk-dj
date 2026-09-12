@@ -7,8 +7,12 @@
 //! - `FW_PREVIEW=1` hört in der Demo den zweiten Titel vor.
 //! - `FW_TAGS=1` öffnet in der Demo das Fenster „Titelinfo & Tags“ für den ersten Titel.
 //! - `FW_SELECT=1` wählt in der Demo im Ordnerbrowser den 2. bis 4. Titel aus.
+//! - `FW_SEARCH="genre=Rock,year=1980-1989"` öffnet die erweiterte Suche mit diesen Feldern.
+//! - `FW_COLUMNS=artist,album,genre,year,…` zeigt diese Spalten in der Titelliste des Browsers.
 //! - `FW_STEEL=1` schaltet gebürsteten Stahl ein (ohne zu speichern).
 //! - `FW_SETTINGS=audio|sprache|aussehen|ueber` öffnet das Einstellungsfenster auf dieser Seite.
+//! - `FW_POINTER=x,y` bewegt die Maus (in Punkten) nach Bild 100 dorthin, etwa um Tooltips zu sehen;
+//!   `FW_POINTER=x1,y1,x2,y2` zieht mit gedrückter Taste von x1,y1 nach x2,y2 und bleibt dort stehen.
 //! - `FW_SIZE=2400x1350` setzt die Fenstergröße (in `main.rs`).
 //! - `FW_UPDATE_ASK=1` zeigt die Frage nach der Update-Prüfung; `FW_UPDATE_URL=file:///…json` prüft gegen eine
 //!   eigene Release-Antwort (in `app.rs` bzw. `update.rs`).
@@ -38,6 +42,8 @@ pub struct DevTools {
     frame: u64,
     started: Option<std::time::Instant>,
     requested: bool,
+    /// Vorgetäuschte Maus aus `FW_POINTER`.
+    pointer: Vec<f32>,
 }
 
 impl DevTools {
@@ -58,6 +64,10 @@ impl DevTools {
             lang: std::env::var("FW_LANG").ok().map(|l| if l == "en" { Lang::En } else { Lang::De }),
             steel: std::env::var_os("FW_STEEL").is_some(),
             settings_tab: std::env::var("FW_SETTINGS").ok(),
+            pointer: std::env::var("FW_POINTER")
+                .ok()
+                .map(|s| s.split(',').filter_map(|v| v.trim().parse().ok()).collect())
+                .unwrap_or_default(),
             frame: 0,
             started: None,
             requested: false,
@@ -70,6 +80,39 @@ impl DevTools {
         // FW_PERSIST=1 erzwingt Speichern trotzdem, etwa zum Testen mit einem anderen HOME
         std::env::var_os("FW_PERSIST").is_none()
             && (self.screenshot.is_some() || self.demo || self.skin.is_some() || self.lang.is_some() || self.steel || self.settings_tab.is_some())
+    }
+
+    /// Speist die Mausbewegung aus `FW_POINTER` ein (aufgerufen vor jedem Bild).
+    pub fn raw_input(&self, raw: &mut egui::RawInput) {
+        let p = &self.pointer;
+        if p.len() < 2 {
+            return;
+        }
+        let (start, f) = (100u64, self.frame);
+        let pos = |x: f32, y: f32| egui::pos2(x, y);
+        let button = |pressed| Event::PointerButton {
+            pos: if pressed { pos(p[0], p[1]) } else { pos(p[2], p[3]) },
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        if p.len() < 4 {
+            // Nur eine Weile: egui zeigt Tooltips erst, wenn die Maus ruht
+            if (start..start + 10).contains(&f) {
+                raw.events.push(Event::PointerMoved(pos(p[0], p[1])));
+            }
+            return;
+        }
+        // Drücken, in 30 Bildern hinüberziehen, loslassen, stehen bleiben
+        match f {
+            f if f == start => raw.events.extend([Event::PointerMoved(pos(p[0], p[1])), button(true)]),
+            f if f > start && f <= start + 30 => {
+                let k = (f - start) as f32 / 30.0;
+                raw.events.push(Event::PointerMoved(pos(p[0] + (p[2] - p[0]) * k, p[1] + (p[3] - p[1]) * k)));
+            }
+            f if f == start + 31 => raw.events.push(button(false)),
+            _ => {}
+        }
     }
 
     pub fn on_frame(&mut self, ctx: &egui::Context) {

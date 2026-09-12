@@ -32,6 +32,14 @@ pub struct Settings {
     pub browser_height: f32,
     /// Breite des Ordnerbaums im Browser in Punkten, 0 = Standard.
     pub tree_width: f32,
+    /// Sichtbare Spalten der Titelliste im Browser (Schlüssel aus `browser::TrackColumn`), Titel ist immer da.
+    pub track_columns: Vec<String>,
+    /// Vom Nutzer gezogene Spaltenbreiten der Titelliste in Punkten, je Spaltenschlüssel.
+    pub column_widths: Vec<(String, f32)>,
+    /// Erweiterte Suche beim Schließen und Beenden behalten.
+    pub remember_search: bool,
+    /// Zuletzt benutzte erweiterte Suche (nur mit `remember_search`).
+    pub advanced_search: crate::search::AdvancedSearch,
     /// „Mit Unterordnern“ je Ordner, nur wo der Nutzer vom Standard abweicht.
     pub folder_recursion: Vec<(PathBuf, bool)>,
     /// Kennung des Ausgabegeräts (cpal `DeviceId`), `None` = Systemstandard.
@@ -77,6 +85,10 @@ impl Default for Settings {
             brushed_steel: false,
             browser_height: 0.0,
             tree_width: 0.0,
+            track_columns: crate::browser::TrackColumn::DEFAULT.iter().map(|c| c.key().to_owned()).collect(),
+            column_widths: Vec::new(),
+            remember_search: true,
+            advanced_search: Default::default(),
             folder_recursion: Vec::new(),
             output_device: None,
             head_device: None,

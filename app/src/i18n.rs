@@ -192,6 +192,32 @@ fn en(de: &str) -> Option<&'static str> {
         "Track" => "Track",
         "BPM" => "BPM",
         "Kommentar" => "Comment",
+        "Unterordner" => "Subfolder",
+        "Ordner" => "Folder",
+        "Erweiterte Suche" => "Advanced search",
+        "Erweiterte Suche (⇧⌘F)" => "Advanced search (⇧⌘F)",
+        "Erweiterte Suche (Strg+Umschalt+F)" => "Advanced search (Ctrl+Shift+F)",
+        "von" => "from",
+        "bis" => "to",
+        "Sucht in den gewählten Ordnern. Bei Jahr und BPM fallen Titel ohne Angabe heraus; BPM kennt FadeWerk DJ aus den Tags oder nach dem Laden in einen Player." => "Searches the selected folders. For year and BPM, tracks without a value are left out; FadeWerk DJ knows the BPM from the tags or after loading a track into a deck.",
+        "Alles löschen" => "Clear all",
+        "Fertig" => "Done",
+        "FILTER" => "FILTER",
+        "Filter entfernen" => "Remove filter",
+        "Alle entfernen" => "Remove all",
+        "Keine Titel passen zur Suche." => "No tracks match the search.",
+        "Suchfilter merken" => "Remember search filters",
+        "Die Suchfilter bleiben nach dem Schließen des Fensters und nach einem Neustart erhalten." => {
+            "The search filters stay after closing the window and after a restart."
+        }
+        "Bearbeiten …" => "Edit …",
+        "Dateiname" => "File name",
+        "Format" => "Format",
+        "Zeit" => "Time",
+        "SPALTEN" => "COLUMNS",
+        "Spalten anzeigen" => "Show columns",
+        "Spaltenbreiten zurücksetzen" => "Reset column widths",
+        "Spalten auswählen (auch mit Rechtsklick auf den Tabellenkopf)" => "Choose columns (also by right-clicking the table header)",
         "Speichern" => "Save",
         "Schreibt die Tags direkt in die Musikdatei" => "Writes the tags straight into the music file",
         "Zurücksetzen" => "Revert",
@@ -334,5 +360,80 @@ mod tests {
         assert_eq!(tr("Leeren"), "Clear");
         assert_eq!(tr("gibt es nicht"), "gibt es nicht");
         set_lang(Lang::De);
+    }
+
+    /// Liest die String-Literale aller `tr("…")`- und `trf("…", …)`-Aufrufe aus dem Quellcode.
+    fn literal_keys(src: &str) -> Vec<String> {
+        let mut keys = Vec::new();
+        for call in ["tr(\"", "trf(\""] {
+            let mut rest = src;
+            while let Some(i) = rest.find(call) {
+                let before = rest[..i].chars().next_back();
+                rest = &rest[i + call.len()..];
+                // Nur echte Aufrufe, nicht etwa `attr("`
+                if before.is_some_and(|c| c.is_alphanumeric() || c == '_') {
+                    continue;
+                }
+                let mut key = String::new();
+                let mut chars = rest.chars();
+                while let Some(c) = chars.next() {
+                    match c {
+                        '"' => break,
+                        '\\' => match chars.next() {
+                            Some('n') => key.push('\n'),
+                            Some('t') => key.push('\t'),
+                            Some('\n') => {
+                                // Zeilenfortsetzung: führende Leerzeichen der nächsten Zeile fallen weg
+                                let tail = chars.as_str().trim_start();
+                                chars = tail.chars();
+                            }
+                            Some(other) => key.push(other),
+                            None => break,
+                        },
+                        c => key.push(c),
+                    }
+                }
+                keys.push(key);
+            }
+        }
+        keys
+    }
+
+    /// Jeder feste Oberflächentext im Code hat eine englische Übersetzung. Schlägt fehl, sobald ein neuer
+    /// Text ohne Eintrag in `en()` dazukommt.
+    #[test]
+    fn every_literal_ui_text_has_an_english_translation() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut missing = Vec::new();
+        let mut found = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|e| e != "rs") || path.ends_with("i18n.rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).unwrap();
+            for key in literal_keys(&src) {
+                found += 1;
+                if key.chars().any(char::is_alphabetic) && en(&key).is_none() {
+                    missing.push(format!("{}: {key:?}", path.file_name().unwrap().to_string_lossy()));
+                }
+            }
+        }
+        // Schutz davor, dass der Test wegen eines Lesefehlers nichts mehr findet
+        assert!(found > 150, "nur {found} Texte gefunden");
+        assert!(missing.is_empty(), "Englische Übersetzung fehlt:\n{}", missing.join("\n"));
+    }
+
+    /// Texte, die über Tabellen statt als Literal in `tr()` laufen.
+    #[test]
+    fn listed_names_have_english_translations() {
+        let names = crate::browser::TrackColumn::ALL
+            .iter()
+            .map(|c| c.name())
+            .chain(crate::search::Field::ALL.iter().map(|f| f.name()))
+            .chain(["Titel"]);
+        for n in names {
+            assert!(en(n).is_some(), "Englische Übersetzung fehlt: {n:?}");
+        }
     }
 }
