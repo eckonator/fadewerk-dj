@@ -24,6 +24,8 @@ pub enum PlaylistAction {
     Preview(PathBuf),
     StopPreview,
     EditTags(PathBuf),
+    /// Tempo neu ermitteln (auch mit BPM im Tag), wie „BPM analysieren“ im Ordnerbrowser.
+    AnalyzeBpm(PathBuf),
     /// Titel direkt hinter den geladenen verschieben.
     PlayNext(usize),
 }
@@ -136,6 +138,11 @@ pub fn show(
                 ui.separator();
                 if ui.button(tr("Titelinfo & Tags …")).clicked() {
                     out.push(PlaylistAction::EditTags(path.clone()));
+                    ui.close();
+                }
+                let hint = tr("Tempo im Hintergrund neu ermitteln, auch wenn eine BPM-Angabe im Tag steht. Der Wert wird gemerkt.");
+                if ui.button(tr("BPM analysieren")).on_hover_text(hint).clicked() {
+                    out.push(PlaylistAction::AnalyzeBpm(path.clone()));
                     ui.close();
                 }
                 ui.separator();

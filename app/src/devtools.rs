@@ -13,6 +13,7 @@
 //! - `FW_STEEL=1` schaltet gebürsteten Stahl ein (ohne zu speichern).
 //! - `FW_SETTINGS=audio|sprache|aussehen|ueber` öffnet das Einstellungsfenster auf dieser Seite.
 //! - `FW_POINTER=x,y` bewegt die Maus (in Punkten) nach Bild 100 dorthin, etwa um Tooltips zu sehen;
+//!   `FW_POINTER=x,y,2` klickt dort rechts (Kontextmenü);
 //!   `FW_POINTER=x1,y1,x2,y2` zieht mit gedrückter Taste von x1,y1 nach x2,y2 und bleibt dort stehen.
 //! - `FW_SIZE=2400x1350` setzt die Fenstergröße (in `main.rs`).
 //! - `FW_UPDATE_ASK=1` zeigt die Frage nach der Update-Prüfung; `FW_UPDATE_URL=file:///…json` prüft gegen eine
@@ -97,6 +98,21 @@ impl DevTools {
             pressed,
             modifiers: Default::default(),
         };
+        if p.len() == 3 {
+            // x,y,2: Rechtsklick dort (Kontextmenü)
+            if f == start {
+                raw.events.push(Event::PointerMoved(pos(p[0], p[1])));
+            }
+            if f == start + 2 || f == start + 3 {
+                raw.events.push(Event::PointerButton {
+                    pos: pos(p[0], p[1]),
+                    button: egui::PointerButton::Secondary,
+                    pressed: f == start + 2,
+                    modifiers: Default::default(),
+                });
+            }
+            return;
+        }
         if p.len() < 4 {
             // Nur eine Weile: egui zeigt Tooltips erst, wenn die Maus ruht
             if (start..start + 10).contains(&f) {
