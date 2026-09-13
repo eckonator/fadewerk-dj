@@ -221,8 +221,9 @@ pub struct Browser {
     pending_scan: Option<Vec<(PathBuf, bool)>>,
     error: Option<String>,
     filter: String,
-    /// Für diesen Suchtext wurden die Tags aller Titel schon angefordert.
-    meta_requested_for: String,
+    /// Für so viele Titel (von vorn) wurden die Tags für die Suche schon angefordert. Die Hintergrundsuche
+    /// liefert Titel nach und nach, die später eintreffenden werden nachgefordert.
+    meta_requested_upto: usize,
     subdirs: HashMap<PathBuf, Vec<PathBuf>>,
     /// „Mit Unterordnern“ je Ordner, nur wo der Nutzer vom Standard abweicht (siehe [`default_recursive`]).
     recursion: HashMap<PathBuf, bool>,
@@ -281,7 +282,7 @@ impl Browser {
             pending_scan: None,
             error: None,
             filter: String::new(),
-            meta_requested_for: String::new(),
+            meta_requested_upto: 0,
             subdirs: HashMap::new(),
             recursion: recursion.iter().cloned().collect(),
             stopped: false,
@@ -527,7 +528,7 @@ impl Browser {
         self.limited = false;
         self.picked.clear();
         self.queued = None;
-        self.meta_requested_for.clear();
+        self.meta_requested_upto = 0;
         let mut readable = Vec::new();
         self.error = None;
         for path in &self.selected {
@@ -825,13 +826,14 @@ impl Browser {
         }
         let dirs = self.selected.clone();
         let f = self.filter.trim().to_lowercase();
-        // Für die Suche nach Interpret und Titel einmal alle Tags im Hintergrund anfordern
+        // Für die Suche alle Tags im Hintergrund anfordern, auch für Titel, die die Ordnersuche noch nachliefert
         let searching = !f.is_empty() || !self.adv.is_empty();
-        if searching && self.meta_requested_for.is_empty() {
-            out.extend(self.tracks.iter().filter(|p| !ctx.metas.contains_key(*p)).map(|p| BrowserAction::NeedMeta(p.clone())));
-            self.meta_requested_for = "x".into();
+        if searching && self.meta_requested_upto < self.tracks.len() {
+            let new = &self.tracks[self.meta_requested_upto..];
+            out.extend(new.iter().filter(|p| !ctx.metas.contains_key(*p)).map(|p| BrowserAction::NeedMeta(p.clone())));
+            self.meta_requested_upto = self.tracks.len();
         } else if !searching {
-            self.meta_requested_for.clear();
+            self.meta_requested_upto = 0;
         }
         // Alle Suchwörter müssen vorkommen, in beliebiger Reihenfolge
         let words: Vec<&str> = f.split_whitespace().collect();
@@ -1298,6 +1300,12 @@ fn track_menu(ui: &mut egui::Ui, paths: &[PathBuf], ctx: &BrowserCtx<'_>, out: &
         let b = ui.button(trf("Als Nächstes in Playlist {}", &[&theme::deck_letter(list)]));
         if b.on_hover_text(tr("Direkt hinter den geladenen Titel")).clicked() {
             act = Some(BrowserAction::AddNext { list, paths: paths.to_vec() });
+        }
+    }
+    if paths.len() > 1 {
+        let hint = tr("Abwechselnd ein Titel nach A, der nächste nach B. Passt zum Auto-Fade.");
+        if ui.button(tr("Auf Playlist A und B verteilen")).on_hover_text(hint).clicked() {
+            act = Some(BrowserAction::Distribute(paths.to_vec()));
         }
     }
     ui.separator();
