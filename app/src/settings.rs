@@ -75,6 +75,8 @@ pub struct Settings {
     pub deck_height: f32,
     /// Beim Start bei GitHub nach einer neuen Version fragen; `None` = noch nicht gefragt.
     pub update_check: Option<bool>,
+    /// Gespielte Titel in der Historie aufzeichnen.
+    pub record_history: bool,
 }
 
 impl Default for Settings {
@@ -110,6 +112,7 @@ impl Default for Settings {
             ui_zoom: 1.0,
             deck_height: 0.0,
             update_check: None,
+            record_history: true,
         }
     }
 }

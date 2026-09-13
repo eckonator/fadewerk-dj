@@ -225,16 +225,15 @@ fn waveform(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, out: &mut Vec<
         }
     }
     let cols = (rect.width() / 2.0) as usize;
-    for i in 0..cols {
-        let x = rect.left() + i as f32 * 2.0;
+    wave_mesh(&p, rect.left(), mid, rect.width() / cols as f32, cols, |i| {
         let t = t0 + (i as f64 / cols as f64) * WAVE_SPAN;
         if t < 0.0 || t > m.duration {
-            continue;
+            return None;
         }
         let v = wf.max_in(t, t + WAVE_SPAN / cols as f64) * (rect.height() * 0.47);
         let c = if t < m.position { Color32::from_rgba_unmultiplied(230, 235, 245, 70) } else { color };
-        p.line_segment([pos2(x, mid - v), pos2(x, mid + v)], Stroke::new(1.5, c));
-    }
+        Some((v, c))
+    });
     p.line_segment([pos2(rect.center().x, rect.top()), pos2(rect.center().x, rect.bottom())], Stroke::new(2.0, Color32::WHITE));
 
     // Festhalten = anhalten, ziehen = scratchen, tippen = Play/Pause
@@ -256,6 +255,19 @@ fn waveform(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, out: &mut Vec<
     resp.on_hover_text(tr("Festhalten hält an, ziehen scratcht, tippen startet oder pausiert"));
 }
 
+/// Wellenform als geschlossene Fläche: je Spalte ein lückenloses Rechteck (Ausschlag `v` um `mid`).
+/// Einzelne Striche ließen feine Lücken stehen, die wie ein Gitter wirkten.
+fn wave_mesh(p: &egui::Painter, left: f32, mid: f32, col_w: f32, cols: usize, mut column: impl FnMut(usize) -> Option<(f32, Color32)>) {
+    let mut mesh = egui::Mesh::default();
+    for i in 0..cols {
+        let Some((v, c)) = column(i) else { continue };
+        let x = left + i as f32 * col_w;
+        let v = v.max(0.5);
+        mesh.add_colored_rect(Rect::from_min_max(pos2(x, mid - v), pos2(x + col_w, mid + v)), c);
+    }
+    p.add(egui::Shape::mesh(mesh));
+}
+
 fn overview(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, out: &mut Vec<DeckAction>) {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 16.0 * k().min(1.3)), Sense::click_and_drag());
     hw::well(ui.painter(), rect, 3.0);
@@ -263,13 +275,12 @@ fn overview(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, out: &mut Vec<
     let (Some(wf), true) = (m.waveform, m.has_track && m.duration > 0.0) else { return };
     let frac = (m.position / m.duration) as f32;
     let cols = (rect.width() / 2.0) as usize;
-    for i in 0..cols {
+    wave_mesh(&p, rect.left(), rect.center().y, rect.width() / cols as f32, cols, |i| {
         let f0 = i as f64 / cols as f64;
         let v = wf.max_in(f0 * m.duration, (f0 + 1.0 / cols as f64) * m.duration) * rect.height() * 0.45;
-        let x = rect.left() + i as f32 * 2.0;
         let c = if (f0 as f32) < frac { color } else { Color32::from_rgba_unmultiplied(230, 235, 245, 60) };
-        p.line_segment([pos2(x, rect.center().y - v), pos2(x, rect.center().y + v)], Stroke::new(1.5, c));
-    }
+        Some((v, c))
+    });
     let x = rect.left() + frac * rect.width();
     p.line_segment([pos2(x, rect.top()), pos2(x, rect.bottom())], Stroke::new(2.0, Color32::WHITE));
     if (resp.clicked() || resp.dragged()) && let Some(pos) = resp.interact_pointer_pos() {

@@ -33,6 +33,7 @@ pub enum SettingsAction {
     Brushed(bool),
     OpenGl(bool),
     UpdateCheck(bool),
+    RecordHistory(bool),
     Zoom(f32),
     RevealLog,
 }
@@ -257,6 +258,18 @@ impl SettingsUi {
         });
         ui.label(
             RichText::new(tr("Kleiner Puffer: weniger Verzögerung beim Scratchen, aber mehr Rechenlast. Bei Knacksern größer wählen."))
+                .size(12.0)
+                .color(theme::dim()),
+        );
+
+        ui.add_space(10.0);
+        ui.label(RichText::new(tr("Historie")).strong());
+        let mut record = s.record_history;
+        if ui.checkbox(&mut record, RichText::new(tr("Gespielte Titel aufzeichnen")).size(14.0)).changed() {
+            out.push(SettingsAction::RecordHistory(record));
+        }
+        ui.label(
+            RichText::new(tr("Ein Titel zählt, sobald er 30 Sekunden über Master zu hören war. Zu finden im Ordnerbrowser unter „Historie“."))
                 .size(12.0)
                 .color(theme::dim()),
         );
