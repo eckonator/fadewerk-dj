@@ -234,6 +234,7 @@ fn en(de: &str) -> Option<&'static str> {
         "Zeit" => "Time",
         "SPALTEN" => "COLUMNS",
         "Spalten anzeigen" => "Show columns",
+        "Tonarm ziehen = an diese Stelle springen" => "Drag the tonearm = jump to that spot",
         // Historie
         "Historie" => "History",
         "Gespielte Titel, Tag für Tag" => "Played tracks, day by day",
