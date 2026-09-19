@@ -734,9 +734,12 @@ impl FadeWerkDjApp {
     fn demo_history(&mut self, tracks: &[PathBuf]) {
         let today = crate::history::history_date(crate::history::now_local());
         // Ein Titel, dessen Datei fehlt (wird ausgegraut gezeigt)
-        let gone = PathBuf::from("/gibt/es/nicht/Unbekannt - Verschollen.mp3");
+        // Namen passend zur Sprache, damit englische Screenshots nichts Deutsches zeigen
+        let en = i18n::lang() == i18n::Lang::En;
+        let (artist, title, name) = if en { ("Unknown", "Lost Track", "Grandma's birthday") } else { ("Unbekannt", "Verschollen", "Omas Geburtstag") };
+        let gone = PathBuf::from(format!("/gibt/es/nicht/{artist} - {title}.mp3"));
         let at = today.at(19, 56, 0, 0);
-        self.history.record(Entry { path: gone, title: "Verschollen".into(), artist: "Unbekannt".into(), played_at: Some(at.strftime("%Y-%m-%dT%H:%M:%S").to_string()), deck: Some(0), ..Default::default() });
+        self.history.record(Entry { path: gone, title: title.into(), artist: artist.into(), played_at: Some(at.strftime("%Y-%m-%dT%H:%M:%S").to_string()), deck: Some(0), ..Default::default() });
         for (k, p) in tracks.iter().enumerate() {
             let meta = TrackMeta::from_filename(p);
             let day = if k < 3 { today.yesterday().unwrap_or(today) } else { today };
@@ -751,7 +754,7 @@ impl FadeWerkDjApp {
                 ..Default::default()
             });
         }
-        self.history.rename(&today.to_string(), "Omas Geburtstag");
+        self.history.rename(&today.to_string(), name);
         self.browser.open_history_day(today.to_string());
     }
 
