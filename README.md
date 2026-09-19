@@ -33,6 +33,7 @@ written in Rust. Click a folder and start playing: no database, no library impor
   with time and deck. A track counts once it has been audible on master for 30 seconds; tracks until
   6 am belong to the day before. Give a day a name (“Grandma’s birthday”), remove entries, export it as
   M3U8 playlist, CSV table or FadeWerk DJ history file, and import such files or any M3U playlist.
+  “Restore” fills playlists A and B again the way the day was played.
   Recording can be switched off in the settings.
 - **A turntable per deck**: drag the platter or the waveform to scratch forwards and backwards,
   hold it to stop the record, tap the waveform to play or pause. Embedded cover art turns the record
@@ -46,7 +47,8 @@ written in Rust. Click a folder and start playing: no database, no library impor
 - **Pre-listening** per deck, in the playlists and right in the folder browser. Headphones via
   split output (left master, right headphones), on outputs 3/4 of a multichannel interface,
   or on a separate second audio device.
-- **Mixer** with LED meters (A, main, B), channel faders, master and headphone mix, and a
+- **Mixer** with LED meters (A, main, B; on wider windows the main meter adds a spectrum of up to
+  ten octave bands between left and right), channel faders, master and headphone mix, and a
   **3-band EQ per deck** (isolator, −26 to +6 dB) with kill buttons.
   Right-click or double-click resets any fader to its default.
 - **Playlists**: fill and reorder by drag & drop, also between A and B; drop tracks straight onto
@@ -120,7 +122,7 @@ A push without a version change replaces that release; raise `version` for a new
 
 | Part | Purpose |
 |---|---|
-| `crates/engine` | Real-time audio: decks with motor, scratch, cue and loop, mixer, crossfader, headphone path, auto-fade logic. No GUI or system dependencies, tested. |
+| `crates/engine` | Real-time audio: decks with motor, scratch, cue and loop, mixer, crossfader, EQ, headphone path, spectrum bands for the main meter, auto-fade logic. No GUI or system dependencies, tested. |
 | `crates/library` | Live folder reading, tags (lofty), decoding (Symphonia), waveform, BPM detection, background threads. |
 | `app` | User interface with egui, audio output with cpal, settings, skins; ties everything together. |
 
@@ -139,11 +141,18 @@ Code comments are in German; issues and contributions in English are welcome.
 | `FW_SIZE=1600x1000` | Window size. |
 | `FW_SKIN=nacht\|classic\|tag\|neon`, `FW_STEEL=1`, `FW_LANG=de\|en` | Look and language. |
 | `FW_PREVIEW=1` | Pre-listens to the second track in the demo. |
-| `FW_SETTINGS=audio\|sprache\|aussehen` | Opens the settings window. |
+| `FW_SELECT=1` | Selects tracks 2 to 4 in the folder browser. |
+| `FW_HISTORY=1` | Creates two example days in the history (one with a missing file) and opens the newer one. |
+| `FW_TAGS=1` | Opens “Track info & tags” for the first track. |
+| `FW_BPM=1` | Detects the missing BPM of the start folder. |
+| `FW_SEARCH="genre=rock,year=1980-1989"` | Opens the advanced search with these fields. |
+| `FW_COLUMNS=artist,album,genre,…` | Shows these columns in the track list. |
+| `FW_POINTER=x,y` | Moves the mouse there (points); `x,y,1` clicks, `x,y,2` right-clicks, `x1,y1,x2,y2` drags. |
+| `FW_SETTINGS=audio\|sprache\|aussehen\|ueber` | Opens the settings window. |
 | `FW_UPDATE_ASK=1` | Shows the question whether to check for updates. |
 | `FW_UPDATE_URL=file:///path/release.json` | Checks for updates against your own release JSON (`tag_name`, `html_url`). |
 
-With these switches FadeWerk DJ saves nothing.
+With these switches FadeWerk DJ saves nothing (`FW_PERSIST=1` forces saving, best with a separate `HOME`).
 
 ## Roadmap
 

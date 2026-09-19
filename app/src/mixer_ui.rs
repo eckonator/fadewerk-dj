@@ -11,6 +11,8 @@ use crate::{fonts, hw, settings};
 
 pub struct MixerModel<'a> {
     pub meters: &'a [Meter; 3],
+    /// Frequenzbänder des Masters (zwischen L und R von MAIN, wenn Platz ist).
+    pub bands: &'a crate::meter::Bands,
     pub volume: [f32; 2],
     pub head_mode: HeadMode,
     pub head_mix: f32,
@@ -84,7 +86,7 @@ pub fn show_mixer(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerActi
         hw::well(&p, r.expand(2.0), 3.0);
     }
     m.meters[0].paint(&p, led_a);
-    m.meters[2].paint(&p, led_m);
+    m.meters[2].paint_with_bands(&p, led_m, Some(m.bands), main_base);
     m.meters[1].paint(&p, led_b);
     for (deck, r) in [(0usize, fad_a), (1, fad_b)] {
         if let (_, Some(v)) = hw::vertical_fader(ui, r, ("chfader", deck), m.volume[deck], settings::DEFAULT_CHANNEL_VOLUME, false) {

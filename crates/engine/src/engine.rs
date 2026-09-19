@@ -8,6 +8,7 @@ use crate::eq::Eq;
 use crate::headlink::HeadSink;
 use crate::mixer::{Curve, HeadMode};
 use crate::motor::Motor;
+use crate::spectrum::{BANDS, Spectrum};
 use crate::track::TrackAudio;
 
 /// Anzahl der Player.
@@ -86,6 +87,8 @@ pub struct Shared {
     pub decks: [DeckStatus; VOICES],
     /// Spitzenpegel seit dem letzten Abholen: A, B, Master, jeweils links/rechts.
     levels: [[AtomicF32; 2]; 3],
+    /// Spitzenwerte der Frequenzbänder des Masters seit dem letzten Abholen.
+    bands: [AtomicF32; BANDS],
     crossfader: AtomicF32,
 }
 
@@ -94,6 +97,11 @@ impl Shared {
     /// Die Kanäle A und B werden nach dem Kanalfader und vor dem Crossfader gemessen.
     pub fn take_levels(&self) -> [[f32; 2]; 3] {
         std::array::from_fn(|i| [self.levels[i][0].take(), self.levels[i][1].take()])
+    }
+
+    /// Holt die Spitzenwerte der Frequenzbänder des Masters seit dem letzten Aufruf ab (tiefe zuerst).
+    pub fn take_bands(&self) -> [f32; BANDS] {
+        std::array::from_fn(|i| self.bands[i].take())
     }
 
     /// Aktuelle (geglättete) Crossfader-Stellung im Audio-Thread.
@@ -148,6 +156,7 @@ pub struct Engine {
     head_volume: f32,
     master_volume: f32,
     head_sink: Option<HeadSink>,
+    spectrum: Spectrum,
 }
 
 impl Engine {
@@ -160,6 +169,7 @@ impl Engine {
             channels,
             decks: Default::default(),
             levels: Default::default(),
+            bands: Default::default(),
             crossfader: AtomicF32::new(-1.0),
         });
         let engine = Engine {
@@ -176,6 +186,7 @@ impl Engine {
             volume: [0.85; DECKS],
             pfl: [false; DECKS],
             eq: std::array::from_fn(|_| Eq::new(sample_rate)),
+            spectrum: Spectrum::new(sample_rate),
             head_mode: HeadMode::Off,
             head_mix: 0.0,
             head_volume: 0.8,
@@ -297,6 +308,7 @@ impl Engine {
                     peaks[1][c] = peaks[1][c].max(cb[c].abs());
                     peaks[2][c] = peaks[2][c].max(master[c].abs());
                 }
+                self.spectrum.push(0.5 * (master[0] + master[1]));
                 let head = [
                     (cue[0] * (1.0 - self.head_mix) + master[0] * self.head_mix) * self.head_volume,
                     (cue[1] * (1.0 - self.head_mix) + master[1] * self.head_mix) * self.head_volume,
@@ -330,6 +342,9 @@ impl Engine {
         for (lv, pk) in s.levels.iter().zip(peaks) {
             lv[0].fetch_max_positive(pk[0]);
             lv[1].fetch_max_positive(pk[1]);
+        }
+        for (b, pk) in s.bands.iter().zip(self.spectrum.take()) {
+            b.fetch_max_positive(pk);
         }
         s.crossfader.store(self.xf);
     }
