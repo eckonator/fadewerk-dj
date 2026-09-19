@@ -1491,13 +1491,27 @@ fn list_tools(ui: &mut egui::Ui, ctx: &BrowserCtx<'_>, rows: &[PathBuf], sel_row
     .inner
 }
 
-/// Eintrag im Ordnerbaum, ausgewählt mit Rahmen in der Auswahlfarbe.
+/// Eintrag im Ordnerbaum, ausgewählt mit Rahmen in der Auswahlfarbe. Selbst gezeichnet mit fester Größe:
+/// Der egui-Button bekommt beim Überfahren einen Rahmen, der den Text um einen Punkt verschiebt.
 fn tree_button(ui: &mut egui::Ui, text: &str, selected: bool) -> egui::Response {
-    let text = RichText::new(text).font(fonts::list(12.5)).color(if selected { theme::ink() } else { theme::dim() });
-    ui.visuals_mut().selection.bg_fill = theme::row_selected();
-    let resp = ui.add(Button::selectable(selected, text).frame_when_inactive(false));
-    if selected {
-        ui.painter().rect_stroke(resp.rect, 4.0, egui::Stroke::new(1.5, theme::select_accent()), egui::StrokeKind::Inside);
+    let galley = ui.painter().layout_no_wrap(text.to_owned(), fonts::list(12.5), theme::dim());
+    let pad = ui.spacing().button_padding;
+    let size = vec2(galley.size().x + 2.0 * pad.x, (galley.size().y + 2.0 * pad.y).max(ui.spacing().interact_size.y));
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    if ui.is_rect_visible(rect) {
+        let p = ui.painter();
+        let hovered = resp.hovered();
+        if selected {
+            p.rect_filled(rect, 4.0, theme::row_selected());
+        } else if hovered {
+            p.rect_filled(rect, 4.0, theme::row_hover());
+        }
+        let color = if selected || hovered { theme::ink() } else { theme::dim() };
+        let pos = egui::pos2(rect.left() + pad.x, rect.center().y - galley.size().y / 2.0);
+        p.galley_with_override_text_color(pos, galley, color);
+        if selected {
+            p.rect_stroke(rect, 4.0, egui::Stroke::new(1.5, theme::select_accent()), egui::StrokeKind::Inside);
+        }
     }
     resp
 }
