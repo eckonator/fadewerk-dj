@@ -89,6 +89,8 @@ pub struct Shared {
     levels: [[AtomicF32; 2]; 3],
     /// Spitzenwerte der Frequenzbänder des Masters seit dem letzten Abholen.
     bands: [AtomicF32; BANDS],
+    /// Frequenzbänder berechnen (aus, wenn die Oberfläche sie nicht zeigt).
+    spectrum_on: AtomicBool,
     crossfader: AtomicF32,
 }
 
@@ -102,6 +104,11 @@ impl Shared {
     /// Holt die Spitzenwerte der Frequenzbänder des Masters seit dem letzten Aufruf ab (tiefe zuerst).
     pub fn take_bands(&self) -> [f32; BANDS] {
         std::array::from_fn(|i| self.bands[i].take())
+    }
+
+    /// Schaltet die Berechnung der Frequenzbänder im Audio-Thread an oder aus.
+    pub fn set_spectrum(&self, on: bool) {
+        self.spectrum_on.store(on, Ordering::Relaxed);
     }
 
     /// Aktuelle (geglättete) Crossfader-Stellung im Audio-Thread.
@@ -170,6 +177,7 @@ impl Engine {
             decks: Default::default(),
             levels: Default::default(),
             bands: Default::default(),
+            spectrum_on: AtomicBool::new(true),
             crossfader: AtomicF32::new(-1.0),
         });
         let engine = Engine {
@@ -266,6 +274,7 @@ impl Engine {
         }
         let rate = self.shared.sample_rate as f32;
         let mut peaks = [[0.0f32; 2]; 3];
+        let spectrum_on = self.shared.spectrum_on.load(Ordering::Relaxed);
 
         for block in out.chunks_mut(CHUNK * channels) {
             let n = block.len() / channels;
@@ -308,7 +317,9 @@ impl Engine {
                     peaks[1][c] = peaks[1][c].max(cb[c].abs());
                     peaks[2][c] = peaks[2][c].max(master[c].abs());
                 }
-                self.spectrum.push(0.5 * (master[0] + master[1]));
+                if spectrum_on {
+                    self.spectrum.push(0.5 * (master[0] + master[1]));
+                }
                 let head = [
                     (cue[0] * (1.0 - self.head_mix) + master[0] * self.head_mix) * self.head_volume,
                     (cue[1] * (1.0 - self.head_mix) + master[1] * self.head_mix) * self.head_volume,

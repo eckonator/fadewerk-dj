@@ -27,8 +27,12 @@ pub fn contrast(face: Color32) -> Color32 {
     if l > 150.0 { Color32::from_rgb(12, 14, 20) } else { Color32::from_rgb(246, 248, 252) }
 }
 
-/// Abgerundetes Rechteck mit senkrechtem Verlauf.
+/// Abgerundetes Rechteck mit senkrechtem Verlauf (sparsame Darstellung: einfarbig).
 pub fn gradient_rrect(p: &Painter, rect: Rect, radius: f32, top: Color32, bottom: Color32) {
+    if theme::lite() {
+        p.rect_filled(rect, radius, mix(top, bottom, 0.5));
+        return;
+    }
     let pts = rrect_points(rect, radius);
     if pts.len() < 3 {
         return;
@@ -234,6 +238,9 @@ pub fn surface(p: &Painter, rect: Rect, radius: f32, top: Color32, bottom: Color
 }
 
 fn shadow(p: &Painter, rect: Rect, radius: f32, dy: i8, blur: u8, alpha: u8) {
+    if theme::lite() {
+        return;
+    }
     let s = Shadow { offset: [0, dy], blur, spread: 0, color: Color32::from_black_alpha(alpha) };
     p.add(s.as_shape(rect, CornerRadius::same(radius as u8)));
 }
@@ -260,7 +267,8 @@ pub fn panel(p: &Painter, rect: Rect) {
 /// Leuchtender Warnrahmen um ein Panel (z. B. Titel kurz vor dem Ende), mit Schein nach außen.
 pub fn alert_border(p: &Painter, rect: Rect, color: Color32) {
     let r = 8.0;
-    for k in 1..=4 {
+    let glow = if theme::lite() { 0 } else { 4 };
+    for k in 1..=glow {
         let a = 90.0 / k as f32 / 255.0;
         p.rect_stroke(rect.expand(k as f32 * 1.8), r + k as f32, Stroke::new(1.8, color.gamma_multiply(a)), StrokeKind::Outside);
     }
@@ -330,7 +338,7 @@ fn paint_button_face(p: &Painter, rect: Rect, look: Look, lit: bool, pressed: bo
     if !pressed {
         shadow(p, rect, r, 2, 5, if s.dark { 140 } else { 70 });
     }
-    if lit {
+    if lit && !theme::lite() {
         // LED-Schein um die Taste
         for k in 1..=4 {
             let a = (70 / k) as u8;
@@ -396,8 +404,10 @@ pub fn preview_button(ui: &mut egui::Ui, size: egui::Vec2, previewing: bool) -> 
 
 /// Text in 7-Segment-Schrift mit schwach sichtbaren, unbeleuchteten Segmenten dahinter.
 pub fn lcd_text(p: &Painter, pos: Pos2, align: Align2, text: &str, size: f32, color: Color32) {
-    let ghost: String = text.chars().map(|c| if c.is_ascii_digit() || c == '-' || c == ' ' { '8' } else { c }).collect();
-    p.text(pos, align, ghost, fonts::lcd(size), color.gamma_multiply(0.09));
+    if !theme::lite() {
+        let ghost: String = text.chars().map(|c| if c.is_ascii_digit() || c == '-' || c == ' ' { '8' } else { c }).collect();
+        p.text(pos, align, ghost, fonts::lcd(size), color.gamma_multiply(0.09));
+    }
     p.text(pos, align, text, fonts::lcd(size), color);
 }
 

@@ -330,9 +330,11 @@ fn platter(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, rect: Rect, out
 fn paint_platter(ui: &egui::Ui, c: Pos2, r: f32, angle: f32, color: Color32, m: &DeckModel<'_>, grabbing: bool) {
     let p = ui.painter();
     let rot = |a: f32, rr: f32| c + vec2((a + angle).cos(), (a + angle).sin()) * rr;
+    // Sparsame Darstellung: ohne Schatten und Lichtreflex, weniger Stroboskop-Punkte und Rillen
+    let lite = theme::lite();
 
     // Schatten unter dem Teller, dann Metallrand mit Glanz oben links und Stroboskop-Punkten
-    for k in 0..6 {
+    for k in 0..if lite { 0 } else { 6 } {
         p.circle_filled(c + vec2(0.0, 5.0), r + 4.0 - k as f32 * 1.5, Color32::from_black_alpha(18));
     }
     p.circle_filled(c, r, Color32::from_rgb(0x2c, 0x34, 0x46));
@@ -343,8 +345,9 @@ fn paint_platter(ui: &egui::Ui, c: Pos2, r: f32, angle: f32, color: Color32, m: 
     arc(3.4, 5.4, r - 1.5, Stroke::new(2.5, Color32::from_white_alpha(60)));
     arc(0.3, 2.3, r - 1.5, Stroke::new(2.5, Color32::from_black_alpha(90)));
     p.circle_stroke(c, r * 0.915, Stroke::new(2.0, Color32::from_black_alpha(140)));
-    for i in 0..72 {
-        p.circle_filled(rot(i as f32 / 72.0 * TAU, r * 0.955), (r * 0.012).max(1.0), Color32::from_rgb(0xcf, 0xd6, 0xe4));
+    let dots = if lite { 24 } else { 72 };
+    for i in 0..dots {
+        p.circle_filled(rot(i as f32 / dots as f32 * TAU, r * 0.955), (r * 0.012).max(1.0), Color32::from_rgb(0xcf, 0xd6, 0xe4));
     }
     // Vinyl mit Rillen; mit Cover bleibt nur ein schmaler Rillenrand außen (Picture-Disc)
     let cover = m.cover.filter(|_| m.has_track);
@@ -357,11 +360,12 @@ fn paint_platter(ui: &egui::Ui, c: Pos2, r: f32, angle: f32, color: Color32, m: 
     let mut k = 0;
     while rr < r * 0.89 {
         p.circle_stroke(c, rr, Stroke::new(1.0, Color32::from_white_alpha(if k % 3 == 0 { 12 } else { 6 })));
-        rr += r * 0.022;
+        rr += r * if lite { 0.066 } else { 0.022 };
         k += 1;
     }
     // Lichtreflex steht still, während die Platte darunter dreht
-    for (a, alpha) in [(-2.4f32, 16u8), (0.7, 10)] {
+    let reflexes: &[(f32, u8)] = if lite { &[] } else { &[(-2.4, 16), (0.7, 10)] };
+    for &(a, alpha) in reflexes {
         let pts: Vec<Pos2> = (0..=12)
             .map(|i| { let t = a - 0.35 + i as f32 / 12.0 * 0.7; c + vec2(t.cos(), t.sin()) * r * 0.86 })
             .chain((0..=12).rev().map(|i| { let t = a - 0.25 + i as f32 / 12.0 * 0.5; c + vec2(t.cos(), t.sin()) * r * 0.4 }))
@@ -484,9 +488,11 @@ fn tonearm(ui: &mut egui::Ui, m: &DeckModel<'_>, rect: Rect, mirrored: bool, out
         resp.clone().on_hover_cursor(egui::CursorIcon::Grab).on_hover_text(tr("Tonarm ziehen = an diese Stelle springen"));
     }
 
-    // Schwenk und Heben weich, beim Ziehen folgt der Arm der Hand
+    // Schwenk und Heben weich, beim Ziehen folgt der Arm der Hand. Dem langsamen Wandern in der Rille folgt
+    // er direkt: Eine Animation mit jedes Bild neuem Ziel würde selbst ständig neue Bilder anfordern.
     let rho = match dragging {
         Some(d) => ctx.animate_value_with_time(id.with("rho"), d, 0.0),
+        None if (shown - target).abs() < 0.01 => ctx.animate_value_with_time(id.with("rho"), target, 0.0),
         // Zurück auf die Stütze geht es zügig, das Aufsetzen auf die Platte gemächlich
         None => ctx.animate_value_with_time(id.with("rho"), target, if target == ARM_REST { ARM_RETURN_SECS } else { ARM_SWING_SECS }),
     };

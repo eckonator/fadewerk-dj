@@ -58,6 +58,11 @@ written in Rust. Click a folder and start playing: no database, no library impor
 - **Skins** Night, Classic, Day and Neon, optionally with a brushed steel look.
   The layout adapts to the window size, including 4K monitors. **Full screen** via the button
   in the folder browser, F11 or ⌃⌘F on macOS.
+- **Light on resources**: when nothing is playing, the interface only redraws on input. A
+  **lightweight display** for older or slower computers drops shadows, gradients, glow and the
+  spectrum and limits drawing to 30 frames per second.
+- **No sleep while playing**: display and computer stay awake as long as a deck or pre-listen is
+  playing (can be switched off).
 - User interface in **English and German**.
 - **No telemetry, no account.** The only network request is an optional check for new versions on
   GitHub. FadeWerk DJ asks once before enabling it (switch it on or off under *Settings → About*);
@@ -141,7 +146,7 @@ Code comments are in German; issues and contributions in English are welcome.
 | `FW_DEMO=1` | Spreads the tracks of the start folder across both playlists and starts deck A. |
 | `FW_SCREENSHOT=/path/image.bmp` | Saves a screenshot of the window shortly after start, then quits. |
 | `FW_SIZE=1600x1000` | Window size. |
-| `FW_SKIN=nacht\|classic\|tag\|neon`, `FW_STEEL=1`, `FW_LANG=de\|en` | Look and language. |
+| `FW_SKIN=nacht\|classic\|tag\|neon`, `FW_STEEL=1`, `FW_LITE=1`, `FW_LANG=de\|en` | Look (`FW_LITE` = lightweight display) and language. |
 | `FW_PREVIEW=1` | Pre-listens to the second track in the demo. |
 | `FW_SELECT=1` | Selects tracks 2 to 4 in the folder browser. |
 | `FW_HISTORY=1` | Creates two example days in the history (one with a missing file) and opens the newer one. |

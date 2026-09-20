@@ -13,6 +13,7 @@
 //! - `FW_COLUMNS=artist,album,genre,year,…` zeigt diese Spalten in der Titelliste des Browsers.
 //! - `FW_AUTOSYNC=1` schaltet Auto-Sync ein (ohne zu speichern).
 //! - `FW_STEEL=1` schaltet gebürsteten Stahl ein (ohne zu speichern).
+//! - `FW_LITE=1` schaltet die sparsame Darstellung ein (ohne zu speichern).
 //! - `FW_SETTINGS=audio|sprache|aussehen|ueber` öffnet das Einstellungsfenster auf dieser Seite.
 //! - `FW_POINTER=x,y` bewegt die Maus (in Punkten) nach Bild 100 dorthin, etwa um Tooltips zu sehen;
 //!   `FW_POINTER=x,y,2` klickt dort rechts (Kontextmenü), `FW_POINTER=x,y,1` links;
@@ -42,6 +43,7 @@ pub struct DevTools {
     pub skin: Option<SkinId>,
     pub lang: Option<Lang>,
     pub steel: bool,
+    pub lite: bool,
     pub settings_tab: Option<String>,
     frame: u64,
     started: Option<std::time::Instant>,
@@ -67,6 +69,7 @@ impl DevTools {
             }),
             lang: std::env::var("FW_LANG").ok().map(|l| if l == "en" { Lang::En } else { Lang::De }),
             steel: std::env::var_os("FW_STEEL").is_some(),
+            lite: std::env::var_os("FW_LITE").is_some(),
             settings_tab: std::env::var("FW_SETTINGS").ok(),
             pointer: std::env::var("FW_POINTER")
                 .ok()
@@ -83,7 +86,7 @@ impl DevTools {
     pub fn isolated(&self) -> bool {
         // FW_PERSIST=1 erzwingt Speichern trotzdem, etwa zum Testen mit einem anderen HOME
         std::env::var_os("FW_PERSIST").is_none()
-            && (self.screenshot.is_some() || self.demo || self.skin.is_some() || self.lang.is_some() || self.steel || self.settings_tab.is_some())
+            && (self.screenshot.is_some() || self.demo || self.skin.is_some() || self.lang.is_some() || self.steel || self.lite || self.settings_tab.is_some())
     }
 
     /// Speist die Mausbewegung aus `FW_POINTER` ein (aufgerufen vor jedem Bild).
