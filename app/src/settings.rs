@@ -36,6 +36,8 @@ pub struct Settings {
     pub track_columns: Vec<String>,
     /// Vom Nutzer gezogene Spaltenbreiten der Titelliste in Punkten, je Spaltenschlüssel.
     pub column_widths: Vec<(String, f32)>,
+    /// Sortierung der Titelliste: (Spaltenschlüssel, absteigend), `None` = Reihenfolge der Ordner.
+    pub track_sort: Option<(String, bool)>,
     /// Erweiterte Suche beim Schließen und Beenden behalten.
     pub remember_search: bool,
     /// Zuletzt benutzte erweiterte Suche (nur mit `remember_search`).
@@ -91,6 +93,7 @@ impl Default for Settings {
             tree_width: 0.0,
             track_columns: crate::browser::TrackColumn::DEFAULT.iter().map(|c| c.key().to_owned()).collect(),
             column_widths: Vec::new(),
+            track_sort: None,
             remember_search: true,
             advanced_search: Default::default(),
             folder_recursion: Vec::new(),

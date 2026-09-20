@@ -221,6 +221,7 @@ impl FadeWerkDjApp {
             browser: {
                 let mut b = Browser::new(start_dir, &settings.folders, settings.tree_width, &settings.folder_recursion);
                 b.set_columns(&settings.track_columns, &settings.column_widths);
+                b.set_sort(settings.track_sort.as_ref());
                 b.set_search_memory(settings.remember_search, &settings.advanced_search);
                 b
             },
@@ -355,6 +356,11 @@ impl FadeWerkDjApp {
             if let Ok(cols) = std::env::var("FW_COLUMNS") {
                 let keys: Vec<String> = cols.split(',').map(|k| k.trim().to_owned()).collect();
                 app.browser.set_columns(&keys, &[]);
+            }
+            // FW_SORT=artist oder FW_SORT=bpm:desc: Titelliste sortiert zeigen
+            if let Ok(spec) = std::env::var("FW_SORT") {
+                let (key, desc) = spec.split_once(':').map_or((spec.as_str(), false), |(k, d)| (k, d == "desc"));
+                app.browser.set_sort(Some(&(key.to_owned(), desc)));
             }
             // FW_TAGS=1: Fenster „Titelinfo & Tags“ für den ersten Titel öffnen
             if std::env::var_os("FW_TAGS").is_some()
@@ -1457,6 +1463,10 @@ impl FadeWerkDjApp {
             BrowserAction::TrackColumns(visible, widths) => {
                 self.settings.track_columns = visible;
                 self.settings.column_widths = widths;
+                self.save_settings();
+            }
+            BrowserAction::TrackSort(sort) => {
+                self.settings.track_sort = sort;
                 self.save_settings();
             }
             BrowserAction::TreeWidth(w) => {

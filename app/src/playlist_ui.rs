@@ -70,6 +70,14 @@ pub fn show(
     let next = pl.current.map_or(0, |c| c + 1);
 
     crate::hw::calm_plate(ui.painter(), ui.available_rect_before_wrap());
+    // Der geladene Titel steht oben im sichtbaren Bereich, die gespielten darüber erreicht man per Scrollen.
+    // Gescrollt wird nur, wenn ein anderer Titel geladen wird; danach darf der Nutzer frei scrollen.
+    let view_h = ui.available_height();
+    let seen_id = egui::Id::new(("pl_current", list));
+    let seen: Option<Option<usize>> = ui.data(|d| d.get_temp(seen_id));
+    let scroll_to_current = seen != Some(pl.current);
+    ui.data_mut(|d| d.insert_temp(seen_id, pl.current));
+    let mut current_top: Option<f32> = None;
     egui::ScrollArea::vertical().id_salt(("pl", list)).auto_shrink([false, false]).show(ui, |ui| {
         let width = ui.available_width();
         let mut insert_line: Option<f32> = None;
@@ -83,6 +91,13 @@ pub fn show(
             let fallback = TrackMeta::from_filename(path);
             let m = meta.unwrap_or(&fallback);
 
+            if pl.current == Some(i) {
+                current_top = Some(rect.top());
+                if scroll_to_current {
+                    // egui lässt beim Scrollen einen Zeilenabstand frei; ohne Ausgleich lugt die vorige Zeile hervor
+                    ui.scroll_to_rect(rect.translate(vec2(0.0, ui.spacing().item_spacing.y)), Some(egui::Align::TOP));
+                }
+            }
             let is_now = current == Some(i);
             let done = pl.current.is_some_and(|c| i < c);
             let p = ui.painter();
@@ -164,7 +179,9 @@ pub fn show(
         }
 
         // Freie Fläche unter den Titeln: Ablegen ans Ende
-        let rest = ui.available_height().max(ROW_H);
+        // So hoch, dass auch einer der letzten Titel ganz nach oben rücken kann
+        let below_current = current_top.map_or(0.0, |top| top + view_h - ui.cursor().top());
+        let rest = ui.available_height().max(below_current).max(ROW_H);
         let (rect, resp) = ui.allocate_exact_size(vec2(width, rest), Sense::hover());
         if pl.entries.is_empty() {
             ui.painter().text(rect.center_top() + vec2(0.0, 30.0), Align2::CENTER_CENTER, tr("Leer. Titel aus dem Ordner hierher ziehen."), FontId::proportional(12.5), theme::faint());

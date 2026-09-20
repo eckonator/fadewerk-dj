@@ -38,6 +38,8 @@ pub enum BrowserAction {
     SearchMemory(bool, AdvancedSearch),
     /// Sichtbare Spalten der Titelliste oder ihre Breiten haben sich geändert (Schlüssel, Breiten je Schlüssel).
     TrackColumns(Vec<String>, Vec<(String, f32)>),
+    /// Sortierung der Titelliste (Spaltenschlüssel, absteigend) oder `None` = Reihenfolge der Ordner bzw. Historie.
+    TrackSort(Option<(String, bool)>),
     /// Laufende Suche abbrechen.
     StopScan,
     /// BPM im Hintergrund ermitteln. Ohne `force` nur für Titel ohne bekannte BPM (Tag oder gemerkt).
@@ -132,6 +134,11 @@ impl TrackColumn {
             Self::Bpm => "BPM",
             Self::Time => "Zeit",
         }
+    }
+
+    /// Hängt der Wert der Spalte von den Tags ab (sonst reicht der Pfad)?
+    fn needs_tags(self) -> bool {
+        !matches!(self, Self::Subfolder | Self::FileName | Self::Format)
     }
 
     fn default_width(self) -> f32 {
@@ -264,6 +271,10 @@ pub struct Browser {
     widths: HashMap<TrackColumn, f32>,
     /// Wird erhöht, wenn die Breiten zurückgesetzt werden; egui merkt sich die Tabelle sonst weiter.
     table_gen: u32,
+    /// Sortierung per Klick auf den Spaltenkopf: (Spalte, absteigend).
+    sort: Option<(TrackColumn, bool)>,
+    /// Zuletzt berechnete Reihenfolge (Fingerabdruck von Zeilen, Sortierung und Tags; Stellen in der Liste).
+    sort_cache: Option<(u64, Vec<usize>)>,
     /// Entwicklerschalter `FW_SELECT`: wählt zum Prüfen einige Titel aus.
     pub demo_select: bool,
     /// Entwicklerschalter `FW_BPM`: ermittelt einmal die fehlenden BPM des geöffneten Ordners.
@@ -331,6 +342,8 @@ impl Browser {
             columns: TrackColumn::DEFAULT.to_vec(),
             widths: HashMap::new(),
             table_gen: 0,
+            sort: None,
+            sort_cache: None,
             demo_select: false,
             demo_bpm: false,
             scanning: false,
@@ -374,6 +387,22 @@ impl Browser {
             .filter_map(|(k, w)| Some((TrackColumn::from_key(k)?, *w)))
             .filter(|(_, w)| w.is_finite() && *w > 0.0)
             .collect();
+    }
+
+    /// Übernimmt die gespeicherte Sortierung der Titelliste.
+    pub fn set_sort(&mut self, sort: Option<&(String, bool)>) {
+        self.sort = sort.and_then(|(k, desc)| Some((TrackColumn::from_key(k)?, *desc)));
+    }
+
+    /// Klick auf einen Spaltenkopf: aufsteigend, absteigend, dann wieder ungeordnet.
+    fn click_sort(&mut self, c: Option<TrackColumn>, out: &mut Vec<BrowserAction>) {
+        self.sort = match (c, self.sort) {
+            (None, _) => None,
+            (Some(c), Some((s, false))) if s == c => Some((c, true)),
+            (Some(c), Some((s, true))) if s == c => None,
+            (Some(c), _) => Some((c, false)),
+        };
+        out.push(BrowserAction::TrackSort(self.sort.map(|(c, desc)| (c.key().to_owned(), desc))));
     }
 
     fn width(&self, c: TrackColumn) -> f32 {
@@ -1019,6 +1048,8 @@ impl Browser {
         let dirs = self.selected.clone();
         let f = self.filter.trim().to_lowercase();
         let searching = !f.is_empty() || !self.adv.is_empty();
+        // Zum Sortieren nach Tags werden wie bei der Suche alle Tags gelesen
+        let need_all_meta = searching || self.sort.is_some_and(|(c, _)| c.needs_tags());
         // Einträge der Historie, deren Datei fehlt (ausgegraut, nicht abspielbar)
         let mut missing: HashSet<usize> = HashSet::new();
         if let Some(day) = hist_day {
@@ -1026,16 +1057,16 @@ impl Browser {
                 let exists = *self.exists.entry(e.path.clone()).or_insert_with(|| e.path.is_file());
                 if !exists {
                     missing.insert(i);
-                } else if searching && !ctx.metas.contains_key(&e.path) {
+                } else if need_all_meta && !ctx.metas.contains_key(&e.path) {
                     out.push(BrowserAction::NeedMeta(e.path.clone()));
                 }
             }
-        } else if searching && self.meta_requested_upto < self.tracks.len() {
+        } else if need_all_meta && self.meta_requested_upto < self.tracks.len() {
             // Für die Suche alle Tags im Hintergrund anfordern, auch für Titel, die die Ordnersuche noch nachliefert
             let new = &self.tracks[self.meta_requested_upto..];
             out.extend(new.iter().filter(|p| !ctx.metas.contains_key(*p)).map(|p| BrowserAction::NeedMeta(p.clone())));
             self.meta_requested_upto = self.tracks.len();
-        } else if !searching {
+        } else if !need_all_meta {
             self.meta_requested_upto = 0;
         }
         let entry_of = |r: &Row| hist_day.and_then(|d| d.entries.get(r.slot));
@@ -1045,7 +1076,7 @@ impl Browser {
             Some(day) => Box::new(day.entries.iter().enumerate().map(|(slot, e)| Row { path: e.path.clone(), slot })),
             None => Box::new(self.tracks.iter().map(|p| Row { path: p.clone(), slot: 0 })),
         };
-        let rows: Vec<Row> = all
+        let mut rows: Vec<Row> = all
             .filter(|r| {
                 if self.adv.is_empty() && words.is_empty() {
                     return true;
@@ -1076,6 +1107,30 @@ impl Browser {
                 words.iter().all(|w| hay.contains(w))
             })
             .collect();
+        if let Some((col, desc)) = self.sort {
+            // Neu sortiert wird nur, wenn sich Zeilen, Sortierung oder die bekannten Tags/BPM geändert haben
+            let sig = {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::hash::DefaultHasher::new();
+                (&rows, col, desc, ctx.metas.len(), ctx.bpms.len(), &dirs).hash(&mut h);
+                h.finish()
+            };
+            if self.sort_cache.as_ref().is_none_or(|(s, _)| *s != sig) {
+                let keys: Vec<Option<SortKey>> = rows
+                    .iter()
+                    .map(|r| {
+                        let m = meta_for(ctx.metas, &r.path, entry_of(r));
+                        sort_key(col, &m, &r.path, &dirs, ctx.bpms.get(&r.path).copied())
+                    })
+                    .collect();
+                self.sort_cache = Some((sig, sort_order(&keys, desc)));
+            }
+            if let Some((_, order)) = &self.sort_cache {
+                rows = order.iter().filter_map(|&i| rows.get(i).cloned()).collect();
+            }
+        } else {
+            self.sort_cache = None;
+        }
         let total_count = hist_day.map_or(self.tracks.len(), |d| d.entries.len());
         let has_subfolders = hist_day.is_none() && (dirs.len() > 1 || self.tracks.iter().any(|p| p.parent() != Some(dirs[0].as_path())));
         // Pfade der Zeilen ohne fehlende Dateien: nur die lassen sich laden, vorhören, analysieren
@@ -1204,6 +1259,9 @@ impl Browser {
         let mut measured: Vec<f32> = Vec::new();
         let mut header_resp: Option<egui::Response> = None;
         let mut menu_button: Option<egui::Response> = None;
+        // Angeklickter Spaltenkopf: Some(None) = „#“ (ursprüngliche Reihenfolge)
+        let mut sort_click: Option<Option<TrackColumn>> = None;
+        let sort = self.sort;
         if rows.is_empty() && searching {
             ui.add_space(20.0);
             ui.vertical_centered(|ui| ui.label(RichText::new(tr("Keine Titel passen zur Suche.")).color(theme::faint())));
@@ -1250,16 +1308,28 @@ impl Browser {
                         ui.add(egui::Label::new(RichText::new(t).size(10.5).color(theme::faint())).truncate().selectable(false));
                     };
                     h.col(|ui| head(ui, ""));
-                    h.col(|ui| head(ui, "#"));
+                    let (_, r) = h.col(|ui| head(ui, "#"));
+                    if sort.is_some() && r.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(tr("Ursprüngliche Reihenfolge")).clicked() {
+                        sort_click = Some(None);
+                    }
                     if hist_cols {
                         h.col(|ui| head(ui, &tr("Gespielt").to_uppercase()));
                         h.col(|ui| head(ui, ""));
                     }
                     for c in &cols {
-                        h.col(|ui| {
+                        let dir = sort.filter(|(s, _)| s == c).map(|(_, desc)| desc);
+                        let (_, r) = h.col(|ui| {
                             measured.push(ui.max_rect().width());
-                            head(ui, &tr(c.name()).to_uppercase());
+                            sort_head(ui, &tr(c.name()).to_uppercase(), dir);
                         });
+                        let tip = match dir {
+                            None => tr("Aufsteigend sortieren"),
+                            Some(false) => tr("Absteigend sortieren"),
+                            Some(true) => tr("Sortierung aufheben"),
+                        };
+                        if r.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(tip).clicked() {
+                            sort_click = Some(Some(*c));
+                        }
                     }
                     h.col(|_| {});
                     h.col(|ui| {
@@ -1417,6 +1487,9 @@ impl Browser {
                 }
             }
         });
+        if let Some(c) = sort_click {
+            self.click_sort(c, out);
+        }
         // Spaltenwahl: Rechtsklick auf den Kopf oder Taste „Spalten“; bleibt beim Anhaken offen
         if let Some(h) = header_resp {
             egui::Popup::context_menu(&h)
@@ -1444,6 +1517,127 @@ impl Browser {
             }
         }
     }
+}
+
+/// Kopf einer sortierbaren Spalte; `dir` = sortiert (absteigend?), dann mit Dreieck hinter dem Namen.
+fn sort_head(ui: &mut egui::Ui, text: &str, dir: Option<bool>) {
+    let color = if dir.is_some() { theme::ink() } else { theme::faint() };
+    let arrow_w = if dir.is_some() { 12.0 } else { 0.0 };
+    let label = egui::Label::new(RichText::new(text).size(10.5).color(color)).truncate().selectable(false);
+    let r = ui.scope(|ui| {
+        ui.set_max_width((ui.available_width() - arrow_w).max(0.0));
+        ui.add(label)
+    });
+    if let Some(desc) = dir {
+        let c = egui::pos2(r.inner.rect.right() + 7.0, r.inner.rect.center().y);
+        let (w, h) = (3.5, 3.0);
+        let pts = if desc {
+            vec![c + vec2(-w, -h), c + vec2(w, -h), c + vec2(0.0, h)]
+        } else {
+            vec![c + vec2(-w, h), c + vec2(w, h), c + vec2(0.0, -h)]
+        };
+        ui.painter().add(egui::Shape::convex_polygon(pts, theme::select_accent(), egui::Stroke::NONE));
+    }
+}
+
+/// Wert einer Zeile zum Sortieren; `None` = leer, steht immer am Ende.
+#[derive(Debug)]
+enum SortKey {
+    Text(String),
+    Number(f64),
+}
+
+fn sort_key(col: TrackColumn, m: &TrackMeta, path: &Path, dirs: &[PathBuf], bpm: Option<f32>) -> Option<SortKey> {
+    let text = |t: &str| (!t.trim().is_empty()).then(|| SortKey::Text(fold(t)));
+    match col {
+        TrackColumn::Title => text(&m.title),
+        TrackColumn::Artist => text(&m.artist),
+        TrackColumn::Album => text(&m.album),
+        TrackColumn::Genre => text(&m.genre),
+        TrackColumn::Comment => text(&m.comment),
+        TrackColumn::Subfolder => text(&subfolder(dirs, path)),
+        TrackColumn::FileName => text(&path.file_name().unwrap_or_default().to_string_lossy()),
+        TrackColumn::Format => text(&path.extension().unwrap_or_default().to_string_lossy()),
+        TrackColumn::Year => m.year.trim().parse::<f64>().ok().map(SortKey::Number),
+        TrackColumn::Bpm => bpm.or(m.bpm).map(|b| SortKey::Number(b as f64)),
+        TrackColumn::Time => (m.duration_secs > 0.0).then_some(SortKey::Number(m.duration_secs)),
+    }
+}
+
+/// Kleinbuchstaben, Umlaute wie ihr Grundbuchstabe („Ärzte“ bei A), führende Artikel bleiben.
+fn fold(t: &str) -> String {
+    t.trim()
+        .chars()
+        .flat_map(char::to_lowercase)
+        .map(|c| match c {
+            'ä' | 'à' | 'á' | 'â' | 'å' => 'a',
+            'ö' | 'ò' | 'ó' | 'ô' => 'o',
+            'ü' | 'ù' | 'ú' | 'û' => 'u',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'í' | 'ì' | 'î' | 'ï' => 'i',
+            'ç' => 'c',
+            'ñ' => 'n',
+            'ß' => 's',
+            c => c,
+        })
+        .collect()
+}
+
+/// Vergleicht Texte mit Zahlen darin nach ihrem Wert („Track 2“ vor „Track 10“).
+fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let (mut a, mut b) = (a.chars().peekable(), b.chars().peekable());
+    loop {
+        match (a.peek().copied(), b.peek().copied()) {
+            (None, None) => return Ordering::Equal,
+            (None, _) => return Ordering::Less,
+            (_, None) => return Ordering::Greater,
+            (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
+                let num = |it: &mut std::iter::Peekable<std::str::Chars>| {
+                    let mut s = String::new();
+                    while let Some(c) = it.peek().copied().filter(char::is_ascii_digit) {
+                        s.push(c);
+                        it.next();
+                    }
+                    s
+                };
+                let (x, y) = (num(&mut a), num(&mut b));
+                let (xt, yt) = (x.trim_start_matches('0'), y.trim_start_matches('0'));
+                let o = xt.len().cmp(&yt.len()).then_with(|| xt.cmp(yt)).then_with(|| x.len().cmp(&y.len()));
+                if o != Ordering::Equal {
+                    return o;
+                }
+            }
+            (Some(x), Some(y)) => {
+                if x != y {
+                    return x.cmp(&y);
+                }
+                a.next();
+                b.next();
+            }
+        }
+    }
+}
+
+/// Reihenfolge der Zeilen (Stellen in `keys`); leere Werte immer am Ende, Gleiches bleibt in der alten Reihenfolge.
+fn sort_order(keys: &[Option<SortKey>], desc: bool) -> Vec<usize> {
+    use std::cmp::Ordering;
+    let mut order: Vec<usize> = (0..keys.len()).collect();
+    order.sort_by(|&i, &j| match (&keys[i], &keys[j]) {
+        (None, None) => Ordering::Equal,
+        (None, _) => Ordering::Greater,
+        (_, None) => Ordering::Less,
+        (Some(a), Some(b)) => {
+            let o = match (a, b) {
+                (SortKey::Text(a), SortKey::Text(b)) => natural_cmp(a, b),
+                (SortKey::Number(a), SortKey::Number(b)) => a.total_cmp(b),
+                (SortKey::Text(_), SortKey::Number(_)) => Ordering::Greater,
+                (SortKey::Number(_), SortKey::Text(_)) => Ordering::Less,
+            };
+            if desc { o.reverse() } else { o }
+        }
+    });
+    order
 }
 
 /// Zelle mit Text, der bei zu schmaler Spalte mit „…“ endet. Ist er abgeschnitten und steht die Maus
@@ -1866,6 +2060,16 @@ mod tests {
         assert_eq!(w[0], Title.min_width());
         assert!((w.iter().sum::<f32>() - 300.0).abs() < 0.01, "{w:?}");
         assert!(w[1] >= Artist.min_width() && w[2] >= Time.min_width());
+    }
+
+    #[test]
+    fn sorting_is_natural_and_keeps_empty_values_last() {
+        let k = |t: &str| (!t.is_empty()).then(|| SortKey::Text(fold(t)));
+        let keys = [k("Track 10"), k(""), k("track 2"), k("Ärzte"), k("Zebra")];
+        assert_eq!(sort_order(&keys, false), vec![3, 2, 0, 4, 1]);
+        assert_eq!(sort_order(&keys, true), vec![4, 0, 2, 3, 1]);
+        let n = [Some(SortKey::Number(128.0)), None, Some(SortKey::Number(90.5))];
+        assert_eq!(sort_order(&n, false), vec![2, 0, 1]);
     }
 
     #[test]
