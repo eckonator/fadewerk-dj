@@ -51,8 +51,8 @@ written in Rust. Click a folder and start playing: no database, no library impor
   ten octave bands between left and right), channel faders, master and headphone mix, and a
   **3-band EQ per deck** (isolator, −26 to +6 dB) with kill buttons.
   Right-click or double-click resets any fader to its default.
-- **Playlists**: fill and reorder by drag & drop, also between A and B; drop tracks straight onto
-  a deck. Playlists and settings are kept when you quit.
+- **Playlists**: fill and reorder by drag & drop, also between A and B (or via the right-click menu);
+  drop tracks straight onto a deck. Playlists and settings are kept when you quit.
 - **Skins** Night, Classic, Day and Neon, optionally with a brushed steel look.
   The layout adapts to the window size, including 4K monitors. **Full screen** via the button
   in the folder browser, F11 or ⌃⌘F on macOS.

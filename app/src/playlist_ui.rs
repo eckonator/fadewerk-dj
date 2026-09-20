@@ -28,6 +28,8 @@ pub enum PlaylistAction {
     AnalyzeBpm(PathBuf),
     /// Titel direkt hinter den geladenen verschieben.
     PlayNext(usize),
+    /// Titel ans Ende der anderen Playlist verschieben.
+    MoveToOther(usize),
 }
 
 const ROW_H: f32 = 48.0;
@@ -133,6 +135,14 @@ pub fn show(
                 let movable = pl.current != Some(i) && i != next;
                 if ui.add_enabled(movable, egui::Button::new(tr("Als Nächstes spielen"))).clicked() {
                     out.push(PlaylistAction::PlayNext(i));
+                    ui.close();
+                }
+                // Ein geladener Titel bleibt in seiner Playlist (wie beim Ziehen)
+                let loaded = pl.current == Some(i) && deck_has_track;
+                let other = theme::deck_letter(1 - list);
+                let b = ui.add_enabled(!loaded, egui::Button::new(trf("In Playlist {} verschieben", &[&other])));
+                if b.on_disabled_hover_text(trf("Der Titel ist in Player {} geladen und bleibt in dessen Playlist", &[&theme::deck_letter(list)])).clicked() {
+                    out.push(PlaylistAction::MoveToOther(i));
                     ui.close();
                 }
                 ui.separator();
