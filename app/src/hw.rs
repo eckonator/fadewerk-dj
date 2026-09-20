@@ -429,8 +429,73 @@ fn reset_requested(resp: &Response) -> bool {
     resp.secondary_clicked() || resp.double_clicked()
 }
 
+/// Dauer des Zurücklaufens auf den Grundwert, damit kein hörbarer Sprung entsteht: je weiter weg, desto langsamer.
+/// Grunddauer plus Sekunden je voller Reglerweg, höchstens `RESET_GLIDE_MAX`.
+pub const RESET_GLIDE_MIN: f64 = 0.4;
+pub const RESET_GLIDE_PER_SPAN: f64 = 5.0;
+pub const RESET_GLIDE_MAX: f64 = 4.0;
+
+/// Dauer für den Weg von `from` nach `to` bei einem Regler mit Wertebereich der Breite `span`.
+fn glide_secs(from: f32, to: f32, span: f32) -> f64 {
+    (RESET_GLIDE_MIN + RESET_GLIDE_PER_SPAN * ((from - to).abs() / span) as f64).min(RESET_GLIDE_MAX)
+}
+
+/// Laufendes Zurückgleiten eines Reglers (im egui-Speicher unter der Regler-ID).
+#[derive(Clone, Copy)]
+struct Glide {
+    from: f32,
+    to: f32,
+    start: f64,
+    secs: f64,
+    /// Zuletzt ausgegebener Wert; weicht der Reglerwert davon ab, hat ihn jemand anders verstellt.
+    last: f32,
+}
+
+/// Startet das langsame Zurückgleiten des Reglers `id` (wie beim Aufruf des Reglers angegeben) von `from` nach `to`;
+/// `span` ist die Breite seines Wertebereichs (senkrechter Fader und Drehregler 1, waagerechter Fader 2).
+pub fn start_glide(ui: &egui::Ui, id: impl std::hash::Hash + std::fmt::Debug, from: f32, to: f32, span: f32) {
+    start_glide_id(ui, ui.id().with(id), from, to, span);
+}
+
+fn start_glide_id(ui: &egui::Ui, id: egui::Id, from: f32, to: f32, span: f32) {
+    let start = ui.input(|i| i.time);
+    let secs = glide_secs(from, to, span);
+    ui.ctx().data_mut(|d| d.insert_temp(id, Glide { from, to, start, secs, last: from }));
+}
+
+/// Gemeinsame Reset-Logik der Regler: Rechts-/Doppelklick startet das Zurückgleiten, Anfassen oder eine
+/// Verstellung von außen bricht es ab. Liefert den Wert dieses Bilds (Bedienung hat Vorrang).
+fn glide_reset(ui: &egui::Ui, resp: &Response, value: f32, default: f32, span: f32, touched: Option<f32>) -> Option<f32> {
+    let id = resp.id;
+    if reset_requested(resp) {
+        if (value - default).abs() < 1e-4 {
+            ui.ctx().data_mut(|d| d.remove::<Glide>(id));
+            return Some(default);
+        }
+        start_glide_id(ui, id, value, default, span);
+    } else if touched.is_some() {
+        ui.ctx().data_mut(|d| d.remove::<Glide>(id));
+        return touched;
+    }
+    let g = ui.ctx().data(|d| d.get_temp::<Glide>(id))?;
+    if (value - g.last).abs() > 0.01 {
+        ui.ctx().data_mut(|d| d.remove::<Glide>(id));
+        return None;
+    }
+    let t = ((ui.input(|i| i.time) - g.start) / g.secs).clamp(0.0, 1.0) as f32;
+    // Weich anfahren und weich ankommen
+    let v = g.from + (g.to - g.from) * t * t * (3.0 - 2.0 * t);
+    if t >= 1.0 {
+        ui.ctx().data_mut(|d| d.remove::<Glide>(id));
+        return Some(g.to);
+    }
+    ui.ctx().data_mut(|d| d.insert_temp(id, Glide { last: v, ..g }));
+    ui.ctx().request_repaint();
+    Some(v)
+}
+
 /// Senkrechter Fader, Wert 0 (unten) bis 1 (oben). `detent` zeichnet eine Mittelmarke (Pitch 0 %).
-/// `default` ist der Grundwert für Rechts- bzw. Doppelklick. Liefert Antwort und, falls bedient, den neuen Wert.
+/// `default` ist der Grundwert, auf den er bei Rechts- bzw. Doppelklick langsam zurückläuft. Liefert Antwort und, falls bedient, den neuen Wert.
 pub fn vertical_fader(ui: &mut egui::Ui, rect: Rect, id: impl std::hash::Hash + std::fmt::Debug, value: f32, default: f32, detent: bool) -> (Response, Option<f32>) {
     let resp = ui.interact(rect, ui.id().with(id), Sense::click_and_drag());
     let p = ui.painter();
@@ -453,9 +518,7 @@ pub fn vertical_fader(ui: &mut egui::Ui, rect: Rect, id: impl std::hash::Hash + 
     if (resp.dragged() || resp.clicked()) && let Some(pos) = resp.interact_pointer_pos() {
         out = Some((1.0 - (pos.y - rect.top() - cap_h / 2.0) / travel).clamp(0.0, 1.0));
     }
-    if reset_requested(&resp) {
-        out = Some(default);
-    }
+    let out = glide_reset(ui, &resp, value, default, 1.0, out);
     (resp, out)
 }
 
@@ -469,7 +532,7 @@ pub fn mini_fader(ui: &mut egui::Ui, id: impl std::hash::Hash + std::fmt::Debug,
 }
 
 /// Drehregler, Wert 0 bis 1, Grundwert `default`. Ziehen nach oben dreht auf, mit ⇧ fein;
-/// Rechts- oder Doppelklick setzt auf den Grundwert. Der Bogen zeigt die Abweichung vom Grundwert.
+/// Rechts- oder Doppelklick lässt ihn langsam auf den Grundwert zurücklaufen. Der Bogen zeigt die Abweichung vom Grundwert.
 pub fn knob(ui: &mut egui::Ui, rect: Rect, id: impl std::hash::Hash + std::fmt::Debug, value: f32, default: f32, color: Color32) -> (Response, Option<f32>) {
     let resp = ui.interact(rect, ui.id().with(id), Sense::click_and_drag());
     let mut out = None;
@@ -477,9 +540,7 @@ pub fn knob(ui: &mut egui::Ui, rect: Rect, id: impl std::hash::Hash + std::fmt::
         let fine = if ui.input(|i| i.modifiers.shift) { 0.2 } else { 1.0 };
         out = Some((value - resp.drag_delta().y / KNOB_TRAVEL_PX * fine).clamp(0.0, 1.0));
     }
-    if reset_requested(&resp) {
-        out = Some(default);
-    }
+    let out = glide_reset(ui, &resp, value, default, 1.0, out);
     let v = out.unwrap_or(value);
     let s = theme::skin();
     let p = ui.painter();
@@ -534,8 +595,6 @@ pub fn horizontal_fader(ui: &mut egui::Ui, rect: Rect, id: impl std::hash::Hash 
     if (resp.dragged() || resp.clicked()) && let Some(pos) = resp.interact_pointer_pos() {
         out = Some(((pos.x - rect.left() - cap_w / 2.0) / travel * 2.0 - 1.0).clamp(-1.0, 1.0));
     }
-    if reset_requested(&resp) {
-        out = Some(default);
-    }
+    let out = glide_reset(ui, &resp, value, default, 2.0, out);
     (resp, out)
 }

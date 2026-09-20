@@ -63,6 +63,8 @@ pub struct Settings {
     pub eq_db: [[f32; 3]; 2],
     /// Beim Auto-Fade die Bässe in der Mitte der Überblendung tauschen.
     pub bass_swap: bool,
+    /// Auto-Sync: neuen Titel ans Tempo des laufenden angleichen, danach langsam auf 0 % Pitch.
+    pub auto_sync: bool,
     /// Vom Nutzer hinzugefügte Musikordner.
     pub folders: Vec<PathBuf>,
     /// Fenster beim Start im Vollbild öffnen (zuletzt so verlassen).
@@ -106,6 +108,7 @@ impl Default for Settings {
             head_mix: DEFAULT_HEAD_MIX,
             eq_db: [[0.0; 3]; 2],
             bass_swap: false,
+            auto_sync: false,
             folders: Vec::new(),
             fullscreen: false,
             opengl: false,
