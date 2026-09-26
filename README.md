@@ -24,7 +24,7 @@ written in Rust. Click a folder and start playing: no database, no library impor
   BPM detected by the tempo analysis is remembered; “Analyse BPM” (tracks) and “Detect missing BPM”
   (folders) run it in the background.
   Quick search across title, artist, album and path; the advanced search (magnifier, ⇧⌘F) filters
-  by title, artist, album, folder, genre, year range and BPM range, shown as removable filter chips. Tags, BPM and waveform are analysed in the background.
+  by title, artist, album, folder, genre, year range and BPM range, shown as removable filter chips; duplicate copies of a track are hidden while searching (can be turned off). Tags, BPM and waveform are analysed in the background.
   Select several tracks or folders (⌘/Ctrl-click, Shift-click) and drag them into a playlist, or use
   the right-click menu: append, play next, shuffle in, spread across A and B, show in Finder.
   Choose the track list columns (artist, album, genre, year, comment, subfolder, file name, format,
@@ -51,7 +51,8 @@ written in Rust. Click a folder and start playing: no database, no library impor
 - **Mixer** with LED meters (A, main, B; on wider windows the main meter adds a spectrum of up to
   ten octave bands between left and right), channel faders, master and headphone mix, and a
   **3-band EQ per deck** (isolator, −26 to +6 dB) with kill buttons.
-  Right-click or double-click resets any fader to its default.
+  Right-click or double-click resets any fader to its default; with the mouse over a fader or knob,
+  the arrow keys or the mouse wheel move it step by step. Click the fade-time display to type in a value.
 - **Playlists**: fill and reorder by drag & drop, also between A and B (or via the right-click menu);
   drop tracks straight onto a deck. The loaded track always moves to the top of its playlist, the
   played ones stay above it. Playlists and settings are kept when you quit.

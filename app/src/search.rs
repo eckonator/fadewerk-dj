@@ -35,7 +35,7 @@ impl Field {
 }
 
 /// Eingaben der erweiterten Suche. Leere Felder filtern nicht. Wird mit „Suchfilter merken“ gespeichert.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AdvancedSearch {
     pub title: String,
@@ -139,32 +139,67 @@ impl AdvancedSearch {
         }
     }
 
-    /// Passt der Titel? `folder` ist der Ordner der Datei (Pfad), `bpm` die bekannte Geschwindigkeit.
-    /// Textfelder: alle Wörter müssen vorkommen, Groß/Klein egal. Bereiche: Titel ohne Angabe fallen heraus.
+    /// Für viele Titel vorbereitete Suche: Suchwörter einmal klein geschrieben, Bereiche einmal gelesen.
+    pub fn prepare(&self) -> PreparedSearch {
+        let words = |s: &str| s.to_lowercase().split_whitespace().map(str::to_owned).collect::<Vec<_>>();
+        let parse = |s: &str| s.trim().replace(',', ".").parse::<f32>().ok();
+        PreparedSearch {
+            title: words(&self.title),
+            artist: words(&self.artist),
+            album: words(&self.album),
+            folder: words(&self.folder),
+            genre: words(&self.genre),
+            year: (parse(&self.year.0), parse(&self.year.1)),
+            bpm: (parse(&self.bpm.0), parse(&self.bpm.1)),
+        }
+    }
+
+    /// Passt der Titel? Für einzelne Prüfungen; bei vielen Titeln [`Self::prepare`] benutzen.
+    #[cfg(test)]
     pub fn matches(&self, meta: &TrackMeta, folder: &str, bpm: Option<f32>) -> bool {
-        let text_ok = |query: &str, hay: &str| {
-            let hay = hay.to_lowercase();
-            query.to_lowercase().split_whitespace().all(|w| hay.contains(w))
-        };
-        let year = meta.year.trim().parse::<f32>().ok();
-        text_ok(&self.title, &meta.title)
-            && text_ok(&self.artist, &meta.artist)
-            && text_ok(&self.album, &meta.album)
-            && text_ok(&self.folder, folder)
-            && text_ok(&self.genre, &meta.genre)
-            && in_range(&self.year, year)
-            && in_range(&self.bpm, bpm.map(|b| b.round()))
+        self.prepare().matches(meta, || folder.into(), bpm)
     }
 }
 
-/// Liegt `value` im Bereich? Leere Grenzen gelten nicht; unlesbare Grenzen auch nicht.
-fn in_range((from, to): &(String, String), value: Option<f32>) -> bool {
-    let parse = |s: &str| s.trim().replace(',', ".").parse::<f32>().ok();
-    let (from, to) = (parse(from), parse(to));
+/// Vorbereitete erweiterte Suche, siehe [`AdvancedSearch::prepare`].
+pub struct PreparedSearch {
+    title: Vec<String>,
+    artist: Vec<String>,
+    album: Vec<String>,
+    folder: Vec<String>,
+    genre: Vec<String>,
+    year: (Option<f32>, Option<f32>),
+    bpm: (Option<f32>, Option<f32>),
+}
+
+impl PreparedSearch {
+    /// Passt der Titel? `folder` liefert den Ordner der Datei (nur gefragt, wenn danach gesucht wird),
+    /// `bpm` die bekannte Geschwindigkeit. Textfelder: alle Wörter müssen vorkommen, Groß/Klein egal.
+    /// Bereiche: Titel ohne Angabe fallen heraus.
+    pub fn matches<'a>(&self, meta: &TrackMeta, folder: impl FnOnce() -> std::borrow::Cow<'a, str>, bpm: Option<f32>) -> bool {
+        let text_ok = |words: &[String], hay: &str| {
+            if words.is_empty() {
+                return true;
+            }
+            let hay = hay.to_lowercase();
+            words.iter().all(|w| hay.contains(w.as_str()))
+        };
+        text_ok(&self.title, &meta.title)
+            && text_ok(&self.artist, &meta.artist)
+            && text_ok(&self.album, &meta.album)
+            && text_ok(&self.genre, &meta.genre)
+            && in_range(self.year, || meta.year.trim().parse::<f32>().ok())
+            && in_range(self.bpm, || bpm.map(|b| b.round()))
+            && (self.folder.is_empty() || text_ok(&self.folder, &folder()))
+    }
+}
+
+/// Liegt der Wert im Bereich? Leere oder unlesbare Grenzen gelten nicht.
+fn in_range((from, to): (Option<f32>, Option<f32>), value: impl FnOnce() -> Option<f32>) -> bool {
     if from.is_none() && to.is_none() {
         return true;
     }
-    let Some(v) = value else { return false };
+    let Some(v) = value() else { return false };
     from.is_none_or(|f| v >= f) && to.is_none_or(|t| v <= t)
 }
 

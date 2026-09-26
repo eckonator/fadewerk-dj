@@ -40,6 +40,8 @@ pub struct Settings {
     pub track_sort: Option<(String, bool)>,
     /// Erweiterte Suche beim Schließen und Beenden behalten.
     pub remember_search: bool,
+    /// Beim Suchen Kopien desselben Titels ausblenden.
+    pub hide_duplicates: bool,
     /// Zuletzt benutzte erweiterte Suche (nur mit `remember_search`).
     pub advanced_search: crate::search::AdvancedSearch,
     /// „Mit Unterordnern“ je Ordner, nur wo der Nutzer vom Standard abweicht.
@@ -99,6 +101,7 @@ impl Default for Settings {
             column_widths: Vec::new(),
             track_sort: None,
             remember_search: true,
+            hide_duplicates: true,
             advanced_search: Default::default(),
             folder_recursion: Vec::new(),
             output_device: None,

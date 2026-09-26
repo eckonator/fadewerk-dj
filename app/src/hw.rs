@@ -434,6 +434,99 @@ fn fader_cap(p: &Painter, center: Pos2, size: egui::Vec2, vertical: bool) {
     }
 }
 
+/// Mausrad bzw. Trackpad: so viele Punkte Weg ergeben einen Schritt (eine Rastung des Rads ist immer einer).
+const WHEEL_POINTS_PER_STEP: f32 = 24.0;
+/// Begann das Scrollen außerhalb eines Reglers (Mittelspalte, Liste), scrollt es so lange weiter durch,
+/// bis so viele Sekunden Ruhe war; erst dann greift das Rad über einem Regler.
+const WHEEL_LATCH_SECS: f64 = 0.4;
+
+/// Zeitpunkt des letzten Scrollens, das kein Regler genommen hat.
+#[derive(Clone, Copy)]
+struct ForeignScroll(f64);
+
+/// Am Ende jedes Bilds aufrufen: übrig gebliebene Rad-Ereignisse gehören einer Liste oder Spalte,
+/// die gerade gescrollt wird. Solange das anhält, lassen die Regler das Rad durch.
+pub fn note_foreign_scroll(ctx: &egui::Context) {
+    let (scrolled, now) = ctx.input(|i| (i.events.iter().any(|e| matches!(e, egui::Event::MouseWheel { .. })), i.time));
+    if scrolled {
+        ctx.data_mut(|d| d.insert_temp(egui::Id::NULL, ForeignScroll(now)));
+    }
+}
+
+/// Ist unter macOS „natürliches Scrollen“ an? (Standard dort; anderswo meist aus.)
+/// Davon hängt ab, welches Vorzeichen „Rad/Finger nach oben“ hat.
+fn natural_scrolling() -> bool {
+    static NATURAL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *NATURAL.get_or_init(|| {
+        if !cfg!(target_os = "macos") {
+            return false;
+        }
+        // Fehlt der Eintrag, ist die Voreinstellung (an) aktiv
+        std::process::Command::new("defaults")
+            .args(["read", "-g", "com.apple.swipescrolldirection"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() != "0")
+            .unwrap_or(true)
+    })
+}
+
+/// Schritte für einen Regler, solange die Maus darüber steht: Pfeiltasten (↑/→ = +1, ↓/← = −1, gehalten
+/// mit Wiederholung) und Mausrad/Trackpad (nach oben oder rechts = mehr, wie die Finger sich bewegen).
+/// Genommene Eingaben werden verbraucht, damit dahinter nichts scrollt. Nicht mit ⌘/Strg/⌥, nicht während
+/// ein Textfeld tippt, und das Rad nicht, solange ein woanders begonnenes Scrollen noch läuft.
+pub fn nudge_steps(ui: &egui::Ui, resp: &Response) -> i32 {
+    if !resp.hovered() {
+        return 0;
+    }
+    let keys = !ui.ctx().egui_wants_keyboard_input();
+    let latched = ui.ctx().data(|d| d.get_temp::<ForeignScroll>(egui::Id::NULL)).is_some_and(|f| ui.input(|i| i.time) - f.0 < WHEEL_LATCH_SECS);
+    let natural = natural_scrolling();
+    let acc_id = resp.id.with("wheel");
+    let mut acc: f32 = ui.ctx().data(|d| d.get_temp(acc_id)).unwrap_or(0.0);
+    let n = ui.input_mut(|i| {
+        let mut n = 0;
+        i.events.retain(|e| match e {
+            egui::Event::Key { key, pressed: true, modifiers, .. } if keys && !(modifiers.command || modifiers.ctrl || modifiers.alt) => {
+                match key {
+                    egui::Key::ArrowUp | egui::Key::ArrowRight => n += 1,
+                    egui::Key::ArrowDown | egui::Key::ArrowLeft => n -= 1,
+                    _ => return true,
+                }
+                false
+            }
+            egui::Event::MouseWheel { unit, delta, modifiers, .. } if !latched && !(modifiers.command || modifiers.ctrl || modifiers.alt) => {
+                // Inhalt-Richtung → Finger-Richtung: mit natürlichem Scrollen folgt der Inhalt den Fingern
+                let up = if natural { -delta.y + delta.x } else { delta.y - delta.x };
+                match unit {
+                    egui::MouseWheelUnit::Point => {
+                        acc += up / WHEEL_POINTS_PER_STEP;
+                        let whole = acc.trunc();
+                        acc -= whole;
+                        n += whole as i32;
+                    }
+                    // Eine Rastung = ein Schritt, auch wenn das System mehrere Zeilen meldet
+                    _ => n += up.signum() as i32 * (up.abs().round().max(1.0) as i32).min(3),
+                }
+                false
+            }
+            _ => true,
+        });
+        if !latched {
+            // Nachlaufendes, geglättetes Scrollen soll die Spalte dahinter nicht bewegen
+            i.smooth_scroll_delta = egui::Vec2::ZERO;
+        }
+        n
+    });
+    ui.ctx().data_mut(|d| d.insert_temp(acc_id, acc));
+    n
+}
+
+/// Neuer Wert nach Pfeiltasten oder Mausrad über `resp`: `value` um `step` je Schritt, begrenzt auf `min`…`max`.
+pub fn nudge(ui: &egui::Ui, resp: &Response, value: f32, step: f32, min: f32, max: f32) -> Option<f32> {
+    let n = nudge_steps(ui, resp);
+    (n != 0).then(|| (value + n as f32 * step).clamp(min, max))
+}
+
 /// Rechtsklick oder Doppelklick auf einen Fader setzt ihn auf seinen Grundwert zurück.
 fn reset_requested(resp: &Response) -> bool {
     resp.secondary_clicked() || resp.double_clicked()
