@@ -392,6 +392,17 @@ pub fn button(ui: &mut egui::Ui, size: egui::Vec2, label: &str, font: FontId, lo
     if enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp }
 }
 
+/// Taste mit selbst gezeichnetem Inhalt: `draw` bekommt die Tastenfläche (beim Drücken leicht versetzt)
+/// und die Farbe für Beschriftung oder Symbol.
+pub fn custom_button(ui: &mut egui::Ui, size: egui::Vec2, look: Look, lit: bool, enabled: bool, draw: impl FnOnce(&Painter, Rect, Color32)) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(size, if enabled { Sense::click() } else { Sense::hover() });
+    let pressed = enabled && resp.is_pointer_button_down_on();
+    let p = ui.painter();
+    let (c, color) = paint_button_face(p, rect, look, lit, pressed, resp.hovered(), enabled);
+    draw(p, Rect::from_center_size(c, rect.size()), color);
+    if enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp }
+}
+
 /// Vorhör-Taste: ruhend Kopfhörer-Symbol, während der Titel im Kopfhörer läuft rot leuchtend mit Stopp-Symbol.
 pub fn preview_button(ui: &mut egui::Ui, size: egui::Vec2, previewing: bool) -> Response {
     let font = egui::FontId::proportional(size.y * 0.55);

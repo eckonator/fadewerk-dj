@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Einstellungsfenster: Allgemein, Audio, Sprache, Aussehen, Über (Copyright und Lizenzen).
+//! Einstellungsfenster: Allgemein, Audio, Effekte, Sprache, Aussehen, Über (Copyright und Lizenzen).
 
 use eframe::egui::{self, Align2, Color32, CornerRadius, Frame, Margin, RichText, Sense, Stroke, vec2};
 
@@ -13,6 +13,7 @@ enum Tab {
     #[default]
     General,
     Audio,
+    Effects,
     Language,
     Look,
     About,
@@ -39,6 +40,16 @@ pub enum SettingsAction {
     KeepAwake(bool),
     Zoom(f32),
     RevealLog,
+    /// Eigener Name eines Effekt-Pads (leer = Standard).
+    FxName(usize, String),
+    /// Datei für ein Effekt-Pad auswählen (öffnet den Dateidialog).
+    FxPickFile(usize),
+    /// Effekt-Pad auf den mitgelieferten Klang zurücksetzen.
+    FxReset(usize),
+    /// Effekt eines Pads auf dem Kopfhörer anhören.
+    FxPreview(usize),
+    /// Symbol eines Effekt-Pads (`FxIcon::key`).
+    FxIcon(usize, String),
 }
 
 pub struct SettingsCtx<'a> {
@@ -58,6 +69,8 @@ pub struct SettingsUi {
     devices: Option<Vec<DeviceInfo>>,
     /// Im Tab „Über“ aufgeklappter Lizenztext (Index in `LICENSE_TEXTS`).
     license_view: Option<usize>,
+    /// Pad, für das gerade ein Symbol gewählt wird.
+    icon_picker: Option<usize>,
 }
 
 const BUFFERS: [Option<u32>; 7] = [None, Some(64), Some(128), Some(256), Some(512), Some(1024), Some(2048)];
@@ -71,6 +84,7 @@ impl SettingsUi {
             "aussehen" => Tab::Look,
             "ueber" => Tab::About,
             "audio" => Tab::Audio,
+            "effekte" => Tab::Effects,
             _ => Tab::General,
         };
     }
@@ -99,11 +113,18 @@ impl SettingsUi {
             .show(ctx, |ui| {
                 ui.set_width(520.0);
                 ui.horizontal(|ui| {
-                    for (tab, label) in [(Tab::General, "Allgemein"), (Tab::Audio, "Audio"), (Tab::Language, "Sprache"), (Tab::Look, "Aussehen"), (Tab::About, "Über")] {
+                    for (tab, label) in [
+                        (Tab::General, "Allgemein"),
+                        (Tab::Audio, "Audio"),
+                        (Tab::Effects, "Effekte"),
+                        (Tab::Language, "Sprache"),
+                        (Tab::Look, "Aussehen"),
+                        (Tab::About, "Über"),
+                    ] {
                         let on = self.tab == tab;
                         let b = egui::Button::new(RichText::new(tr(label)).size(14.0).color(if on { theme::ground() } else { theme::dim() }))
                             .fill(if on { theme::ink() } else { theme::panel2() })
-                            .min_size(vec2(96.0, 28.0));
+                            .min_size(vec2(80.0, 28.0));
                         if ui.add(b).clicked() {
                             self.tab = tab;
                         }
@@ -115,6 +136,7 @@ impl SettingsUi {
                 match self.tab {
                     Tab::General => general_tab(ui, c, out),
                     Tab::Audio => self.audio_tab(ui, c, out),
+                    Tab::Effects => self.effects_tab(ui, c, out),
                     Tab::Language => language_tab(ui, c, out),
                     Tab::Look => look_tab(ui, c, out),
                     Tab::About => self.about_tab(ui, out),
@@ -125,6 +147,79 @@ impl SettingsUi {
                 }
             });
         self.open = open;
+    }
+
+    /// Effekt-Pads: je Pad Symbol, Name und Datei, Anhören und Zurücksetzen auf den mitgelieferten Klang.
+    fn effects_tab(&mut self, ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction>) {
+        ui.label(RichText::new(tr("Effekt-Pads")).strong());
+        ui.label(
+            RichText::new(tr("Jedes Pad spielt einen mitgelieferten Effekt oder eine eigene Datei (MP3, WAV, FLAC, OGG, M4A). Auslösen mit Klick oder den Tasten 1 bis 8, Rechtsklick auf ein Pad hört es im Kopfhörer vor."))
+                .size(12.0)
+                .color(theme::dim()),
+        );
+        ui.add_space(8.0);
+        egui::Grid::new("effekte").num_columns(6).spacing(vec2(8.0, 6.0)).show(ui, |ui| {
+            for slot in 0..fw_engine::FX_SLOTS {
+                let s = c.settings.fx_slot(slot);
+                ui.label(RichText::new(format!("{}", slot + 1)).font(crate::fonts::bold(14.0)).color(theme::dim()));
+                let icon = s.icon(slot);
+                let picking = self.icon_picker == Some(slot);
+                let b = crate::hw::custom_button(ui, vec2(30.0, 26.0), crate::hw::Look::Color(theme::select_accent()), picking, true, |p, r, color| {
+                    icon.paint(p, r.shrink(5.0), color);
+                });
+                if b.on_hover_text(tr("Symbol wählen")).clicked() {
+                    self.icon_picker = if picking { None } else { Some(slot) };
+                }
+                // Ohne eigenen Namen steht der des Klangs als Hinweis im Feld
+                let mut name = s.name.clone();
+                let hint = crate::fx::FxSlot { name: String::new(), ..s.clone() }.label(slot);
+                let r = ui.add_sized(vec2(120.0, 22.0), egui::TextEdit::singleline(&mut name).hint_text(hint).char_limit(14));
+                if r.changed() {
+                    out.push(SettingsAction::FxName(slot, name));
+                }
+                let file = match &s.file {
+                    Some(f) => f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                    None => tr("Mitgeliefert").to_owned(),
+                };
+                let shown = ui.add_sized(vec2(140.0, 20.0), egui::Label::new(RichText::new(&file).size(12.5).color(if s.file.is_some() { theme::ink() } else { theme::faint() })).truncate());
+                if let Some(f) = &s.file {
+                    shown.on_hover_text(f.display().to_string());
+                }
+                ui.horizontal(|ui| {
+                    if ui.button(tr("Datei …")).clicked() {
+                        out.push(SettingsAction::FxPickFile(slot));
+                    }
+                    if ui.add_enabled(s.file.is_some() || !s.name.is_empty() || s.icon.is_some(), egui::Button::new(tr("Standard")))
+                        .on_hover_text(tr("Mitgelieferten Effekt, Namen und Symbol wiederherstellen"))
+                        .clicked()
+                    {
+                        out.push(SettingsAction::FxReset(slot));
+                    }
+                });
+                if ui.button("🎧").on_hover_text(tr("Im Kopfhörer anhören")).clicked() {
+                    out.push(SettingsAction::FxPreview(slot));
+                }
+                ui.end_row();
+            }
+        });
+        // Auswahl des Symbols für das gewählte Pad
+        if let Some(slot) = self.icon_picker {
+            let current = c.settings.fx_slot(slot).icon(slot);
+            ui.add_space(8.0);
+            ui.label(RichText::new(trf("Symbol für Pad {}", &[&(slot + 1)])).strong());
+            ui.horizontal_wrapped(|ui| {
+                for icon in crate::fx_icons::FxIcon::ALL {
+                    let on = icon == current;
+                    let b = crate::hw::custom_button(ui, vec2(38.0, 34.0), crate::hw::Look::Color(theme::select_accent()), on, true, |p, r, color| {
+                        icon.paint(p, r.shrink(8.0), color);
+                    });
+                    if b.on_hover_text(tr(icon.name())).clicked() {
+                        out.push(SettingsAction::FxIcon(slot, icon.key().to_owned()));
+                        self.icon_picker = None;
+                    }
+                }
+            });
+        }
     }
 
     /// Copyright, Lizenz und Fremdbestandteile („Appropriate Legal Notices“ nach GPL-3.0 Abschnitt 0).

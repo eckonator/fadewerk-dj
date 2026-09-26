@@ -4,6 +4,7 @@
 
 pub mod bpm;
 pub mod decode;
+pub mod fx;
 pub mod meta;
 pub mod scan;
 pub mod waveform;

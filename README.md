@@ -6,7 +6,7 @@ written in Rust. Click a folder and start playing: no database, no library impor
 ![FadeWerk DJ with the “Night” skin](docs/screenshot.png)
 
 <details>
-<summary>“Classic” skin with brushed steel, a day of the history and a track playing in the headphones</summary>
+<summary>“Classic” skin with brushed steel, the crossfade curve, a day of the history and a track playing in the headphones</summary>
 
 ![FadeWerk DJ with the “Classic” skin and brushed steel](docs/screenshot-steel.png)
 </details>
@@ -44,7 +44,7 @@ written in Rust. Click a folder and start playing: no database, no library impor
   outer groove inwards, lifts on pause and returns to its rest on stop; drag it to drop the needle
   anywhere in the track.
 - **Motor**: start, pause and stop spin up and down like a real turntable
-  (adjustable start and stop time). CUE jumps instantly.
+  (start and stop time adjustable in the Motor tab). CUE jumps instantly.
 - **Transport per deck**: CUE, play/pause, stop, previous, next, repeat (off, track, list;
   track repeat fades the end into the start with the fade time and curve), eject, pitch ±8 %, sync, reverse (the record spins down and starts up the other way), loops of 4, 8 or 16 beats.
 - **Pre-listening** per deck, in the playlists and right in the folder browser. Headphones via
@@ -52,9 +52,14 @@ written in Rust. Click a folder and start playing: no database, no library impor
   or on a separate second audio device.
 - **Mixer** with LED meters (A, main, B; on wider windows the main meter adds a spectrum of up to
   ten octave bands between left and right), channel faders, master and headphone mix, and a
-  **3-band EQ per deck** (isolator, −26 to +6 dB) with kill buttons.
+  **3-band EQ per deck** (isolator, −26 to +6 dB) with kill buttons. Below the crossfader, tabs for
+  pads, headphones, curve (crossfade curve and fade time) and motor keep the centre column tidy; one is open at a time.
   Right-click or double-click resets any fader to its default; with the mouse over a fader or knob,
   the arrow keys or the mouse wheel move it step by step. Click the fade-time display to type in a value.
+- **Effect pads**: eight DJ effects (air horn, siren, laser, boom, riser, drop, rewind, brake), synthesised by
+  FadeWerk DJ itself. Trigger them with a click or the keys 1–8, right-click to pre-listen in the headphones;
+  a separate FX fader sets their volume. Replace any of them with your own audio file, name and one of
+  16 drawn symbols under Settings → Effects.
 - **Playlists**: fill and reorder by drag & drop, also between A and B (or via the right-click menu);
   drop tracks straight onto a deck. The loaded track always moves to the top of its playlist, the
   played ones stay above it. Playlists and settings are kept when you quit.
@@ -68,7 +73,7 @@ written in Rust. Click a folder and start playing: no database, no library impor
   playing (can be switched off).
 - User interface in **English and German**.
 - **No telemetry, no account.** The only network request is an optional check for new versions on
-  GitHub. FadeWerk DJ asks once before enabling it (switch it on or off under *Settings → About*);
+  GitHub. FadeWerk DJ asks once before enabling it (switch it on or off under *Settings → General*);
   it sends nothing about your music or folders.
 
 ## Download
@@ -132,8 +137,8 @@ A push without a version change replaces that release; raise `version` for a new
 
 | Part | Purpose |
 |---|---|
-| `crates/engine` | Real-time audio: decks with motor, scratch, cue and loop, mixer, crossfader, EQ, headphone path, spectrum bands for the main meter, auto-fade logic. No GUI or system dependencies, tested. |
-| `crates/library` | Live folder reading, tags (lofty), decoding (Symphonia), waveform, BPM detection, background threads. |
+| `crates/engine` | Real-time audio: decks with motor, scratch, cue, loop and reverse, mixer, crossfader, EQ, headphone path, sampler for the effect pads, spectrum bands for the main meter, auto-fade logic. No GUI or system dependencies, tested. |
+| `crates/library` | Live folder reading, tags (lofty), decoding (Symphonia), waveform, BPM detection, synthesis of the built-in effects, background threads. |
 | `app` | User interface with egui, audio output with cpal, settings, skins; ties everything together. |
 
 The engine runs in the audio thread and receives commands through a lock-free ring buffer.
@@ -159,7 +164,8 @@ Code comments are in German; issues and contributions in English are welcome.
 | `FW_COLUMNS=artist,album,genre,…` | Shows these columns in the track list. |
 | `FW_SORT=artist` / `FW_SORT=bpm:desc` | Sorts the track list by this column. |
 | `FW_POINTER=x,y` | Moves the mouse there (points); `x,y,1` clicks, `x,y,2` right-clicks, `x1,y1,x2,y2` drags. |
-| `FW_SETTINGS=allgemein\|audio\|sprache\|aussehen\|ueber` | Opens the settings window. |
+| `FW_SETTINGS=allgemein\|audio\|effekte\|sprache\|aussehen\|ueber` | Opens the settings window. |
+| `FW_TAB=pads\|kopfhoerer\|fade\|motor\|zu` | Opens this tab below the crossfader (`zu` = all closed). |
 | `FW_UPDATE_ASK=1` | Shows the question whether to check for updates. |
 | `FW_UPDATE_URL=file:///path/release.json` | Checks for updates against your own release JSON (`tag_name`, `html_url`). |
 
@@ -170,12 +176,12 @@ With these switches FadeWerk DJ saves nothing (`FW_PERSIST=1` forces saving, bes
 - Cache for the waveform, so it shows up right away
 - Beat grid with phase, hot cues, key detection, keylock
 - MIDI controllers (jog wheels as turntables)
-- Sampler and recording
+- Recording
 - Importing playlists from other DJ software
 
 ## Legal
 
-FadeWerk DJ is an independent development; code, graphics, icon and demo tracks are original work.
+FadeWerk DJ is an independent development; code, graphics, icon, effect sounds and demo tracks are original work.
 
 Bundled third-party components:
 

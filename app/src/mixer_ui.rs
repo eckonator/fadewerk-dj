@@ -5,7 +5,7 @@ use eframe::egui::{self, Align2, Color32, Rect, RichText, Sense, Stroke, pos2, v
 use fw_engine::{CURVE_KNOTS, Curve, HeadMode, Motor, eq};
 
 use crate::meter::Meter;
-use crate::i18n::tr;
+use crate::i18n::{tr, trf};
 use crate::theme;
 use crate::{fonts, hw, settings};
 
@@ -30,6 +30,12 @@ pub struct MixerModel<'a> {
     /// EQ je Player in dB und Kill-Tasten, Reihenfolge Bässe, Mitten, Höhen.
     pub eq_db: [[f32; 3]; 2],
     pub eq_kill: [[bool; 3]; 2],
+    /// Beschriftung und Symbol der Effekt-Pads.
+    pub fx_labels: &'a [String; fw_engine::FX_SLOTS],
+    pub fx_icons: [crate::fx_icons::FxIcon; fw_engine::FX_SLOTS],
+    /// Bitmaske der Pads, die gerade klingen.
+    pub fx_playing: u32,
+    pub fx_volume: f32,
 }
 
 pub enum MixerAction {
@@ -40,6 +46,9 @@ pub enum MixerAction {
     MasterVolume(f32),
     Eq { deck: usize, band: usize, db: f32 },
     EqKill { deck: usize, band: usize, on: bool },
+    /// Effekt-Pad auslösen: über Master oder nur auf dem Kopfhörer (vorhören).
+    Fx { slot: usize, to_master: bool },
+    FxVolume(f32),
 }
 
 pub fn section_title(ui: &mut egui::Ui, text: &'static str) {
@@ -56,7 +65,6 @@ fn scale(ui: &egui::Ui) -> f32 {
 }
 
 pub fn show_mixer(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerAction>) {
-    let k = scale(ui);
     section_title(ui, "MIXER");
     eq_strip(ui, m, out);
 
@@ -115,46 +123,6 @@ pub fn show_mixer(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerActi
         }
     });
 
-    // Kopfhörer-Block (Regler und Betriebsart) durch eine Linie vom Master getrennt
-    ui.separator();
-    ui.label(small("KOPFHÖRER"));
-    ui.horizontal(|ui| {
-        ui.label(small("CUE"));
-        let (resp, new) = hw::mini_fader(ui, "headmix", m.head_mix, settings::DEFAULT_HEAD_MIX, 0.0, 1.0, ui.available_width() - 34.0);
-        let new = hw::nudge(ui, &resp, m.head_mix, VOLUME_STEP, 0.0, 1.0).or(new);
-        resp.on_hover_text(tr("Mischung Vorhören ↔ Master"));
-        if let Some(v) = new {
-            out.push(MixerAction::HeadMix(v));
-        }
-        ui.label(small("MST"));
-    });
-    ui.horizontal(|ui| {
-        ui.label(small("PEGEL"));
-        let (resp, new) = hw::mini_fader(ui, "headvol", m.head_volume, settings::DEFAULT_HEAD_VOLUME, 0.0, 1.0, ui.available_width() - 4.0);
-        if let Some(v) = hw::nudge(ui, &resp, m.head_volume, VOLUME_STEP, 0.0, 1.0).or(new) {
-            out.push(MixerAction::HeadVolume(v));
-        }
-    });
-    // Betriebsart unter den Reglern, damit sie mit den Auto-Fade-Tasten darunter eine Tastengruppe bildet
-    ui.add_space(2.0);
-    ui.horizontal(|ui| {
-        let bw = (ui.available_width() - 12.0) / 3.0;
-        let third = if m.head_device {
-            (HeadMode::Device, "Gerät", "Eigenes Kopfhörergerät aus den Einstellungen")
-        } else {
-            (HeadMode::Outputs34, "Ausg. 3/4", "Mehrkanal-Interface: Kopfhörer auf Ausgang 3/4")
-        };
-        for (mode, label, tip) in [
-            (HeadMode::Off, "Aus", "Kein Kopfhörersignal"),
-            (HeadMode::Split, "Split L/R", "Eine Soundkarte: links Master, rechts Kopfhörer"),
-            third,
-        ] {
-            let on = m.head_mode == mode;
-            if hw::button(ui, vec2(bw, 26.0 * k), tr(label), fonts::bold(11.5 * k), hw::Look::Color(theme::yellow()), on, true).on_hover_text(tr(tip)).clicked() {
-                out.push(MixerAction::HeadMode(mode));
-            }
-        }
-    });
     // Das aktive Gerät steht in den Einstellungen; hier nur ein Hinweis, wenn es fehlt
     if !m.audio_ok {
         ui.colored_label(theme::cue(), tr("Keine Audio-Ausgabe gefunden"));
@@ -239,6 +207,7 @@ pub enum FadeAction {
     AutoSync(bool),
 }
 
+/// Feste Auto-Fade-Reihe: AUTO, FADE, BASS SWAP, AUTO SYNC, Statuszeile und Crossfader.
 pub fn show_fade(ui: &mut egui::Ui, m: &FadeModel<'_>, out: &mut Vec<FadeAction>) {
     let k = scale(ui);
     // Die Tasten stehen oben, damit sie sichtbar bleiben, wenn der Ordnerbrowser die Mittelspalte kürzt;
@@ -280,13 +249,20 @@ pub fn show_fade(ui: &mut egui::Ui, m: &FadeModel<'_>, out: &mut Vec<FadeAction>
     let p = ui.painter();
     p.text(pos2(row.left() + label_w / 2.0 - 2.0, row.center().y), Align2::CENTER_CENTER, "A", fonts::bold(14.0), theme::deck_color(0));
     p.text(pos2(row.right() - label_w / 2.0 + 2.0, row.center().y), Align2::CENTER_CENTER, "B", fonts::bold(14.0), theme::deck_color(1));
+}
 
+/// Höhe der Kurvenbox bei Breite `cw`: flaches Breitformat, nach oben begrenzt.
+fn curve_height(cw: f32) -> f32 {
+    (cw * 0.33).clamp(84.0, 124.0)
+}
 
-    ui.add_space(4.0);
+/// Reiter KURVE: Blendkurve und Überblendzeit.
+fn fade_settings(ui: &mut egui::Ui, m: &FadeModel<'_>, out: &mut Vec<FadeAction>) {
+    let k = scale(ui);
     // Blendkurve: Linien lassen sich ziehen, Rechtsklick setzt auf „Weich“ zurück
     // Flaches Breitformat, nach oben begrenzt, damit die Box auf großen Monitoren nicht wuchtig wird
     let cw = ui.available_width();
-    let (rect, resp) = ui.allocate_exact_size(vec2(cw, (cw * 0.33).clamp(84.0, 124.0)), Sense::click_and_drag());
+    let (rect, resp) = ui.allocate_exact_size(vec2(cw, curve_height(cw)), Sense::click_and_drag());
     if let Some(c) = curve_editor(ui, &resp, rect, m.curve) {
         out.push(FadeAction::Curve(c));
     }
@@ -330,10 +306,8 @@ pub fn show_fade(ui: &mut egui::Ui, m: &FadeModel<'_>, out: &mut Vec<FadeAction>
         }
     }
 
-    // Überblendzeit unter der Kurve
+    // Überblendzeit unter der Kurve als kleines LCD und Regler
     ui.add_space(6.0);
-    // Überschrift wie bei KOPFHÖRER, darunter Überblendzeit als kleines LCD und Regler
-    ui.label(small("AUTO-FADE"));
     ui.horizontal(|ui| {
         let scale = (ui.available_width() / 230.0).clamp(1.0, 1.5);
         let (lcd, lcd_resp) = ui.allocate_exact_size(vec2(52.0, 22.0) * scale, Sense::click());
@@ -350,7 +324,11 @@ pub fn show_fade(ui: &mut egui::Ui, m: &FadeModel<'_>, out: &mut Vec<FadeAction>
         }
     });
 
-    egui::CollapsingHeader::new(small("MOTOR · ANLAUF & AUSLAUF")).id_salt("motor").show(ui, |ui| {
+}
+
+/// Reiter MOTOR: Anlauf und Auslauf der Plattenteller.
+fn motor_settings(ui: &mut egui::Ui, m: &FadeModel<'_>, out: &mut Vec<FadeAction>) {
+    {
         let mut motor = m.motor;
         let mut changed = false;
         ui.spacing_mut().slider_width = ui.available_width() - 110.0;
@@ -375,7 +353,191 @@ pub fn show_fade(ui: &mut egui::Ui, m: &FadeModel<'_>, out: &mut Vec<FadeAction>
         if changed {
             out.push(FadeAction::Motor(motor));
         }
+    }
+    ui.label(RichText::new(tr("Wie schnell die Teller bei Play anlaufen und bei Pause oder Stopp auslaufen. Im Kopfhörer starten und halten sie sofort.")).size(11.5).color(theme::faint()));
+}
+
+/// Reiter PADS: acht Effekt-Tasten in zwei Reihen und die Lautstärke der Effekte.
+fn pads(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerAction>) {
+    let k = scale(ui);
+    let gap = ui.spacing().item_spacing.x;
+    let cols = 4;
+    let bw = (ui.available_width() - (cols as f32 - 1.0) * gap) / cols as f32;
+    for row in 0..2 {
+        ui.horizontal(|ui| {
+            for col in 0..cols {
+                let slot = row * cols + col;
+                let lit = m.fx_playing & (1 << slot) != 0;
+                let label = &m.fx_labels[slot];
+                let icon = m.fx_icons[slot];
+                // Symbol oben, Name klein darunter
+                let b = hw::custom_button(ui, vec2(bw, 46.0 * k), hw::Look::Color(theme::select_accent()), lit, true, |p, r, color| {
+                    let icon_rect = Rect::from_center_size(pos2(r.center().x, r.top() + r.height() * 0.38), vec2(r.height() * 0.42, r.height() * 0.42));
+                    icon.paint(p, icon_rect, color);
+                    let font = fonts::bold(if label.chars().count() > 8 { 8.0 } else { 9.0 } * k);
+                    let galley = p.layout(label.clone(), font, color, r.width() - 6.0);
+                    let pos = pos2(r.center().x - galley.size().x / 2.0, r.bottom() - galley.size().y - 4.0 * k);
+                    p.with_clip_rect(r.shrink(2.0)).galley(pos, galley, color);
+                });
+                let b = b.on_hover_text(trf("Taste {} · Rechtsklick: im Kopfhörer vorhören", &[&(slot + 1)]));
+                if b.clicked() {
+                    out.push(MixerAction::Fx { slot, to_master: true });
+                }
+                if b.secondary_clicked() {
+                    out.push(MixerAction::Fx { slot, to_master: false });
+                }
+            }
+        });
+    }
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        ui.label(small("FX"));
+        let (resp, new) = hw::mini_fader(ui, "fxvol", m.fx_volume, settings::DEFAULT_FX_VOLUME, 0.0, 1.0, ui.available_width() - 4.0);
+        let new = hw::nudge(ui, &resp, m.fx_volume, VOLUME_STEP, 0.0, 1.0).or(new);
+        resp.on_hover_text(tr("Lautstärke der Effekte"));
+        if let Some(v) = new {
+            out.push(MixerAction::FxVolume(v));
+        }
     });
+}
+
+/// Reiter KOPFHÖRER: Mischung, Pegel und Betriebsart.
+fn headphones(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerAction>) {
+    let k = scale(ui);
+    ui.horizontal(|ui| {
+        ui.label(small("CUE"));
+        let (resp, new) = hw::mini_fader(ui, "headmix", m.head_mix, settings::DEFAULT_HEAD_MIX, 0.0, 1.0, ui.available_width() - 34.0);
+        let new = hw::nudge(ui, &resp, m.head_mix, VOLUME_STEP, 0.0, 1.0).or(new);
+        resp.on_hover_text(tr("Mischung Vorhören ↔ Master"));
+        if let Some(v) = new {
+            out.push(MixerAction::HeadMix(v));
+        }
+        ui.label(small("MST"));
+    });
+    ui.horizontal(|ui| {
+        ui.label(small("PEGEL"));
+        let (resp, new) = hw::mini_fader(ui, "headvol", m.head_volume, settings::DEFAULT_HEAD_VOLUME, 0.0, 1.0, ui.available_width() - 4.0);
+        if let Some(v) = hw::nudge(ui, &resp, m.head_volume, VOLUME_STEP, 0.0, 1.0).or(new) {
+            out.push(MixerAction::HeadVolume(v));
+        }
+    });
+    // Betriebsart unter den Reglern
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        let bw = (ui.available_width() - 12.0) / 3.0;
+        let third = if m.head_device {
+            (HeadMode::Device, "Gerät", "Eigenes Kopfhörergerät aus den Einstellungen")
+        } else {
+            (HeadMode::Outputs34, "Ausg. 3/4", "Mehrkanal-Interface: Kopfhörer auf Ausgang 3/4")
+        };
+        for (mode, label, tip) in [
+            (HeadMode::Off, "Aus", "Kein Kopfhörersignal"),
+            (HeadMode::Split, "Split L/R", "Eine Soundkarte: links Master, rechts Kopfhörer"),
+            third,
+        ] {
+            let on = m.head_mode == mode;
+            if hw::button(ui, vec2(bw, 26.0 * k), tr(label), fonts::bold(11.5 * k), hw::Look::Color(theme::yellow()), on, true).on_hover_text(tr(tip)).clicked() {
+                out.push(MixerAction::HeadMode(mode));
+            }
+        }
+    });
+}
+
+/// Bereiche unter dem Crossfader, als Reiter: immer höchstens einer offen.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CenterTab {
+    Pads,
+    Headphones,
+    Fade,
+    Motor,
+}
+
+impl CenterTab {
+    pub const ALL: [Self; 4] = [Self::Pads, Self::Headphones, Self::Fade, Self::Motor];
+
+    /// Schlüssel für die Einstellungen.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Pads => "pads",
+            Self::Headphones => "kopfhoerer",
+            Self::Fade => "fade",
+            Self::Motor => "motor",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|t| t.key() == key)
+    }
+
+    /// Beschriftung (deutscher Schlüssel für `tr`).
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Pads => "PADS",
+            // Kurz, damit alle Reiter gleich breit sein können (wie „PHONES“ an Mischpulten)
+            Self::Headphones => "HÖRER",
+            // Nicht „FADE“: so heißt schon die große Taste darüber (sofort überblenden)
+            Self::Fade => "KURVE",
+            Self::Motor => "MOTOR",
+        }
+    }
+}
+
+/// Reiterleiste und der offene Bereich. Ein Klick auf den offenen Reiter klappt ihn zu. Die Fläche ist
+/// immer so hoch wie der größte Bereich, damit beim Umschalten nichts springt. Liefert den neu gewählten
+/// Reiter, wenn sich etwas geändert hat.
+pub fn show_tabs(
+    ui: &mut egui::Ui,
+    open: Option<CenterTab>,
+    mm: &MixerModel<'_>,
+    mixer_out: &mut Vec<MixerAction>,
+    fm: &FadeModel<'_>,
+    fade_out: &mut Vec<FadeAction>,
+) -> Option<Option<CenterTab>> {
+    let k = scale(ui);
+    let mut changed = None;
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        let n = CenterTab::ALL.len() as f32;
+        let bw = (ui.available_width() - (n - 1.0) * ui.spacing().item_spacing.x) / n;
+        for tab in CenterTab::ALL {
+            let on = open == Some(tab);
+            let label = tr(tab.label());
+            // Zu lange Beschriftungen werden kleiner, damit sie in schmale Reiter passen
+            let size = (10.5 * k).min((bw - 8.0) / (label.chars().count() as f32 * 0.7));
+            let b = hw::button(ui, vec2(bw, 22.0 * k), label, fonts::bold(size), hw::Look::Color(theme::ink()), on, true);
+            let tip = match (tab, on) {
+                (CenterTab::Headphones, true) => tr("Kopfhörer · zuklappen"),
+                (CenterTab::Headphones, false) => tr("Kopfhörer · aufklappen"),
+                (_, true) => tr("Zuklappen"),
+                (_, false) => tr("Aufklappen"),
+            };
+            if b.on_hover_text(tip).clicked() {
+                changed = Some(if on { None } else { Some(tab) });
+            }
+        }
+    });
+    let Some(tab) = changed.unwrap_or(open) else { return changed };
+    ui.add_space(6.0);
+    // Feste Höhe: so hoch wie KURVE (Kurve plus Zeile für die Überblendzeit) oder der größte schon gesehene Bereich
+    let w = ui.available_width();
+    let h_id = ui.id().with("center-tab-h");
+    let seen: f32 = ui.data(|d| d.get_temp(h_id)).unwrap_or(0.0);
+    let h = (curve_height(w) + 6.0 + 26.0 * (w / 230.0).clamp(1.0, 1.5)).max(seen);
+    let top = ui.cursor().top();
+    match tab {
+        CenterTab::Pads => pads(ui, mm, mixer_out),
+        CenterTab::Headphones => headphones(ui, mm, mixer_out),
+        CenterTab::Fade => fade_settings(ui, fm, fade_out),
+        CenterTab::Motor => motor_settings(ui, fm, fade_out),
+    }
+    let used = ui.cursor().top() - top;
+    if used > seen {
+        ui.data_mut(|d| d.insert_temp(h_id, used));
+    }
+    if used < h {
+        ui.add_space(h - used);
+    }
+    changed
 }
 
 /// Ziehen an einer Linie der Blendkurve. Gegriffen wird beim Drücken der nächstgelegene Stützpunkt

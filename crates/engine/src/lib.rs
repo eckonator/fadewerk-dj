@@ -14,6 +14,7 @@ pub mod eq;
 pub mod headlink;
 pub mod mixer;
 pub mod motor;
+pub mod sampler;
 pub mod spectrum;
 pub mod track;
 
@@ -24,5 +25,6 @@ pub use engine::{Command, Controller, DeckStatus, Engine, Shared, DECKS, PREVIEW
 pub use headlink::{HeadReceiver, HeadSink, head_link};
 pub use mixer::{CURVE_KNOTS, Curve, HeadMode};
 pub use motor::Motor;
+pub use sampler::FX_SLOTS;
 pub use spectrum::{BAND_HZ, BANDS};
 pub use track::TrackAudio;
