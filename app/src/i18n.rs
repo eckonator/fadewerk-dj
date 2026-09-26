@@ -401,6 +401,7 @@ fn en(de: &str) -> Option<&'static str> {
         "Skin" => "Skin",
         "Gebürsteter Stahl" => "Brushed steel",
         "Ruhezustand" => "Sleep",
+        "Allgemein" => "General",
         "Ruhezustand verhindern, solange Musik spielt" => "Prevent sleep while music is playing",
         "Bildschirm und Rechner bleiben an, solange ein Player oder das Vorhören läuft. Danach gilt wieder die Einstellung des Systems." => "Display and computer stay on while a deck or pre-listen is playing. Afterwards the system setting applies again.",
         "Musik spielt" => "Music is playing",
