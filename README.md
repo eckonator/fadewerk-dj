@@ -24,7 +24,7 @@ written in Rust. Click a folder and start playing: no database, no library impor
   BPM detected by the tempo analysis is remembered; “Analyse BPM” (tracks) and “Detect missing BPM”
   (folders) run it in the background.
   Quick search across title, artist, album and path; the advanced search (magnifier, ⇧⌘F) filters
-  by title, artist, album, folder, genre, year range and BPM range, shown as removable filter chips; duplicate copies of a track are hidden while searching (can be turned off). Tags, BPM and waveform are analysed in the background.
+  by title, artist, album, file name, folder, genre, year range and BPM range, shown as removable filter chips; duplicate copies of a track are hidden while searching (can be turned off). Tags, BPM and waveform are analysed in the background.
   Select several tracks or folders (⌘/Ctrl-click, Shift-click) and drag them into a playlist, or use
   the right-click menu: append, play next, shuffle in, spread across A and B, show in Finder.
   Choose the track list columns (artist, album, genre, year, comment, subfolder, file name, format,
@@ -36,15 +36,17 @@ written in Rust. Click a folder and start playing: no database, no library impor
   M3U8 playlist, CSV table or FadeWerk DJ history file, and import such files or any M3U playlist.
   “Restore” fills playlists A and B again the way the day was played.
   Recording can be switched off in the settings.
-- **A turntable per deck**: drag the platter or the waveform to scratch forwards and backwards,
-  hold it to stop the record, tap the waveform to play or pause. Embedded cover art turns the record
+- **A turntable per deck**: drag the platter or the waveform to scratch forwards and backwards
+  (or use the mouse wheel / trackpad over the platter); let go with momentum and the record coasts on.
+  Hold it to stop the record; click the platter to play or pause, right-click to stop; tap the waveform to play or pause.
+  Eject slides the record off the deck (A to the left, B to the right); a newly loaded one slides in. Embedded cover art turns the record
   into a spinning picture disc. A tonearm swings onto the record on play, follows the track from the
   outer groove inwards, lifts on pause and returns to its rest on stop; drag it to drop the needle
   anywhere in the track.
 - **Motor**: start, pause and stop spin up and down like a real turntable
   (adjustable start and stop time). CUE jumps instantly.
 - **Transport per deck**: CUE, play/pause, stop, previous, next, repeat (off, track, list;
-  track repeat fades the end into the start with the fade time and curve), eject, pitch ±8 %, sync, loops of 4, 8 or 16 beats.
+  track repeat fades the end into the start with the fade time and curve), eject, pitch ±8 %, sync, reverse (the record spins down and starts up the other way), loops of 4, 8 or 16 beats.
 - **Pre-listening** per deck, in the playlists and right in the folder browser. Headphones via
   split output (left master, right headphones), on outputs 3/4 of a multichannel interface,
   or on a separate second audio device.

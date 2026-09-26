@@ -470,55 +470,77 @@ fn natural_scrolling() -> bool {
     })
 }
 
+/// Bewegung von Mausrad bzw. Trackpad über `resp` in diesem Bild, nach oben oder rechts positiv
+/// (wie die Finger sich bewegen). `points` = Trackpad-Weg, `notches` = Rastungen eines Mausrads
+/// (je Ereignis höchstens 3, auch wenn das System mehrere Zeilen meldet). Die Ereignisse werden verbraucht,
+/// damit dahinter nichts scrollt. Nichts, solange ein woanders begonnenes Scrollen noch läuft, und nicht mit ⌘/Strg/⌥.
+#[derive(Default, Clone, Copy)]
+pub struct Wheel {
+    pub points: f32,
+    pub notches: f32,
+}
+
+pub fn take_wheel(ui: &egui::Ui, resp: &Response) -> Wheel {
+    let mut w = Wheel::default();
+    if !resp.hovered() {
+        return w;
+    }
+    let latched = ui.ctx().data(|d| d.get_temp::<ForeignScroll>(egui::Id::NULL)).is_some_and(|f| ui.input(|i| i.time) - f.0 < WHEEL_LATCH_SECS);
+    if latched {
+        return w;
+    }
+    let natural = natural_scrolling();
+    ui.input_mut(|i| {
+        i.events.retain(|e| {
+            let egui::Event::MouseWheel { unit, delta, modifiers, .. } = e else { return true };
+            if modifiers.command || modifiers.ctrl || modifiers.alt {
+                return true;
+            }
+            // Inhalt-Richtung → Finger-Richtung: mit natürlichem Scrollen folgt der Inhalt den Fingern
+            let up = if natural { -delta.y + delta.x } else { delta.y - delta.x };
+            match unit {
+                egui::MouseWheelUnit::Point => w.points += up,
+                _ => w.notches += up.signum() * up.abs().round().clamp(1.0, 3.0),
+            }
+            false
+        });
+        // Nachlaufendes, geglättetes Scrollen soll die Spalte dahinter nicht bewegen
+        i.smooth_scroll_delta = egui::Vec2::ZERO;
+    });
+    w
+}
+
 /// Schritte für einen Regler, solange die Maus darüber steht: Pfeiltasten (↑/→ = +1, ↓/← = −1, gehalten
-/// mit Wiederholung) und Mausrad/Trackpad (nach oben oder rechts = mehr, wie die Finger sich bewegen).
-/// Genommene Eingaben werden verbraucht, damit dahinter nichts scrollt. Nicht mit ⌘/Strg/⌥, nicht während
-/// ein Textfeld tippt, und das Rad nicht, solange ein woanders begonnenes Scrollen noch läuft.
+/// mit Wiederholung) und Mausrad/Trackpad (siehe [`take_wheel`]; eine Rastung = ein Schritt).
+/// Pfeiltasten nicht mit ⌘/Strg/⌥ und nicht, während ein Textfeld tippt.
 pub fn nudge_steps(ui: &egui::Ui, resp: &Response) -> i32 {
     if !resp.hovered() {
         return 0;
     }
-    let keys = !ui.ctx().egui_wants_keyboard_input();
-    let latched = ui.ctx().data(|d| d.get_temp::<ForeignScroll>(egui::Id::NULL)).is_some_and(|f| ui.input(|i| i.time) - f.0 < WHEEL_LATCH_SECS);
-    let natural = natural_scrolling();
-    let acc_id = resp.id.with("wheel");
-    let mut acc: f32 = ui.ctx().data(|d| d.get_temp(acc_id)).unwrap_or(0.0);
-    let n = ui.input_mut(|i| {
-        let mut n = 0;
-        i.events.retain(|e| match e {
-            egui::Event::Key { key, pressed: true, modifiers, .. } if keys && !(modifiers.command || modifiers.ctrl || modifiers.alt) => {
+    let mut n = 0;
+    if !ui.ctx().egui_wants_keyboard_input() {
+        ui.input_mut(|i| {
+            i.events.retain(|e| {
+                let egui::Event::Key { key, pressed: true, modifiers, .. } = e else { return true };
+                if modifiers.command || modifiers.ctrl || modifiers.alt {
+                    return true;
+                }
                 match key {
                     egui::Key::ArrowUp | egui::Key::ArrowRight => n += 1,
                     egui::Key::ArrowDown | egui::Key::ArrowLeft => n -= 1,
                     _ => return true,
                 }
                 false
-            }
-            egui::Event::MouseWheel { unit, delta, modifiers, .. } if !latched && !(modifiers.command || modifiers.ctrl || modifiers.alt) => {
-                // Inhalt-Richtung → Finger-Richtung: mit natürlichem Scrollen folgt der Inhalt den Fingern
-                let up = if natural { -delta.y + delta.x } else { delta.y - delta.x };
-                match unit {
-                    egui::MouseWheelUnit::Point => {
-                        acc += up / WHEEL_POINTS_PER_STEP;
-                        let whole = acc.trunc();
-                        acc -= whole;
-                        n += whole as i32;
-                    }
-                    // Eine Rastung = ein Schritt, auch wenn das System mehrere Zeilen meldet
-                    _ => n += up.signum() as i32 * (up.abs().round().max(1.0) as i32).min(3),
-                }
-                false
-            }
-            _ => true,
+            });
         });
-        if !latched {
-            // Nachlaufendes, geglättetes Scrollen soll die Spalte dahinter nicht bewegen
-            i.smooth_scroll_delta = egui::Vec2::ZERO;
-        }
-        n
-    });
-    ui.ctx().data_mut(|d| d.insert_temp(acc_id, acc));
-    n
+    }
+    let wheel = take_wheel(ui, resp);
+    let acc_id = resp.id.with("wheel");
+    let mut acc: f32 = ui.ctx().data(|d| d.get_temp(acc_id)).unwrap_or(0.0);
+    acc += wheel.points / WHEEL_POINTS_PER_STEP;
+    let whole = acc.trunc();
+    ui.ctx().data_mut(|d| d.insert_temp(acc_id, acc - whole));
+    n + whole as i32 + wheel.notches as i32
 }
 
 /// Neuer Wert nach Pfeiltasten oder Mausrad über `resp`: `value` um `step` je Schritt, begrenzt auf `min`…`max`.

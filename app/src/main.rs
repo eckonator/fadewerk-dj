@@ -124,5 +124,38 @@ fn wgpu_options() -> eframe::egui_wgpu::WgpuConfiguration {
         setup.instance_descriptor.backends = wgpu::Backends::from_env().unwrap_or(wgpu::Backends::DX12);
         options.wgpu_setup = WgpuSetup::CreateNew(setup);
     }
+    options.on_surface_status = std::sync::Arc::new(surface_status);
     options
+}
+
+/// So viele Bilder ohne Zeichenfläche („verdeckt“ oder Zeitüberschreitung), dann wird sie neu eingerichtet.
+/// Bei laufender Musik sind das Sekundenbruchteile, im Ruhezustand (4 Bilder/s) etwa 5 s.
+const SURFACE_STUCK_FRAMES: u32 = 20;
+
+/// Was tun, wenn die Grafik kein Bild zum Zeichnen liefert? Wie eframe, aber ein dauerhaft „verdecktes“ Fenster
+/// wird nach einer Weile neu eingerichtet. Unter Windows meldet DirectX nach ausgeschaltetem oder gesperrtem
+/// Bildschirm mitunter weiter „verdeckt“, obwohl das Fenster wieder zu sehen ist: Die App lief (Musik spielte),
+/// aber das Bild stand, bis das Fenster verschoben wurde (Nutzerbericht 2026-10-15).
+fn surface_status(status: &eframe::egui_wgpu::wgpu::CurrentSurfaceTexture) -> eframe::egui_wgpu::SurfaceErrorAction {
+    use eframe::egui_wgpu::{SurfaceErrorAction, wgpu::CurrentSurfaceTexture};
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static STUCK: AtomicU32 = AtomicU32::new(0);
+    match status {
+        CurrentSurfaceTexture::Outdated => SurfaceErrorAction::Reconfigure,
+        CurrentSurfaceTexture::Lost => {
+            log::debug!("Zeichenfläche verloren, wird neu erzeugt");
+            SurfaceErrorAction::RecreateSurface
+        }
+        _ => {
+            let n = STUCK.fetch_add(1, Ordering::Relaxed) + 1;
+            if n >= SURFACE_STUCK_FRAMES {
+                STUCK.store(0, Ordering::Relaxed);
+                log::info!("Zeichenfläche seit {n} Bildern nicht verfügbar ({status:?}), wird neu eingerichtet");
+                // Richtet die Fläche neu ein und fordert gleich das nächste Bild an
+                SurfaceErrorAction::Reconfigure
+            } else {
+                SurfaceErrorAction::SkipFrame
+            }
+        }
+    }
 }

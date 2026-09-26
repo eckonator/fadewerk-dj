@@ -39,6 +39,12 @@ pub struct Deck {
     loop_range: Option<(f64, f64)>,
     stop_pending: bool,
     repeat_track: bool,
+    /// Rückwärts: der Motor dreht die Platte andersherum (Drehzahl `speed` bleibt positiv).
+    reverse: bool,
+    /// Nach dem Umschalten der Richtung läuft die Platte erst wie bei Pause aus, dann andersherum an.
+    reversing: bool,
+    /// Rückwärts am Titelanfang angekommen (REV hat sich dabei ausgeschaltet), noch nicht abgeholt.
+    reverse_ended: bool,
     /// Bei Repeat blendet das Titelende über so viele Sekunden in den Anfang (0 = harter Sprung).
     repeat_fade_secs: f32,
     /// Blendkurve dafür, dieselbe wie beim Crossfader.
@@ -62,6 +68,9 @@ impl Default for Deck {
             loop_range: None,
             stop_pending: false,
             repeat_track: false,
+            reverse: false,
+            reversing: false,
+            reverse_ended: false,
             repeat_fade_secs: 0.0,
             repeat_curve: Curve::Soft,
             ended: false,
@@ -95,6 +104,7 @@ impl Deck {
         *self = Deck {
             pitch: self.pitch,
             repeat_track: self.repeat_track,
+            reverse: self.reverse,
             repeat_fade_secs: self.repeat_fade_secs,
             repeat_curve: self.repeat_curve,
             ..Deck::default()
@@ -164,6 +174,22 @@ impl Deck {
         self.repeat_track = on;
     }
 
+    /// Laufrichtung des Motors umschalten. Eine laufende Platte bremst ab und läuft andersherum wieder an.
+    pub fn set_reverse(&mut self, on: bool) {
+        if on != self.reverse {
+            self.reverse = on;
+            // Die Platte dreht physisch weiter wie bisher; aus Sicht der neuen Richtung ist das rückwärts
+            self.speed = -self.speed;
+            self.coasting = false;
+            self.reversing = self.speed != 0.0;
+        }
+    }
+
+    /// Vorzeichen der Motorrichtung.
+    fn dir(&self) -> f32 {
+        if self.reverse { -1.0 } else { 1.0 }
+    }
+
     /// Überblendung von Titelende in den Anfang bei Repeat (Dauer in Sekunden und Kurve).
     pub fn set_repeat_fade(&mut self, secs: f32, curve: Curve) {
         self.repeat_fade_secs = secs.max(0.0);
@@ -185,6 +211,7 @@ impl Deck {
         if self.track.is_some() {
             self.scratch = Some(self.pos);
             self.coasting = false;
+            self.reversing = false;
         }
     }
 
@@ -198,7 +225,7 @@ impl Deck {
     /// sie wieder auf Tempo; steht er, rollt sie frei aus, je schneller desto länger.
     pub fn scratch_end(&mut self) {
         if self.scratch.take().is_some() {
-            self.speed = (self.rate / (1.0 + self.pitch)).clamp(-COAST_MAX_SPEED, COAST_MAX_SPEED);
+            self.speed = (self.rate * self.dir() / (1.0 + self.pitch)).clamp(-COAST_MAX_SPEED, COAST_MAX_SPEED);
             self.coasting = !self.playing && self.speed != 0.0;
         }
     }
@@ -214,6 +241,11 @@ impl Deck {
             next
         } else if self.playing && s > 1.0 {
             (s - friction).max(1.0)
+        } else if self.reversing && s < 0.0 {
+            // Richtung umgeschaltet: erst mit der Auslaufzeit bis zum Stillstand, danach läuft der Motor an
+            let next = (s + dt / motor.spin_down_secs.max(1e-3)).min(0.0);
+            self.reversing = next < 0.0;
+            next
         } else if s < 0.0 {
             // Rückwärts angestoßen: Reibung bremst, der Motor (falls an) zieht nach vorn
             let target = if self.playing { 1.0 } else { 0.0 };
@@ -230,6 +262,11 @@ impl Deck {
     pub fn speed(&self) -> f32 { self.speed }
     pub fn rate(&self) -> f32 { self.rate }
     pub fn pitch(&self) -> f32 { self.pitch }
+
+    /// Ist der Player seit dem letzten Aufruf rückwärts am Titelanfang angekommen (und REV damit aus)?
+    pub fn take_reverse_ended(&mut self) -> bool {
+        std::mem::take(&mut self.reverse_ended)
+    }
 
     /// Ist der Titel seit dem letzten Aufruf zu Ende gelaufen?
     pub fn take_ended(&mut self) -> bool {
@@ -267,6 +304,7 @@ impl Deck {
         // Motor über den Block vorrechnen, pro Sample linear überblenden
         let dt = n as f32 / out_rate;
         let speed_start = self.speed;
+        let dir = self.dir();
         let speed_end = if self.scratch.is_none() {
             self.step_speed(motor, dt)
         } else {
@@ -281,7 +319,7 @@ impl Deck {
                 }
                 None => {
                     let s = speed_start + (speed_end - speed_start) * (i as f32 / n as f32);
-                    s * (1.0 + self.pitch)
+                    s * (1.0 + self.pitch) * dir
                 }
             };
             self.rate += (desired - self.rate) * smooth;
@@ -305,9 +343,14 @@ impl Deck {
             self.pos += self.rate as f64 * step_scale;
 
             if let Some((a, b)) = self.loop_range
-                && self.rate > 0.0 && self.pos >= b && self.scratch.is_none() {
+                && self.scratch.is_none()
+            {
+                if self.rate > 0.0 && self.pos >= b {
                     self.pos -= b - a;
+                } else if self.reverse && self.rate < 0.0 && self.pos < a {
+                    self.pos += b - a;
                 }
+            }
             if self.pos < 0.0 {
                 self.pos = 0.0;
                 if self.scratch.is_none() {
@@ -316,6 +359,10 @@ impl Deck {
             } else if self.pos >= len {
                 if self.scratch.is_some() {
                     self.pos = len;
+                } else if self.reverse {
+                    // Rückwärts-Player nach vorn angestoßen: am Ende festhalten, der Motor zieht zurück
+                    self.pos = len;
+                    self.rate = 0.0;
                 } else if self.coasting {
                     // Bei stehendem Motor ans Ende gerollt: anhalten, kein Titelende melden
                     self.pos = len;
@@ -340,11 +387,18 @@ impl Deck {
         }
 
         self.speed = speed_end;
-        if self.scratch.is_none() && self.pos <= 0.0 && self.speed < 0.0 {
-            // Rückwärts an den Anfang gerollt: die Platte bleibt dort stehen
+        if self.scratch.is_none() && self.pos <= 0.0 && self.speed * dir < 0.0 {
+            // Rückwärts an den Anfang gelaufen oder gerollt: die Platte bleibt dort stehen
             self.speed = 0.0;
             self.rate = 0.0;
             self.coasting = false;
+            // Ein Rückwärts-Player hält am Anfang an und schaltet REV aus; vorwärts zieht der Motor die Platte wieder los
+            if self.reverse {
+                self.playing = false;
+                self.reverse = false;
+                self.reversing = false;
+                self.reverse_ended = true;
+            }
         }
         if self.stop_pending && !self.playing && self.speed == 0.0 && self.rate.abs() < 1e-3 {
             self.stop_pending = false;
@@ -466,6 +520,43 @@ mod tests {
         assert!(d.speed() > 2.0, "Schwung bleibt erhalten: {}", d.speed());
         run(&mut d, &motor, 4.0);
         assert_eq!(d.speed(), 1.0);
+    }
+
+    #[test]
+    fn reverse_plays_backwards_and_stops_at_start() {
+        let motor = Motor { spin_up_secs: 0.01, spin_down_secs: 0.01 };
+        let mut d = deck_with_dc(10);
+        d.seek_secs(2.0);
+        d.set_reverse(true);
+        d.play();
+        run(&mut d, &motor, 1.0);
+        let p = d.position_secs();
+        assert!(p > 0.9 && p < 1.1, "pos {p}");
+        run(&mut d, &motor, 2.0);
+        assert_eq!(d.position_secs(), 0.0);
+        assert!(!d.is_playing(), "bleibt am Anfang stehen");
+        assert!(!d.take_ended(), "kein Titelende");
+        assert!(d.take_reverse_ended(), "REV geht aus");
+        d.play();
+        run(&mut d, &motor, 0.5);
+        assert!(d.position_secs() > 0.4, "läuft danach wieder vorwärts");
+    }
+
+    #[test]
+    fn reverse_switch_spins_down_then_up_the_other_way() {
+        let motor = Motor { spin_up_secs: 0.5, spin_down_secs: 1.0 };
+        let mut d = deck_with_dc(20);
+        d.seek_secs(10.0);
+        d.play();
+        run(&mut d, &motor, 1.0);
+        d.set_reverse(true);
+        run(&mut d, &motor, 0.5);
+        // Halb ausgelaufen, läuft noch vorwärts
+        assert!(d.rate() > 0.3 && d.rate() < 0.7, "rate {}", d.rate());
+        run(&mut d, &motor, 0.75);
+        assert!(d.rate() < 0.0, "läuft schon rückwärts an: {}", d.rate());
+        run(&mut d, &motor, 1.0);
+        assert!((d.rate() + 1.0).abs() < 1e-3, "volle Fahrt rückwärts: {}", d.rate());
     }
 
     #[test]

@@ -34,6 +34,7 @@ pub enum Command {
     Seek { deck: usize, secs: f64 },
     SetPitch { deck: usize, pitch: f32 },
     SetRepeatTrack { deck: usize, on: bool },
+    SetReverse { deck: usize, on: bool },
     /// Dauer der Überblendung vom Titelende in den Anfang bei Repeat (für beide Player).
     SetRepeatFade(f32),
     SetLoop { deck: usize, range: Option<(f64, f64)> },
@@ -65,6 +66,7 @@ pub struct DeckStatus {
     rate: AtomicF32,
     playing: AtomicBool,
     ended: AtomicU64,
+    reverse_ended: AtomicU64,
 }
 
 impl DeckStatus {
@@ -78,6 +80,8 @@ impl DeckStatus {
     pub fn is_playing(&self) -> bool { self.playing.load(Ordering::Relaxed) }
     /// Zähler, der bei jedem Titelende hochzählt.
     pub fn ended_count(&self) -> u64 { self.ended.load(Ordering::Relaxed) }
+    /// Zähler, der hochzählt, wenn der Player rückwärts am Titelanfang ankommt (REV schaltet sich dabei aus).
+    pub fn reverse_ended_count(&self) -> u64 { self.reverse_ended.load(Ordering::Relaxed) }
 }
 
 /// Von Audio-Thread und Oberfläche gemeinsam genutzter Zustand.
@@ -234,6 +238,7 @@ impl Engine {
             Seek { deck, secs } if ok(deck) => self.decks[deck].seek_secs(secs),
             SetPitch { deck, pitch } if ok(deck) => self.decks[deck].set_pitch(pitch),
             SetRepeatTrack { deck, on } if ok(deck) => self.decks[deck].set_repeat_track(on),
+            SetReverse { deck, on } if ok(deck) => self.decks[deck].set_reverse(on),
             SetLoop { deck, range } if ok(deck) => self.decks[deck].set_loop_secs(range),
             ScratchBegin { deck } if ok(deck) => self.decks[deck].scratch_begin(),
             ScratchTo { deck, secs } if ok(deck) => self.decks[deck].scratch_to_secs(secs),
@@ -348,6 +353,9 @@ impl Engine {
             st.playing.store(deck.is_playing(), Ordering::Relaxed);
             if deck.take_ended() {
                 st.ended.fetch_add(1, Ordering::Relaxed);
+            }
+            if deck.take_reverse_ended() {
+                st.reverse_ended.fetch_add(1, Ordering::Relaxed);
             }
         }
         for (lv, pk) in s.levels.iter().zip(peaks) {
