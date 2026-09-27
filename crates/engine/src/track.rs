@@ -10,7 +10,8 @@ pub struct TrackAudio {
 
 impl TrackAudio {
     pub fn new(sample_rate: u32, frames: Vec<[f32; 2]>) -> Self {
-        Self { sample_rate, frames }
+        // Eine Abtastrate von 0 ergäbe Divisionen durch 0 (kaputter Dateikopf)
+        Self { sample_rate: sample_rate.max(1), frames }
     }
 
     pub fn len_frames(&self) -> usize {

@@ -396,7 +396,17 @@ fn parse_json(text: &str) -> Result<Day, String> {
         return Err(format!("unbekanntes Format „{}“", f.format));
     }
     let date = parse_date(&f.date).ok_or_else(|| format!("ungültiges Datum „{}“", f.date))?;
-    Ok(Day { date, name: f.name, entries: f.entries })
+    // Unsinnige Werte aus beschädigten oder fremden Dateien entschärfen
+    let mut entries = f.entries;
+    for e in &mut entries {
+        if !e.duration_secs.is_finite() || e.duration_secs < 0.0 {
+            e.duration_secs = 0.0;
+        }
+        if e.deck.is_some_and(|d| d > 1) {
+            e.deck = None;
+        }
+    }
+    Ok(Day { date, name: f.name, entries })
 }
 
 /// Liest eine M3U/M3U8-Playlist. Relative Pfade gelten ab dem Ordner der Playlist.
@@ -522,6 +532,19 @@ pub fn import_in_background(file: PathBuf, roots: Vec<PathBuf>, repaint: impl Fn
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn broken_history_and_playlist_files_are_handled() {
+        for text in ["", "{", "[]", "null", r#"{"date":"gestern"}"#, r#"{"date":"2026-13-45","entries":[]}"#, r#"{"date":"2026-10-14","entries":"kaputt"}"#] {
+            assert!(parse_json(text).is_err(), "{text:?} sollte ein Fehler sein");
+        }
+        let day = parse_json(r#"{"date":"2026-10-14","entries":[{"path":"/a.mp3","duration_secs":-4,"deck":7,"played_at":"Unsinn"}]}"#).unwrap();
+        assert_eq!((day.entries[0].duration_secs, day.entries[0].deck), (0.0, None));
+        assert_eq!(day.entries[0].clock(), "");
+        // M3U mit Müll, leeren Zeilen, Steuerzeichen und kaputten Prozent-Kodierungen
+        let m3u = "#EXTM3U\n\n#EXTINF:abc,\n%ZZ%4\n\u{0}\u{7}\nfile:///%\n../../../x.mp3\n#EXTINF:-1,Titel\nC:\\Musik\\a.mp3\n";
+        let _ = parse_m3u(m3u, Path::new("/Musik/Listen"));
+    }
 
     fn dt(s: &str) -> civil::DateTime {
         s.parse().unwrap()

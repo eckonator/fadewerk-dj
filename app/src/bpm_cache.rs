@@ -76,7 +76,9 @@ fn moved_key(file: &Path, size: u64) -> Option<Moved> {
 }
 
 impl BpmCache {
-    fn from_entries(entries: HashMap<PathBuf, Entry>) -> Self {
+    fn from_entries(mut entries: HashMap<PathBuf, Entry>) -> Self {
+        // Unsinnige Werte aus einer beschädigten Datei verwerfen (sie würden Sync und Anzeige verwirren)
+        entries.retain(|_, e| e.bpm.is_finite() && (20.0..=400.0).contains(&e.bpm));
         let mut c = Self { entries, ..Default::default() };
         let index: Vec<(Moved, PathBuf)> = c.entries.iter().filter_map(|(p, e)| Some((moved_key(p, e.size)?, p.clone()))).collect();
         c.by_name.extend(index);
@@ -217,6 +219,15 @@ impl BpmCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nonsense_bpm_values_are_dropped() {
+        let json = r#"{"/a.mp3":{"bpm":128.0,"size":1,"modified":1},"/b.mp3":{"bpm":-5.0,"size":1,"modified":1},"/c.mp3":{"bpm":99999.0,"size":1,"modified":1}}"#;
+        let entries: HashMap<PathBuf, Entry> = serde_json::from_str(json).unwrap();
+        let c = BpmCache::from_entries(entries);
+        assert_eq!(c.entries.len(), 1);
+        assert!(c.entries.contains_key(Path::new("/a.mp3")));
+    }
 
     fn temp_dir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("fw-bpm-cache-{name}-{}", std::process::id()));

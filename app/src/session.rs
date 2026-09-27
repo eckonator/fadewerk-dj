@@ -32,26 +32,33 @@ fn path() -> Option<PathBuf> {
 pub fn load() -> ([Playlist; 2], usize) {
     let Some(p) = path() else { return (Default::default(), 0) };
     let Ok(text) = std::fs::read_to_string(&p) else { return (Default::default(), 0) };
-    let session: Session = match serde_json::from_str(&text) {
-        Ok(s) => s,
+    match restore(&text, |f| f.is_file()) {
+        Ok(r) => r,
         Err(e) => {
             log::warn!("Playlists in {} unlesbar: {e}", p.display());
-            return (Default::default(), 0);
+            (Default::default(), 0)
         }
-    };
+    }
+}
+
+/// Playlists aus dem gespeicherten Text; `exists` prüft, ob es eine Datei noch gibt.
+/// Ein geladener Titel hinter dem Ende der Liste (kaputte Datei) gilt als nicht geladen.
+fn restore(text: &str, exists: impl Fn(&std::path::Path) -> bool) -> Result<([Playlist; 2], usize), String> {
+    let session: Session = serde_json::from_str(text).map_err(|e| e.to_string())?;
     let mut missing = 0;
     let lists = session.playlists.map(|saved| {
-        let mut pl = Playlist { entries: saved.entries, current: saved.current };
+        let current = saved.current.filter(|&c| c < saved.entries.len());
+        let mut pl = Playlist { entries: saved.entries, current };
         // Rückwärts entfernen, damit `remove` den aktuellen Titel richtig mitverschiebt
         for i in (0..pl.entries.len()).rev() {
-            if !pl.entries[i].is_file() {
+            if !exists(&pl.entries[i]) {
                 pl.remove(i);
                 missing += 1;
             }
         }
         pl
     });
-    (lists, missing)
+    Ok((lists, missing))
 }
 
 pub fn save(lists: &[Playlist; 2]) {
@@ -77,4 +84,22 @@ pub fn fingerprint(lists: &[Playlist; 2]) -> u64 {
         pl.current.hash(&mut h);
     }
     h.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn broken_session_files_are_handled() {
+        for text in ["", "{", "[]", "null", r#"{"playlists":"kaputt"}"#, r#"{"playlists":[{"entries":[1,2]},{}]}"#] {
+            assert!(restore(text, |_| true).is_err(), "{text:?} sollte ein Fehler sein");
+        }
+        // Geladener Titel hinter dem Listenende, fehlende Datei
+        let text = r#"{"playlists":[{"entries":["/a.mp3","/b.mp3"],"current":7},{"entries":["/weg.mp3","/c.mp3"],"current":1}]}"#;
+        let ([a, b], missing) = restore(text, |p| p != std::path::Path::new("/weg.mp3")).unwrap();
+        assert_eq!((a.entries.len(), a.current), (2, None));
+        assert_eq!((b.entries.len(), b.current), (1, Some(0)), "rückt mit dem entfernten Eintrag nach");
+        assert_eq!(missing, 1);
+    }
 }

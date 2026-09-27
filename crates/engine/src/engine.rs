@@ -63,6 +63,32 @@ pub enum Command {
     SetFxVolume(f32),
 }
 
+impl Command {
+    /// Sind alle Zahlen im Befehl endlich?
+    fn values_finite(&self) -> bool {
+        use Command::*;
+        let f = |x: f32| x.is_finite();
+        let d = |x: f64| x.is_finite();
+        match self {
+            Load { start_secs, .. } => d(*start_secs),
+            Seek { secs, .. } | ScratchTo { secs, .. } => d(*secs),
+            SetLoop { range: Some((a, b)), .. } => d(*a) && d(*b),
+            SetPitch { pitch: x, .. }
+            | SetRepeatFade(x)
+            | SetCrossfader(x)
+            | SetChannelVolume { volume: x, .. }
+            | SetEq { gain: x, .. }
+            | SetHeadMix(x)
+            | SetHeadVolume(x)
+            | SetMasterVolume(x)
+            | SetFxVolume(x) => f(*x),
+            SetCurve(Curve::Custom(pts)) => pts.iter().all(|&x| f(x)),
+            SetMotor(m) => f(m.spin_up_secs) && f(m.spin_down_secs),
+            _ => true,
+        }
+    }
+}
+
 /// Zustand eines Players, wie ihn die Oberfläche sieht.
 #[derive(Default)]
 pub struct DeckStatus {
@@ -237,6 +263,15 @@ impl Engine {
 
     fn apply(&mut self, cmd: Command) {
         use Command::*;
+        // Ungültige Zahlen (NaN, unendlich) würden das Signal dauerhaft vergiften: solche Befehle verwerfen.
+        // Ein Titel wird trotzdem geladen, nur ohne Startstelle (sonst würde er hier freigegeben).
+        let cmd = match cmd {
+            Load { deck, id, track, keep_playing, start_secs } if !start_secs.is_finite() => {
+                Load { deck, id, track, keep_playing, start_secs: 0.0 }
+            }
+            c if !c.values_finite() => return,
+            c => c,
+        };
         let ok = |d: usize| d < VOICES;
         match cmd {
             Load { deck, id, track, keep_playing, start_secs } if ok(deck) => {
