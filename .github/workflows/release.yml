@@ -1,4 +1,4 @@
-# Baut FadeWerk DJ für macOS, Windows und Linux und veröffentlicht einen Release unter der
+# Baut FadeWerk DJ für macOS, Windows und Linux (x86_64 und arm64) und veröffentlicht einen Release unter der
 # Versionsnummer aus Cargo.toml (Tag `v<Version>`).
 #
 # - Jeder Push auf main ersetzt den Release dieser Version durch den neuen Stand.
@@ -37,6 +37,11 @@ jobs:
           # Älteres Ubuntu, damit das Programm auch auf älteren Distributionen läuft (glibc)
           - os: ubuntu-22.04
             name: Linux
+            arch: x86_64
+          # ARM64, z. B. Raspberry Pi 4/5 mit 64-Bit-Raspberry-Pi-OS (Bookworm hat glibc 2.36)
+          - os: ubuntu-22.04-arm
+            name: Linux-arm64
+            arch: arm64
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -50,7 +55,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Linux-Pakete
-        if: matrix.name == 'Linux'
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libxkbcommon-dev libwayland-dev libx11-dev \
@@ -110,10 +115,10 @@ jobs:
           cd pkg && 7z a -tzip "$DIR.zip" "$DIR" > /dev/null && rm -r "$DIR"
 
       - name: Linux bauen
-        if: matrix.name == 'Linux'
+        if: runner.os == 'Linux'
         run: |
           cargo build --release -p fadewerk-dj
-          DIR="FadeWerk-DJ-${{ steps.version.outputs.version }}-Linux-x86_64"
+          DIR="FadeWerk-DJ-${{ steps.version.outputs.version }}-Linux-${{ matrix.arch }}"
           mkdir -p "pkg/$DIR"
           cp target/release/fadewerk-dj assets/fadewerk-dj.desktop README.md LICENSE \
             THIRD-PARTY-LICENSES.yml assets/fonts/OFL-*.txt "pkg/$DIR/"
@@ -152,7 +157,7 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: FadeWerk DJ ${{ steps.version.outputs.version }}
           body: |
-            Builds for macOS (Apple Silicon and Intel, one universal app), Windows (64-bit) and Linux (x86_64).
+            Builds for macOS (Apple Silicon and Intel, one universal app), Windows (64-bit) and Linux (x86_64 and arm64, e.g. Raspberry Pi 4/5 with 64-bit Raspberry Pi OS).
 
             **macOS, easiest way** (no Gatekeeper prompt): paste into Terminal
             ```
