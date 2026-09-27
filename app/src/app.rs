@@ -664,6 +664,13 @@ impl FadeWerkDjApp {
                 self.save_settings();
             }
             SettingsAction::FxPreview(slot) => self.trigger_fx(slot, false, now),
+            SettingsAction::FxResetAll => {
+                self.settings.fx_slots.clear();
+                for slot in 0..fw_engine::FX_SLOTS {
+                    self.fx.load(slot, None);
+                }
+                self.save_settings();
+            }
             SettingsAction::FxIcon(slot, key) => {
                 self.settings.fx_slot_mut(slot).icon = Some(key);
                 self.save_settings();

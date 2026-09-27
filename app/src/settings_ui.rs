@@ -50,6 +50,8 @@ pub enum SettingsAction {
     FxPreview(usize),
     /// Symbol eines Effekt-Pads (`FxIcon::key`).
     FxIcon(usize, String),
+    /// Alle Effekt-Pads auf die mitgelieferten Klänge, Namen und Symbole zurücksetzen.
+    FxResetAll,
 }
 
 pub struct SettingsCtx<'a> {
@@ -71,6 +73,8 @@ pub struct SettingsUi {
     license_view: Option<usize>,
     /// Pad, für das gerade ein Symbol gewählt wird.
     icon_picker: Option<usize>,
+    /// „Alle Effekte zurücksetzen“ wurde einmal geklickt und wartet auf Bestätigung.
+    confirm_fx_reset: bool,
 }
 
 const BUFFERS: [Option<u32>; 7] = [None, Some(64), Some(128), Some(256), Some(512), Some(1024), Some(2048)];
@@ -220,6 +224,28 @@ impl SettingsUi {
                 }
             });
         }
+        // Alle Pads auf einmal zurücksetzen, mit Rückfrage (eigene Dateien gehen dabei verloren)
+        ui.add_space(10.0);
+        let changed = (0..fw_engine::FX_SLOTS).any(|i| c.settings.fx_slot(i) != crate::fx::FxSlot::default());
+        ui.horizontal(|ui| {
+            if self.confirm_fx_reset && changed {
+                ui.label(RichText::new(tr("Alle eigenen Dateien, Namen und Symbole entfernen?")).color(theme::yellow()));
+                if ui.button(tr("Ja, zurücksetzen")).clicked() {
+                    out.push(SettingsAction::FxResetAll);
+                    self.confirm_fx_reset = false;
+                    self.icon_picker = None;
+                }
+                if ui.button(tr("Abbrechen")).clicked() {
+                    self.confirm_fx_reset = false;
+                }
+            } else {
+                self.confirm_fx_reset = false;
+                let b = ui.add_enabled(changed, egui::Button::new(tr("Alle Effekte zurücksetzen")));
+                if b.on_hover_text(tr("Alle Pads wieder mit den mitgelieferten Effekten, Namen und Symbolen belegen")).clicked() {
+                    self.confirm_fx_reset = true;
+                }
+            }
+        });
     }
 
     /// Copyright, Lizenz und Fremdbestandteile („Appropriate Legal Notices“ nach GPL-3.0 Abschnitt 0).
