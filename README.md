@@ -42,7 +42,7 @@ written in Rust. Click a folder and start playing: no database, no library impor
   Eject slides the record off the deck (A to the left, B to the right); a newly loaded one slides in. Embedded cover art turns the record
   into a spinning picture disc. A tonearm swings onto the record on play, follows the track from the
   outer groove inwards, lifts on pause and returns to its rest on stop; drag it to drop the needle
-  anywhere in the track.
+  anywhere in the track. Prefer a compact deck? Hide the turntables under Settings → Appearance.
 - **Motor**: start, pause and stop spin up and down like a real turntable
   (start and stop time adjustable in the Motor tab). CUE jumps instantly.
 - **Transport per deck**: CUE, play/pause, stop, previous, next, repeat (off, track, list;
@@ -65,7 +65,8 @@ written in Rust. Click a folder and start playing: no database, no library impor
   played ones stay above it. Playlists and settings are kept when you quit.
 - **Skins** Night, Classic, Day and Neon, optionally with a brushed steel look.
   The layout adapts to the window size, including 4K monitors. **Full screen** via the button
-  in the folder browser, F11 or ⌃⌘F on macOS.
+  in the folder browser, F11 or ⌃⌘F on macOS. On wide monitors, the button next to it moves the
+  folder browser from below the decks to their right (folder tree above the track list).
 - **Light on resources**: when nothing is playing, the interface only redraws on input. A
   **lightweight display** for older or slower computers drops shadows, gradients, glow and the
   spectrum and limits drawing to 30 frames per second.

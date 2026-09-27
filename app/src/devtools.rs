@@ -11,6 +11,8 @@
 //! - `FW_BPM=1` ermittelt in der Demo die fehlenden BPM des Startordners (Ergebnis in `bpm.json`, mit `FW_PERSIST=1`).
 //! - `FW_SEARCH="genre=Rock,year=1980-1989"` öffnet die erweiterte Suche mit diesen Feldern.
 //! - `FW_TAB=kopfhoerer|fade|motor|zu` öffnet diesen Reiter unter dem Crossfader (`zu` = alle zugeklappt).
+//! - `FW_PLATTERS=0` blendet die Plattenteller aus.
+//! - `FW_BROWSER=rechts` stellt den Ordnerbrowser rechts neben die Player.
 //! - `FW_COLUMNS=artist,album,genre,year,…` zeigt diese Spalten in der Titelliste des Browsers.
 //! - `FW_AUTOSYNC=1` schaltet Auto-Sync ein (ohne zu speichern).
 //! - `FW_STEEL=1` schaltet gebürsteten Stahl ein (ohne zu speichern).

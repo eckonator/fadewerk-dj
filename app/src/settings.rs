@@ -29,10 +29,18 @@ pub struct Settings {
     pub skin: SkinId,
     /// Flächen als gebürsteter Stahl.
     pub brushed_steel: bool,
+    /// Plattenteller samt Tonarm in den Playern zeigen.
+    pub platters: bool,
     /// Höhe des Ordnerbrowsers in Punkten, 0 = automatisch (ein knappes Drittel des Fensters).
     pub browser_height: f32,
+    /// Ordnerbrowser rechts neben Playern und Playlists statt darunter (für breite Monitore).
+    pub browser_side: bool,
+    /// Breite des Ordnerbrowsers rechts in Punkten, 0 = automatisch.
+    pub browser_width: f32,
     /// Breite des Ordnerbaums im Browser in Punkten, 0 = Standard.
     pub tree_width: f32,
+    /// Höhe des Ordnerbaums über der Titelliste (Browser rechts) in Punkten, 0 = automatisch.
+    pub tree_height: f32,
     /// Sichtbare Spalten der Titelliste im Browser (Schlüssel aus `browser::TrackColumn`), Titel ist immer da.
     pub track_columns: Vec<String>,
     /// Vom Nutzer gezogene Spaltenbreiten der Titelliste in Punkten, je Spaltenschlüssel.
@@ -102,8 +110,12 @@ impl Default for Settings {
             language: Lang::De,
             skin: SkinId::Nacht,
             brushed_steel: false,
+            platters: true,
             browser_height: 0.0,
+            browser_side: false,
+            browser_width: 0.0,
             tree_width: 0.0,
+            tree_height: 0.0,
             track_columns: crate::browser::TrackColumn::DEFAULT.iter().map(|c| c.key().to_owned()).collect(),
             column_widths: Vec::new(),
             track_sort: None,
@@ -245,7 +257,9 @@ impl Settings {
         let d = Self::default();
         let fit = |v: f32, lo: f32, hi: f32, def: f32| if v.is_finite() { v.clamp(lo, hi) } else { def };
         self.browser_height = fit(self.browser_height, 0.0, 10_000.0, 0.0);
+        self.browser_width = fit(self.browser_width, 0.0, 10_000.0, 0.0);
         self.tree_width = fit(self.tree_width, 0.0, 5_000.0, 0.0);
+        self.tree_height = fit(self.tree_height, 0.0, 5_000.0, 0.0);
         self.deck_height = fit(self.deck_height, 0.0, 10_000.0, 0.0);
         self.column_widths.retain(|(_, w)| w.is_finite() && *w > 0.0 && *w < 5_000.0);
         self.fx_slots.truncate(fw_engine::FX_SLOTS);
