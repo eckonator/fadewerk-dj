@@ -63,6 +63,8 @@ written in Rust. Click a folder and start playing: no database, no library impor
 - **Playlists**: fill and reorder by drag & drop, also between A and B (or via the right-click menu);
   drop tracks straight onto a deck. The loaded track always moves to the top of its playlist, the
   played ones stay above it. Playlists and settings are kept when you quit.
+  After clicking into a playlist or the folder track list, ↑/↓ move through the tracks; Enter loads
+  the marked track into the deck (playlists) or pre-listens to it (folder browser).
 - **Skins** Night, Classic, Day and Neon, optionally with a brushed steel look.
   The layout adapts to the window size, including 4K monitors. **Full screen** via the button
   in the folder browser, F11 or ⌃⌘F on macOS. On wide monitors, the button next to it moves the
