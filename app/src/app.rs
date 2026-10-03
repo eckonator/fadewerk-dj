@@ -46,6 +46,10 @@ const AUTO_SYNC_RATE: f32 = 0.1;
 const LITE_FRAME: std::time::Duration = std::time::Duration::from_millis(33);
 /// Im Ruhezustand nur so oft neu zeichnen (ohne Eingaben), damit Zustände aus dem Audio-Thread ankommen.
 const IDLE_FRAME: std::time::Duration = std::time::Duration::from_millis(250);
+/// Takt der Abspiel-Logik bei verdecktem oder minimiertem Fenster, solange etwas läuft (sonst `IDLE_FRAME`).
+const HIDDEN_TICK: std::time::Duration = std::time::Duration::from_millis(100);
+/// Größter Zeitschritt für Auto-Fade und Auto-Sync; bei verdecktem Fenster kommen die Aufrufe seltener.
+const LOGIC_MAX_DT: f64 = 1.0;
 /// So lange nach dem letzten Ton bleibt der Ruhezustand noch gesperrt (kein Flattern beim Titelwechsel).
 const AWAKE_HOLD_SECS: f64 = 10.0;
 /// Breite der Mittelspalte: wächst mit dem Fenster, damit die Player auf großen Monitoren nicht ausufern.
@@ -77,6 +81,9 @@ struct DeckView {
     ejected: Option<(String, String, Option<egui::TextureHandle>, f64)>,
     /// Kennung des Titels in der Engine, 0 = leer.
     loaded_id: u64,
+    /// Der geladene Titel wurde schon weggeblendet und die Playlist hat keinen weiteren: Auto-Fade blendet
+    /// nicht mehr hierher (sonst liefe der Rest des alten Titels noch einmal), der andere Player spielt allein weiter.
+    spent: bool,
     pending: Option<Pending>,
     pitch_pct: f32,
     /// Auto-Sync steuert den Pitch: Tempofaktor gegenüber dem anderen Titel (1, 2 oder ½).
@@ -136,6 +143,7 @@ impl Default for DeckView {
             cover: None,
             ejected: None,
             loaded_id: 0,
+            spent: false,
             pending: None,
             pitch_pct: 0.0,
             sync: None,
@@ -208,6 +216,11 @@ pub struct FadeWerkDjApp {
     next_token: u64,
     notice: Option<(String, f64)>,
     last_time: f64,
+    /// Uhr für [`eframe::App::logic`]: bei verdecktem Fenster bleibt die egui-Zeit stehen.
+    epoch: std::time::Instant,
+    /// Abstand der egui-Zeit zu `epoch`, damit beide Uhren gleich gehen.
+    clock_offset: f64,
+    last_logic: f64,
     dev: DevTools,
     settings: Settings,
     settings_ui: SettingsUi,
@@ -322,6 +335,9 @@ impl FadeWerkDjApp {
             next_token: 1,
             notice: None,
             last_time: 0.0,
+            epoch: std::time::Instant::now(),
+            clock_offset: 0.0,
+            last_logic: 0.0,
             dev: DevTools::from_env(),
             settings,
             settings_ui: SettingsUi::default(),
@@ -1164,6 +1180,7 @@ impl FadeWerkDjApp {
                         )
                     });
                     v.loaded_id = l.token;
+                    v.spent = false;
                     v.audio = Some(audio);
                     v.loop_beats = None;
                     v.loop_range = None;
@@ -1201,7 +1218,10 @@ impl FadeWerkDjApp {
                 if self.autofade.fade().is_some_and(|f| f.from == d || f.to == d) {
                     continue;
                 }
-                let continuous = !self.autofade.enabled && self.autofade.active == d;
+                // Ohne Auto-Fade oder wenn der andere Player nichts mehr hat, geht es in dieser Playlist weiter
+                let o = 1 - d;
+                let other_done = (!self.has_track(o) || self.decks[o].spent) && self.decks[o].pending.is_none();
+                let continuous = (!self.autofade.enabled || other_done) && self.autofade.active == d;
                 self.load_next(d, continuous, false);
             }
         }
@@ -1220,7 +1240,9 @@ impl FadeWerkDjApp {
             self.set_crossfader(step.crossfader);
             if let Some(old) = step.finished {
                 self.ctl.send(Command::Pause { deck: old });
-                self.load_next(old, false, false);
+                if !self.load_next(old, false, false) {
+                    self.decks[old].spent = true;
+                }
             }
             return;
         }
@@ -1240,7 +1262,7 @@ impl FadeWerkDjApp {
             return;
         }
         let to = self.autofade.other();
-        if self.has_track(to) && self.decks[to].pending.is_none() {
+        if self.has_track(to) && !self.decks[to].spent && self.decks[to].pending.is_none() {
             self.ctl.send(Command::Play { deck: to });
             self.autofade.start(self.crossfader);
         } else if self.decks[to].pending.is_none() && !self.load_next(to, false, false) && manual {
@@ -1331,8 +1353,15 @@ impl FadeWerkDjApp {
         if self.decks[a].repeat == Repeat::Track || self.decks[a].loop_range.is_some() {
             return trf("Repeat oder Loop in {}: Auto-Fade wartet", &[&theme::deck_letter(a)]);
         }
+        let o = 1 - a;
+        let other_empty = (!self.has_track(o) || self.decks[o].spent)
+            && self.decks[o].pending.is_none()
+            && self.playlists[o].next_index(self.decks[o].repeat == Repeat::List).is_none();
+        if other_empty {
+            return trf("Playlist {} ist durch, {} spielt allein weiter", &[&theme::deck_letter(o), &theme::deck_letter(a)]);
+        }
         let rem = (st.duration_secs() - st.position_secs()) / (1.0 + self.decks[a].pitch_pct as f64 / 100.0) - self.autofade.fade_secs as f64;
-        trf("Auto-Fade zu {} in {}", &[&theme::deck_letter(1 - a), &deck_ui::fmt_time(rem)])
+        trf("Auto-Fade zu {} in {}", &[&theme::deck_letter(o), &deck_ui::fmt_time(rem)])
     }
 
     // ---------- Aktionen ----------
@@ -1344,6 +1373,9 @@ impl FadeWerkDjApp {
             DeckAction::TogglePlay => {
                 let starting = !self.ctl.shared.decks[d].is_playing();
                 self.ctl.send(Command::TogglePlay { deck: d });
+                if starting {
+                    self.decks[d].spent = false;
+                }
                 if starting && self.autofade.fade().is_none() {
                     let (ga, gb) = self.curve.gains(self.crossfader);
                     let gain = if d == 0 { ga } else { gb };
@@ -1390,6 +1422,7 @@ impl FadeWerkDjApp {
                 v.bpm = None;
                 v.cover = None;
                 v.loaded_id = 0;
+                v.spent = false;
                 v.pending = None;
                 v.loop_beats = None;
                 v.loop_range = None;
@@ -1828,6 +1861,53 @@ fn panel_frame(ui: &egui::Ui) -> Frame {
 }
 
 impl eframe::App for FadeWerkDjApp {
+    /// Alles, was auch ohne sichtbares Fenster weiterlaufen muss: Titelende, Auto-Fade, Laden, Historie,
+    /// Speichern. eframe ruft `ui` bei verdecktem oder minimiertem Fenster nicht auf, `logic` aber schon
+    /// (davor blieb die Musik nach dem laufenden Titel stehen, wenn eine andere App das Fenster überdeckte).
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let hidden = ctx.input(|i| i.viewport().visible()) == Some(false);
+        let clock = self.epoch.elapsed().as_secs_f64();
+        // Bei sichtbarem Fenster gilt die egui-Zeit; verdeckt bleibt sie stehen, dann läuft die eigene Uhr weiter
+        if !hidden {
+            self.clock_offset = ctx.input(|i| i.time) - clock;
+        }
+        let now = clock + self.clock_offset;
+        let dt = (now - self.last_logic).clamp(0.0, LOGIC_MAX_DT) as f32;
+        self.last_logic = now;
+
+        self.poll_library(ctx, now);
+        self.poll_fx(now);
+        self.poll_import(now);
+        self.record_plays();
+        self.keep_awake(now);
+        self.handle_track_ends();
+        self.step_autofade(dt);
+        self.step_auto_sync(dt, now);
+        self.push_eq();
+        // Playlists alle zwei Sekunden sichern, falls sich etwas geändert hat (auch für Abstürze)
+        if now - self.session_checked > 2.0 {
+            self.session_checked = now;
+            self.save_session_if_changed();
+            if self.persist {
+                self.bpm_cache.save_if_dirty();
+                self.history.save_dirty();
+            }
+        }
+        if let Some(rx) = &self.bpm_check
+            && let Ok(results) = rx.try_recv()
+        {
+            self.bpm_check = None;
+            let removed = self.bpm_cache.apply_check(results);
+            if removed > 0 {
+                log::info!("BPM-Cache: {removed} Einträge ohne Datei entfernt");
+            }
+        }
+        self.ctl.collect_garbage();
+        if hidden {
+            ctx.request_repaint_after(if self.is_moving() { HIDDEN_TICK } else { IDLE_FRAME });
+        }
+    }
+
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         self.dev.raw_input(raw_input);
     }
@@ -1842,16 +1922,7 @@ impl eframe::App for FadeWerkDjApp {
         let dt = (now - self.last_time).clamp(0.0, 0.1) as f32;
         self.last_time = now;
 
-        self.poll_library(&ctx, now);
-        self.poll_fx(now);
         self.fx_keys(&ctx, now);
-        self.poll_import(now);
-        self.record_plays();
-        self.keep_awake(now);
-        self.handle_track_ends();
-        self.step_autofade(dt);
-        self.step_auto_sync(dt, now);
-        self.push_eq();
         let levels = self.ctl.shared.take_levels();
         for (m, l) in self.meters.iter_mut().zip(levels) {
             m.update(l, dt, now);
@@ -2250,31 +2321,12 @@ impl eframe::App for FadeWerkDjApp {
             self.settings_action(a, &ctx, now);
         }
         self.track_settings(now);
-        // Playlists alle zwei Sekunden sichern, falls sich etwas geändert hat (auch für Abstürze)
-        if now - self.session_checked > 2.0 {
-            self.session_checked = now;
-            self.save_session_if_changed();
-            if self.persist {
-                self.bpm_cache.save_if_dirty();
-                self.history.save_dirty();
-            }
-        }
-        if let Some(rx) = &self.bpm_check
-            && let Ok(results) = rx.try_recv()
-        {
-            self.bpm_check = None;
-            let removed = self.bpm_cache.apply_check(results);
-            if removed > 0 {
-                log::info!("BPM-Cache: {removed} Einträge ohne Datei entfernt");
-            }
-        }
 
         self.dev.on_frame(&ctx);
         // Rad-Ereignisse, die kein Regler genommen hat: dort läuft gerade ein Scrollen
         crate::hw::note_foreign_scroll(&ctx);
         // Pfeil- und Eingabetasten, die kein Regler genommen hat: für die zuletzt angeklickte Titelliste
         crate::keynav::collect(&ctx);
-        self.ctl.collect_garbage();
         // Teller, Wellenform und Pegel laufen, solange etwas spielt (sparsam mit höchstens 30 Bildern/s);
         // im Stillstand nur bei Eingaben und gelegentlich zum Abholen des Engine-Zustands
         if !self.is_moving() {
