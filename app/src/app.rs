@@ -1580,7 +1580,7 @@ impl FadeWerkDjApp {
         match a {
             PlaylistAction::Load(i) => {
                 if self.ctl.shared.decks[d].is_playing() {
-                    self.notify(trf("Player {} spielt gerade. Erst stoppen.", &[&theme::deck_letter(d)]), now);
+                    self.notify(trf("Titel nicht geladen: Player {} spielt gerade. Erst stoppen.", &[&theme::deck_letter(d)]), now);
                 } else {
                     self.load_index(d, i, false, false);
                 }
@@ -2272,6 +2272,8 @@ impl eframe::App for FadeWerkDjApp {
         self.dev.on_frame(&ctx);
         // Rad-Ereignisse, die kein Regler genommen hat: dort läuft gerade ein Scrollen
         crate::hw::note_foreign_scroll(&ctx);
+        // Pfeil- und Eingabetasten, die kein Regler genommen hat: für die zuletzt angeklickte Titelliste
+        crate::keynav::collect(&ctx);
         self.ctl.collect_garbage();
         // Teller, Wellenform und Pegel laufen, solange etwas spielt (sparsam mit höchstens 30 Bildern/s);
         // im Stillstand nur bei Eingaben und gelegentlich zum Abholen des Engine-Zustands

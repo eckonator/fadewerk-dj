@@ -418,6 +418,7 @@ fn en(de: &str) -> Option<&'static str> {
         "Kopfhörer: links Master, rechts Vorhören" => "Headphones: master left, cue right",
         "Player {} ist gerade zu hören. Erst stoppen oder wegblenden." => "Deck {} is on air. Stop it or fade away first.",
         "Player {} spielt gerade. Erst stoppen." => "Deck {} is playing. Stop it first.",
+        "Titel nicht geladen: Player {} spielt gerade. Erst stoppen." => "Track not loaded: deck {} is playing. Stop it first.",
         "Playlist {}: kein weiterer Titel" => "Playlist {}: no further track",
         "Playlist {} hat keinen nächsten Titel" => "Playlist {} has no next track",
         "Zu weit auseinander ({} ↔ {} BPM), Pitch reicht nur ±{} %" => "Too far apart ({} ↔ {} BPM), pitch only covers ±{} %",

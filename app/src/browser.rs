@@ -13,6 +13,7 @@ use crate::deck_ui::fmt_time;
 use crate::history::{Entry, ExportFormat, History};
 use crate::playlist::DragItem;
 use crate::search::{AdvancedSearch, Field};
+use crate::keynav::KeyList;
 use crate::selection::Selection;
 use crate::i18n::{count_tracks, tr, trf};
 use crate::theme;
@@ -1280,6 +1281,16 @@ impl Browser {
                 self.picked.clear();
             }
         }
+        // Pfeiltasten (nach einem Klick in die Liste): Auswahl eine Zeile weiter, mit ⇧ erweitern.
+        // Enter hört den markierten Titel vor (noch einmal Enter beendet es).
+        let keys = crate::keynav::take(ui.ctx(), KeyList::Browser);
+        let scroll_row = keys.filter(|k| k.steps != 0).and_then(|k| self.picked.step(rows, k.steps, k.extend));
+        if keys.is_some_and(|k| k.enter)
+            && let Some(r) = self.picked.cursor().filter(|r| rows.contains(r))
+            && (hist_day.is_none() || !missing.contains(&r.slot))
+        {
+            out.push(if ctx.preview == Some(r.path.as_path()) { BrowserAction::StopPreview } else { BrowserAction::Preview(r.path.clone()) });
+        }
         let sel_rows = self.picked.ordered(rows);
         let row_paths = &data.paths;
         let sel_paths = playable(&sel_rows);
@@ -1422,6 +1433,9 @@ impl Browser {
                 .min_scrolled_height(0.0)
                 .column(Column::exact(30.0))
                 .column(Column::exact(40.0));
+            if let Some(r) = scroll_row {
+                table = table.scroll_to_row(r, None);
+            }
             if hist_cols {
                 table = table.column(Column::exact(clock_w)).column(Column::exact(deck_w));
             }
@@ -1589,6 +1603,9 @@ impl Browser {
                         }
                         if resp.secondary_clicked() && !in_sel {
                             picked.select_only(r);
+                        }
+                        if resp.clicked() || resp.secondary_clicked() {
+                            crate::keynav::focus(&resp.ctx, KeyList::Browser);
                         }
                         if resp.drag_started() {
                             let t = targets();
