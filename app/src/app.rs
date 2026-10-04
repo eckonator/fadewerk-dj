@@ -8,9 +8,10 @@ use std::sync::Arc;
 use eframe::egui::{self, Align2, CornerRadius, Frame, Margin, Rect, RichText, Sense, Stroke, pos2, vec2};
 use egui_extras::{Size, StripBuilder};
 use fw_engine::{AutoFade, Command, Controller, Curve, HeadMode, Motor, PREVIEW, TrackAudio, db_to_gain, eq};
-use fw_library::{Library, Response, TrackMeta, Waveform};
+use fw_library::{Library, Response, TrackMeta, WaveSketch, Waveform};
 
 use crate::audio::{self, AudioOut, HeadOut};
+use crate::fade_preview;
 use crate::browser::{Browser, BrowserAction, BrowserCtx};
 use crate::deck_ui::{self, DeckAction, DeckModel, PITCH_RANGE, Repeat};
 use crate::devtools::DevTools;
@@ -168,6 +169,18 @@ struct PreviewView {
     path: PathBuf,
     token: u64,
     ended_seen: u64,
+    /// Vorhören im Fade-Editor: Eintrag, Art und Versatz zum Titel. Dann zeigen Browser und Playlists es
+    /// nicht als normales Vorhören des Titels.
+    clip: Option<ClipView>,
+}
+
+struct ClipView {
+    list: usize,
+    index: usize,
+    kind: fade_preview::Kind,
+    /// Noch im Mischen; danach Stelle im Titel = Stelle im Ausschnitt + `offset`.
+    rendering: Option<std::sync::mpsc::Receiver<Result<fade_preview::Clip, String>>>,
+    offset: f64,
 }
 
 pub struct FadeWerkDjApp {
@@ -191,7 +204,17 @@ pub struct FadeWerkDjApp {
     bpm_total: usize,
     /// Ergebnis der Hintergrundprüfung des BPM-Caches beim Start (welche Dateien es noch gibt).
     bpm_check: Option<std::sync::mpsc::Receiver<Vec<(PathBuf, bool)>>>,
+    /// Kleine Wellenformen für die Playlist-Zeilen (`None` = Datei nicht lesbar).
+    sketches: HashMap<PathBuf, Option<Arc<WaveSketch>>>,
+    sketch_requested: HashSet<PathBuf>,
+    /// FadeWerk-Modus: Playlists zeigen Wellenformen und Fade-Bereiche.
+    fadewerk: bool,
     autofade: AutoFade,
+    /// Laufende FadeWerk-Überblendung, die sich nach dem alten Titel richtet: (Player, Beginn und Ende seines
+    /// Ausblendbereichs). Bei FADE per Hand `None`, dann laufen die Phasen nach Zeit.
+    fade_track: Option<(usize, f64, f64)>,
+    /// Zuletzt an die Engine geschickt: Crossfader zweiphasig auswerten (`None` = unbekannt, neu schicken).
+    split_sent: Option<bool>,
     crossfader: f32,
     curve: Curve,
     motor: Motor,
@@ -310,9 +333,14 @@ impl FadeWerkDjApp {
             meta_requested: HashSet::new(),
             bpms: HashMap::new(),
             bpm_cache: Default::default(),
+            sketches: HashMap::new(),
+            sketch_requested: HashSet::new(),
+            fadewerk: false,
             bpm_pending: HashSet::new(),
             bpm_total: 0,
             bpm_check: None,
+            fade_track: None,
+            split_sent: None,
             autofade: { let mut a = AutoFade::default(); a.enabled = settings.auto_fade; a.fade_secs = settings.fade_secs; a },
             crossfader: -1.0,
             curve: curve_from(settings.curve, settings.curve_points),
@@ -395,6 +423,16 @@ impl FadeWerkDjApp {
             app.bpm_cache = crate::bpm_cache::BpmCache::load();
             app.bpms.extend(app.bpm_cache.all().map(|(p, b)| (p.clone(), b)));
             app.bpm_check = Some(app.bpm_cache.start_check());
+            let dir = crate::settings::config_dir().map(|d| d.join("wellenformen"));
+            if let Some(dir) = dir.clone() {
+                let _ = std::thread::Builder::new().name("fw-wave-clean".into()).spawn(move || {
+                    let n = fw_library::sketch::clean_cache(&dir);
+                    if n > 0 {
+                        log::info!("Wellenform-Cache: {n} alte Einträge entfernt");
+                    }
+                });
+            }
+            app.lib.set_sketch_cache(dir);
         }
         if app.persist {
             // Playlists vom letzten Mal wiederherstellen und die geladenen Titel wieder in die Player legen
@@ -462,6 +500,25 @@ impl FadeWerkDjApp {
             if std::env::var("FW_PLATTERS").is_ok_and(|v| v == "0") {
                 app.settings.platters = false;
             }
+            // FW_FADEWERK=1: Playlists im FadeWerk-Modus; FW_FADEWERK=edit setzt Beispielbereiche in
+            // Playlist B und öffnet den Editor für deren zweiten Titel
+            if let Ok(v) = std::env::var("FW_FADEWERK") {
+                app.fadewerk = true;
+                if v == "edit" && app.playlists[1].entries.len() > 1 {
+                    use crate::fadewerk::{Region, TrackFade};
+                    app.playlists[1].set_fade(0, TrackFade { fade_in: None, fade_out: Some(Region { start: 186.0, end: 196.0 }) });
+                    app.playlists[1].set_fade(1, TrackFade { fade_in: Some(Region { start: 2.5, end: 9.0 }), fade_out: Some(Region { start: 192.0, end: 192.0 }) });
+                    // FW_EDIT_INDEX wählt den Eintrag (Standard 1)
+                    let k = std::env::var("FW_EDIT_INDEX").ok().and_then(|v| v.parse().ok()).filter(|&k: &usize| k < app.playlists[1].entries.len()).unwrap_or(1);
+                    playlist_ui::demo_open_editor(&cc.egui_ctx, 1, k, app.playlists[1].entries[k].clone());
+                }
+                // FW_FADEWERK=auto: kurze Bereiche, damit die Überblendung von A nach B nach 3 s beginnt
+                if v == "auto" && !app.playlists[0].entries.is_empty() && !app.playlists[1].entries.is_empty() {
+                    use crate::fadewerk::{Region, TrackFade};
+                    app.playlists[0].set_fade(0, TrackFade { fade_in: None, fade_out: Some(Region { start: 6.0, end: 10.0 }) });
+                    app.playlists[1].set_fade(0, TrackFade { fade_in: Some(Region { start: 3.0, end: 6.0 }), fade_out: None });
+                }
+            }
             // FW_BROWSER=rechts: Ordnerbrowser rechts neben den Playern
             if std::env::var("FW_BROWSER").is_ok_and(|v| v == "rechts") {
                 app.settings.browser_side = true;
@@ -503,6 +560,7 @@ impl FadeWerkDjApp {
     /// Bringt die Engine auf den Stand der Oberfläche (Start und nach einem Gerätewechsel).
     fn push_mixer_state(&mut self) {
         self.ctl.send(Command::SetCrossfader(self.crossfader));
+        self.split_sent = None;
         self.ctl.send(Command::SetCurve(self.curve));
         self.ctl.send(Command::SetRepeatFade(self.autofade.fade_secs));
         self.ctl.send(Command::SetMotor(self.motor));
@@ -1145,9 +1203,14 @@ impl FadeWerkDjApp {
         }
     }
 
+    /// Pegel von A und B am Crossfader, wie die Engine sie gerade rechnet.
+    fn crossfader_gains(&self) -> (f32, f32) {
+        if self.split_sent == Some(true) { self.curve.split_gains(self.crossfader) } else { self.curve.gains(self.crossfader) }
+    }
+
     fn on_air(&self, d: usize) -> bool {
         let st = &self.ctl.shared.decks[d];
-        let (ga, gb) = self.curve.gains(self.crossfader);
+        let (ga, gb) = self.crossfader_gains();
         let g = if d == 0 { ga } else { gb };
         self.has_track(d) && (st.is_playing() || st.speed() != 0.0) && g * self.decks[d].volume > 0.05
     }
@@ -1214,10 +1277,14 @@ impl FadeWerkDjApp {
                         self.bpms.insert(path, bpm);
                     }
                 }
+                Response::Sketch { path, sketch } => {
+                    self.sketches.insert(path, sketch);
+                }
                 Response::Scan { token, tracks, done, limited } => self.browser.receive_scan(token, tracks, done, limited),
                 Response::Loaded(l) => {
                     let l = *l;
                     self.metas.insert(l.path.clone(), l.meta.clone());
+                    self.sketches.insert(l.path.clone(), Some(l.sketch.clone()));
                     if let Some(bpm) = l.bpm {
                         self.bpms.insert(l.path.clone(), bpm);
                         if l.bpm_analyzed {
@@ -1235,7 +1302,9 @@ impl FadeWerkDjApp {
                     let d = l.deck;
                     let Some(p) = self.decks[d].pending.take_if(|p| p.token == l.token) else { continue };
                     let audio = l.audio.clone();
-                    self.ctl.send(Command::Load { deck: d, id: l.token, track: l.audio, keep_playing: p.keep_playing, start_secs: 0.0 });
+                    // FadeWerk: der Titel beginnt am Anfang seines Einblendbereichs
+                    let start = p.index.and_then(|i| self.playlists[d].fade(i).fade_in).map_or(0.0, |r| r.start as f64);
+                    self.ctl.send(Command::Load { deck: d, id: l.token, track: l.audio, keep_playing: p.keep_playing, start_secs: start });
                     if p.autoplay {
                         self.ctl.send(Command::Play { deck: d });
                     }
@@ -1309,10 +1378,136 @@ impl FadeWerkDjApp {
         }
     }
 
+    /// Titel vor und nach Eintrag `i` der Playlist `d` in der anderen Playlist, wenn abwechselnd gespielt wird,
+    /// ausgehend vom aktuellen Stand (aktiver Player, geladene Titel).
+    fn fade_partners(&self, d: usize, i: usize) -> [Option<(usize, usize)>; 2] {
+        let a = self.autofade.active;
+        let o = 1 - a;
+        let ca = self.playlists[a].current.unwrap_or(0) as isize;
+        // Als Nächstes aus der anderen Playlist: der geladene Titel, wenn er noch dran ist, sonst der folgende
+        let no = match self.playlists[o].current {
+            Some(c) if self.has_track(o) && !self.decks[o].spent => c as isize,
+            Some(c) => c as isize + 1,
+            None => 0,
+        };
+        let i = i as isize;
+        let (other, before, after) = if d == a { (o, no + (i - ca) - 1, no + (i - ca)) } else { (a, ca + (i - no), ca + (i - no) + 1) };
+        let ok = |k: isize| (k >= 0 && (k as usize) < self.playlists[other].entries.len()).then_some((other, k as usize));
+        [ok(before), ok(after)]
+    }
+
+    /// Nachbartitel und Vorhör-Stand für den offenen Fade-Editor.
+    fn editor_audio(&self, ctx: &egui::Context) -> fade_preview::EditorAudio {
+        let Some((d, i)) = playlist_ui::open_editor(ctx).filter(|_| self.fadewerk) else { return Default::default() };
+        let name = |(l, k): (usize, usize)| {
+            let path = &self.playlists[l].entries[k];
+            let m = self.metas.get(path).cloned().unwrap_or_else(|| TrackMeta::from_filename(path));
+            fade_preview::Partner { list: l, name: m.title }
+        };
+        let partners = self.fade_partners(d, i).map(|p| p.map(name));
+        let playing = self.preview.as_ref().and_then(|p| p.clip.as_ref()).filter(|c| c.list == d && c.index == i).map(|c| {
+            let pos = c.rendering.is_none().then(|| (self.ctl.shared.decks[PREVIEW].position_secs() + c.offset) as f32);
+            (c.kind, pos)
+        });
+        fade_preview::EditorAudio { partners, playing }
+    }
+
+    /// Mischt den Vorhör-Ausschnitt für den Fade-Editor im Hintergrund; gespielt wird er, sobald er fertig ist.
+    fn start_fade_preview(&mut self, d: usize, i: usize, kind: fade_preview::Kind, now: f64) {
+        use fade_preview::Kind;
+        let Some(path) = self.playlists[d].entries.get(i).cloned() else { return };
+        let source = |app: &Self, l: usize, k: usize| {
+            let path = app.playlists[l].entries[k].clone();
+            // Liegt der Titel schon in einem Player, muss er nicht noch einmal dekodiert werden
+            let audio = app.decks.iter().find(|v| v.path.as_ref() == Some(&path)).and_then(|v| v.audio.clone());
+            fade_preview::Source { path, audio, fade: app.playlists[l].fade(k) }
+        };
+        let partner = match kind {
+            Kind::From => self.fade_partners(d, i)[0],
+            Kind::To => self.fade_partners(d, i)[1],
+            _ => None,
+        };
+        if matches!(kind, Kind::From | Kind::To) && partner.is_none() {
+            return;
+        }
+        let job = fade_preview::Job {
+            kind,
+            edited: source(self, d, i),
+            partner: partner.map(|(l, k)| source(self, l, k)),
+            curve: self.curve,
+            fade_secs: self.autofade.fade_secs,
+        };
+        self.ctl.send(Command::Eject { deck: PREVIEW });
+        let token = self.token();
+        let clip = ClipView { list: d, index: i, kind, rendering: Some(fade_preview::spawn(job)), offset: 0.0 };
+        self.preview = Some(PreviewView { path, token, ended_seen: 0, clip: Some(clip) });
+        self.enable_headphones(now);
+    }
+
+    /// Fertig gemischten Vorhör-Ausschnitt abspielen.
+    fn poll_fade_preview(&mut self, now: f64) {
+        let Some(p) = self.preview.as_mut() else { return };
+        let Some(c) = p.clip.as_mut() else { return };
+        let Some(rx) = &c.rendering else { return };
+        match rx.try_recv() {
+            Ok(Ok(clip)) => {
+                c.rendering = None;
+                c.offset = clip.offset;
+                let token = p.token;
+                self.ctl.send(Command::Load { deck: PREVIEW, id: token, track: clip.audio, keep_playing: false, start_secs: 0.0 });
+                self.ctl.send(Command::Play { deck: PREVIEW });
+            }
+            Ok(Err(e)) => {
+                log::warn!("Vorhören im Fade-Editor: {e}");
+                self.preview = None;
+                self.notify(tr("Vorhören nicht möglich, der Titel lässt sich nicht lesen"), now);
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.preview = None,
+        }
+    }
+
+    /// Wie die nächste Überblendung vom aktiven Player aus abläuft (FadeWerk-Bereiche oder Überblendzeit).
+    fn transition(&self) -> crate::fadewerk::Transition {
+        let (a, o) = (self.autofade.active, self.autofade.other());
+        let fade_of = |d: usize| self.playlists[d].current.map(|i| self.playlists[d].fade(i)).unwrap_or_default();
+        let old = if self.has_track(a) { fade_of(a) } else { Default::default() };
+        let ready = self.has_track(o) && !self.decks[o].spent && self.decks[o].pending.is_none();
+        let new = if ready { fade_of(o) } else { Default::default() };
+        let rate = |d: usize| 1.0 + self.decks[d].pitch_pct / 100.0;
+        let dur = self.ctl.shared.decks[a].duration_secs();
+        crate::fadewerk::plan(old, dur, new, self.autofade.fade_secs, rate(a), rate(o))
+    }
+
     fn step_autofade(&mut self, dt: f32) {
+        self.step_fade(dt);
+        // Die Engine wertet den Crossfader zweiphasig aus, solange eine FadeWerk-Überblendung läuft
+        let split = self.autofade.fade().is_some_and(|f| f.is_split());
+        if self.split_sent != Some(split) {
+            self.split_sent = Some(split);
+            self.ctl.send(Command::SetSplitFade(split));
+        }
+        if self.autofade.fade().is_none() {
+            self.fade_track = None;
+        }
+    }
+
+    fn step_fade(&mut self, dt: f32) {
+        // FadeWerk: die Phasen richten sich nach der Stelle im alten Titel, damit er genau am Ende seines
+        // Ausblendbereichs still ist (auch mit Pitch). Steht der alte Titel, laufen sie nach Zeit weiter.
+        if let Some((d, out_start, out_end)) = self.fade_track
+            && self.ctl.shared.decks[d].is_playing()
+        {
+            let pos = self.ctl.shared.decks[d].position_secs();
+            let rate = (1.0 + self.decks[d].pitch_pct as f64 / 100.0).max(0.05);
+            let out = ((out_end - out_start) / rate) as f32;
+            let left = if self.autofade.in_second_phase() { (out_end - pos) / rate } else { (out_start - pos) / rate };
+            self.autofade.retime(left as f32, out);
+        }
         if let Some(step) = self.autofade.step(dt) {
             self.set_crossfader(step.crossfader);
             if let Some(old) = step.finished {
+                log::info!("Überblendung fertig, Player {} hält bei {:.2} s", theme::deck_letter(old), self.ctl.shared.decks[old].position_secs());
                 self.ctl.send(Command::Pause { deck: old });
                 if !self.load_next(old, false, false) {
                     self.decks[old].spent = true;
@@ -1325,8 +1520,9 @@ impl FadeWerkDjApp {
         if !self.has_track(a) || self.decks[a].repeat == Repeat::Track || self.decks[a].loop_range.is_some() {
             return;
         }
-        let remaining = (st.duration_secs() - st.position_secs()) / (1.0 + self.decks[a].pitch_pct as f64 / 100.0);
-        if self.autofade.should_start(st.is_playing(), remaining) {
+        let plan = self.transition();
+        let remaining = (plan.end - st.position_secs()) / (1.0 + self.decks[a].pitch_pct as f64 / 100.0);
+        if self.autofade.should_start(st.is_playing(), remaining, plan.lead) {
             self.start_fade(false, 0.0);
         }
     }
@@ -1338,7 +1534,20 @@ impl FadeWerkDjApp {
         let to = self.autofade.other();
         if self.has_track(to) && !self.decks[to].spent && self.decks[to].pending.is_none() {
             self.ctl.send(Command::Play { deck: to });
-            self.autofade.start(self.crossfader);
+            let from = self.autofade.active;
+            match self.transition().split {
+                // Zweiphasig nur aus der Endstellung, sonst sprängen die Pegel beim Umschalten der Auswertung
+                Some(sp) if self.crossfader == fw_engine::automix::side(from) => {
+                    self.autofade.start_split(self.crossfader, sp.in_secs, sp.out_secs);
+                    log::info!(
+                        "FadeWerk-Überblendung {}→{}: {:.1} s ein, {:.1} s aus ({:.1}–{:.1}), alter Titel bei {:.1}",
+                        theme::deck_letter(from), theme::deck_letter(to), sp.in_secs, sp.out_secs, sp.out_start, sp.out_end,
+                        self.ctl.shared.decks[from].position_secs()
+                    );
+                    self.fade_track = (!manual).then_some((from, sp.out_start, sp.out_end));
+                }
+                _ => self.autofade.start(self.crossfader),
+            }
         } else if self.decks[to].pending.is_none() && !self.load_next(to, false, false) && manual {
             self.notify(trf("Playlist {} hat keinen nächsten Titel", &[&theme::deck_letter(to)]), now);
         }
@@ -1434,7 +1643,8 @@ impl FadeWerkDjApp {
         if other_empty {
             return trf("Playlist {} ist durch, {} spielt allein weiter", &[&theme::deck_letter(o), &theme::deck_letter(a)]);
         }
-        let rem = (st.duration_secs() - st.position_secs()) / (1.0 + self.decks[a].pitch_pct as f64 / 100.0) - self.autofade.fade_secs as f64;
+        let plan = self.transition();
+        let rem = (plan.end - st.position_secs()) / (1.0 + self.decks[a].pitch_pct as f64 / 100.0) - plan.lead as f64;
         trf("Auto-Fade zu {} in {}", &[&theme::deck_letter(o), &deck_ui::fmt_time(rem)])
     }
 
@@ -1451,7 +1661,7 @@ impl FadeWerkDjApp {
                     self.decks[d].spent = false;
                 }
                 if starting && self.autofade.fade().is_none() {
-                    let (ga, gb) = self.curve.gains(self.crossfader);
+                    let (ga, gb) = self.crossfader_gains();
                     let gain = if d == 0 { ga } else { gb };
                     let other_idle = !self.ctl.shared.decks[1 - d].is_playing();
                     if self.autofade.enabled && other_idle && self.has_track(d) && self.crossfader != fw_engine::automix::side(d) {
@@ -1703,6 +1913,28 @@ impl FadeWerkDjApp {
                 self.playlists[d].clear_keep(keep);
             }
             PlaylistAction::NeedMeta(p) => self.request_meta(p),
+            PlaylistAction::NeedSketch(p) => {
+                if self.sketch_requested.insert(p.clone()) {
+                    self.lib.request_sketch(p);
+                }
+            }
+            PlaylistAction::FadeWerk(on) => self.fadewerk = on,
+            PlaylistAction::SetFade(i, fade) => {
+                let start = |f: crate::fadewerk::TrackFade| f.fade_in.map_or(0.0, |r| r.start as f64);
+                let old = start(self.playlists[d].fade(i));
+                self.playlists[d].set_fade(i, fade);
+                // Liegt der Titel schon gestoppt im Player, rückt er an den neuen Anfang (auch als Cue-Punkt)
+                let st = &self.ctl.shared.decks[d];
+                if self.playlists[d].current == Some(i) && self.has_track(d) && !st.is_playing() && start(fade) != old {
+                    self.ctl.send(Command::Seek { deck: d, secs: start(fade) });
+                    self.ctl.send(Command::Cue { deck: d });
+                }
+            }
+            PlaylistAction::FadePreview(i, kind) => self.start_fade_preview(d, i, kind, now),
+            PlaylistAction::ResetAllFades => {
+                self.playlists.iter_mut().for_each(Playlist::clear_fades);
+                self.notify(tr("Alle Fade-Bereiche entfernt"), now);
+            }
             PlaylistAction::Preview(p) => self.browser_action(BrowserAction::Preview(p), now),
             PlaylistAction::StopPreview => self.browser_action(BrowserAction::StopPreview, now),
             PlaylistAction::PlayNext(i) => {
@@ -1726,9 +1958,9 @@ impl FadeWerkDjApp {
                         self.notify(trf("Der Titel ist in Player {} geladen und bleibt in dessen Playlist", &[&theme::deck_letter(list)]), now);
                         return;
                     }
-                    if let Some(p) = self.playlists[list].remove(index) {
+                    if let Some(item) = self.playlists[list].remove_with_fade(index) {
                         let at = before.min(self.playlists[d].entries.len());
-                        self.playlists[d].insert(at, [p]);
+                        self.playlists[d].insert_with_fades(at, [item]);
                         self.fill_if_empty(d, at);
                     }
                 }
@@ -1750,7 +1982,15 @@ impl FadeWerkDjApp {
                 return;
             }
             DragItem::Row { list, index } => match self.playlists[list].entries.get(index) {
-                Some(p) => vec![p.clone()],
+                // Kopie samt Fade-Bereichen hinter den aktuellen Titel
+                Some(p) => {
+                    let item = (p.clone(), self.playlists[list].fade(index));
+                    let pl = &mut self.playlists[d];
+                    let at = pl.current.map_or(pl.entries.len(), |c| c + 1);
+                    pl.insert_with_fades(at, [item]);
+                    self.load_index(d, at, false, false);
+                    return;
+                }
                 None => return,
             },
             DragItem::Files(paths) => paths,
@@ -1839,7 +2079,7 @@ impl FadeWerkDjApp {
             }
             BrowserAction::Preview(path) => {
                 let token = self.token();
-                self.preview = Some(PreviewView { path: path.clone(), token, ended_seen: 0 });
+                self.preview = Some(PreviewView { path: path.clone(), token, ended_seen: 0, clip: None });
                 self.lib.load(PREVIEW, token, path);
                 self.enable_headphones(now);
             }
@@ -1951,6 +2191,7 @@ impl eframe::App for FadeWerkDjApp {
 
         self.poll_library(ctx, now);
         self.poll_fx(now);
+        self.poll_fade_preview(now);
         self.poll_import(now);
         self.record_plays();
         self.keep_awake(now);
@@ -2025,7 +2266,7 @@ impl eframe::App for FadeWerkDjApp {
             metas: &self.metas,
             bpms: &self.bpms,
             bpm_progress: (self.bpm_total > 0).then(|| (self.bpm_total - self.bpm_pending.len(), self.bpm_total)),
-            preview: self.preview.as_ref().map(|p| p.path.as_path()),
+            preview: self.preview.as_ref().filter(|p| p.clip.is_none()).map(|p| p.path.as_path()),
             preview_pos: preview_st.position_secs(),
             preview_dur: preview_st.duration_secs(),
             deck_playing: [self.ctl.shared.decks[0].is_playing(), self.ctl.shared.decks[1].is_playing()],
@@ -2176,9 +2417,11 @@ impl eframe::App for FadeWerkDjApp {
         let playlists = &self.playlists;
         let metas = &self.metas;
         let bpms = &self.bpms;
+        let sketches = self.fadewerk.then_some(&self.sketches);
         let has = [self.decks[0].loaded_id != 0, self.decks[1].loaded_id != 0];
         let playing = [self.ctl.shared.decks[0].is_playing(), self.ctl.shared.decks[1].is_playing()];
-        let preview_path = self.preview.as_ref().map(|p| p.path.as_path());
+        let preview_path = self.preview.as_ref().filter(|p| p.clip.is_none()).map(|p| p.path.as_path());
+        let editor_audio = self.editor_audio(&ctx);
         let deck_height_setting = self.settings.deck_height;
         let center_tab = self.settings.center_tab.clone();
         let mut new_center_tab: Option<Option<mixer_ui::CenterTab>> = None;
@@ -2238,7 +2481,7 @@ impl eframe::App for FadeWerkDjApp {
                                 split_bounds[d].1 = ui.max_rect().top();
                                 panel_frame(ui).show(ui, |ui| {
                                     ui.set_min_size(ui.available_size());
-                                    playlist_ui::show(ui, d, &playlists[d], has[d], playing[d], preview_path, metas, bpms, &mut pl_actions[d]);
+                                    playlist_ui::show(ui, d, &playlists[d], has[d], playing[d], preview_path, metas, bpms, sketches, &editor_audio, &mut pl_actions[d]);
                                 });
                             });
                         });
@@ -2420,7 +2663,7 @@ fn shuffle_seed() -> u64 {
 }
 
 fn shuffle(paths: &mut Vec<PathBuf>) {
-    let mut pl = Playlist { entries: std::mem::take(paths), current: None };
+    let mut pl = Playlist::new(std::mem::take(paths), None);
     pl.shuffle_upcoming(shuffle_seed());
     *paths = pl.entries;
 }

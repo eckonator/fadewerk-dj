@@ -30,6 +30,18 @@ impl Curve {
         }
     }
 
+    /// Zweiphasige Überblendung (FadeWerk): Auf dem Weg von A zur Mitte blendet B ein, während A voll
+    /// bleibt; von der Mitte nach B blendet A aus, B bleibt voll. Jede Hälfte hat die Form der Kurve.
+    /// An den Enden gleich wie [`Curve::gains`], darum lässt sich dort knackfrei umschalten.
+    pub fn split_gains(self, x: f32) -> (f32, f32) {
+        if x <= 0.0 {
+            // x von -1 bis 0 entspricht dem ganzen Weg der Kurve für B
+            (1.0, self.gains(x * 2.0 + 1.0).1)
+        } else {
+            (self.gains(x * 2.0 - 1.0).0, 1.0)
+        }
+    }
+
     /// Pegel von A an den Stützstellen, als Ausgangspunkt für eine eigene Kurve.
     pub fn points(self) -> [f32; 4] {
         match self {
@@ -96,6 +108,23 @@ pub enum HeadMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_keeps_one_side_full() {
+        for c in [Curve::Soft, Curve::Linear, Curve::Cut, Curve::Custom([0.9, 0.7, 0.4, 0.1])] {
+            assert_eq!(c.split_gains(-1.0), c.gains(-1.0));
+            assert_eq!(c.split_gains(1.0), c.gains(1.0));
+            assert_eq!(c.split_gains(0.0), (1.0, 1.0));
+            let (a, b) = c.split_gains(-0.5);
+            assert_eq!(a, 1.0);
+            assert!(b > 0.0, "{c:?}: B blendet in Phase 1 ein");
+            let (a, b) = c.split_gains(0.5);
+            assert_eq!(b, 1.0);
+            assert!(a > 0.0, "{c:?}: A blendet in Phase 2 aus");
+        }
+        assert_eq!(Curve::Linear.split_gains(-0.5), (1.0, 0.5));
+        assert_eq!(Curve::Linear.split_gains(0.5), (0.5, 1.0));
+    }
 
     #[test]
     fn ends_are_fully_open_or_closed() {

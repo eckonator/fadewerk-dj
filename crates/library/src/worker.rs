@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 
@@ -11,6 +12,7 @@ use crate::bpm::estimate_bpm;
 use crate::decode::decode_file;
 use crate::meta::{Cover, TrackMeta, read_cover, read_meta};
 use crate::scan::{list_dir, walk_audio};
+use crate::sketch::{WaveSketch, read_cached, write_cached};
 use crate::waveform::Waveform;
 
 /// Ein fertig geladener Titel für einen Player oder das Vorhören.
@@ -22,6 +24,8 @@ pub struct Loaded {
     pub meta: TrackMeta,
     pub audio: Arc<TrackAudio>,
     pub waveform: Waveform,
+    /// Kleine Wellenform für die Playlist-Zeile (auch gleich im Cache gemerkt).
+    pub sketch: Arc<WaveSketch>,
     pub bpm: Option<f32>,
     /// `bpm` stammt aus der Tempo-Erkennung, nicht aus dem Tag (dann lohnt es sich, ihn zu merken).
     pub bpm_analyzed: bool,
@@ -41,6 +45,16 @@ pub enum Response {
     /// Ergebnis von [`Library::analyze_bpm`]. `analyzed` = aus der Tempo-Erkennung, sonst aus dem Tag.
     /// `bpm` ist `None`, wenn die Datei nicht lesbar ist oder kein Beat erkennbar war.
     Bpm { path: PathBuf, bpm: Option<f32>, analyzed: bool },
+    /// Ergebnis von [`Library::request_sketch`], `None` wenn die Datei nicht lesbar ist.
+    Sketch { path: PathBuf, sketch: Option<Arc<WaveSketch>> },
+}
+
+/// Warteschlange für Wellenform-Skizzen. Die neuesten Anfragen kommen zuerst dran: das sind die Zeilen,
+/// die gerade sichtbar sind, während weggescrollte warten.
+#[derive(Default)]
+struct SketchQueue {
+    jobs: Mutex<VecDeque<PathBuf>>,
+    ready: Condvar,
 }
 
 /// Threads für die BPM-Analyse. Zwei reichen: Dekodieren ist schwer, und während des Auflegens soll
@@ -58,6 +72,7 @@ struct LoadJob {
     deck: usize,
     token: u64,
     path: PathBuf,
+    sketch_cache: Option<PathBuf>,
 }
 
 /// Hintergrund-Arbeiter: ein Thread liest Tags, einer dekodiert und analysiert.
@@ -71,6 +86,9 @@ pub struct Library {
     bpm_tx: Sender<BpmJob>,
     /// Aufträge älterer Generationen werden übersprungen ([`Library::cancel_bpm`]).
     bpm_generation: Arc<AtomicU64>,
+    sketches: Arc<SketchQueue>,
+    /// Ordner des Wellenform-Caches (`None` = nichts auf der Platte merken).
+    sketch_cache: Arc<Mutex<Option<PathBuf>>>,
     rx: Receiver<Response>,
 }
 
@@ -161,6 +179,34 @@ impl Library {
                 .expect("Tag-Thread startet nicht");
         }
 
+        let sketches = Arc::new(SketchQueue::default());
+        let sketch_cache = Arc::new(Mutex::new(None::<PathBuf>));
+        {
+            let (tx, wake, queue, cache) = (tx.clone(), wake.clone(), sketches.clone(), sketch_cache.clone());
+            thread::Builder::new()
+                .name("fw-wave".into())
+                .spawn(move || {
+                    loop {
+                        let path = {
+                            let mut jobs = queue.jobs.lock().unwrap_or_else(|e| e.into_inner());
+                            loop {
+                                match jobs.pop_back() {
+                                    Some(p) => break p,
+                                    None => jobs = queue.ready.wait(jobs).unwrap_or_else(|e| e.into_inner()),
+                                }
+                            }
+                        };
+                        let dir = cache.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                        let sketch = make_sketch(&path, dir.as_deref());
+                        if tx.send(Response::Sketch { path, sketch }).is_err() {
+                            break;
+                        }
+                        wake();
+                    }
+                })
+                .expect("Wellenform-Thread startet nicht");
+        }
+
         thread::Builder::new()
             .name("fw-loader".into())
             .spawn(move || {
@@ -177,7 +223,7 @@ impl Library {
             })
             .expect("Lade-Thread startet nicht");
 
-        Self { meta_tx, scan_tx, scan_current, load_tx, bpm_tx, bpm_generation, rx }
+        Self { meta_tx, scan_tx, scan_current, load_tx, bpm_tx, bpm_generation, sketches, sketch_cache, rx }
     }
 
     /// Startet eine Suche nach Titeln in `paths`, Ordner für Ordner in dieser Reihenfolge; `true` heißt
@@ -197,7 +243,20 @@ impl Library {
     }
 
     pub fn load(&self, deck: usize, token: u64, path: PathBuf) {
-        let _ = self.load_tx.send(LoadJob { deck, token, path });
+        let sketch_cache = self.sketch_cache.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let _ = self.load_tx.send(LoadJob { deck, token, path, sketch_cache });
+    }
+
+    /// Ordner für den Wellenform-Cache; `None` merkt nichts (Entwicklerläufe).
+    pub fn set_sketch_cache(&self, dir: Option<PathBuf>) {
+        *self.sketch_cache.lock().unwrap_or_else(|e| e.into_inner()) = dir;
+    }
+
+    /// Fordert die kleine Wellenform eines Titels an, Ergebnis als [`Response::Sketch`].
+    /// Aus dem Cache, sonst wird die Datei im Hintergrund dekodiert. Neuere Anfragen gehen vor.
+    pub fn request_sketch(&self, path: PathBuf) {
+        self.sketches.jobs.lock().unwrap_or_else(|e| e.into_inner()).push_back(path);
+        self.sketches.ready.notify_one();
     }
 
     /// Ermittelt die BPM im Hintergrund, Ergebnis als [`Response::Bpm`]. Ohne `force` gilt eine
@@ -222,13 +281,37 @@ fn load(job: &LoadJob) -> anyhow::Result<Loaded> {
     let meta = read_meta(&job.path).unwrap_or_else(|_| TrackMeta::from_filename(&job.path));
     let audio = decode_file(&job.path)?;
     let waveform = Waveform::from_audio(&audio);
+    let sketch = Arc::new(WaveSketch::from_waveform(&waveform));
+    if let Some(dir) = &job.sketch_cache {
+        write_cached(dir, &job.path, &sketch);
+    }
     let bpm_analyzed = meta.bpm.is_none();
     let bpm = meta.bpm.or_else(|| estimate_bpm(&audio));
     let mut meta = meta;
     meta.duration_secs = audio.duration_secs();
     // Beim Vorhören dreht keine Platte
     let cover = if job.deck != fw_engine::PREVIEW { read_cover(&job.path) } else { None };
-    Ok(Loaded { deck: job.deck, token: job.token, path: job.path.clone(), meta, audio: Arc::new(audio), waveform, bpm, bpm_analyzed, cover })
+    Ok(Loaded { deck: job.deck, token: job.token, path: job.path.clone(), meta, audio: Arc::new(audio), waveform, sketch, bpm, bpm_analyzed, cover })
+}
+
+/// Skizze aus dem Cache oder neu berechnet (dann gemerkt). Das dekodierte Audio wird gleich wieder freigegeben.
+fn make_sketch(path: &std::path::Path, cache: Option<&std::path::Path>) -> Option<Arc<WaveSketch>> {
+    if let Some(s) = cache.and_then(|dir| read_cached(dir, path)) {
+        return Some(Arc::new(s));
+    }
+    match decode_file(path) {
+        Ok(audio) => {
+            let sketch = WaveSketch::from_waveform(&Waveform::from_audio(&audio));
+            if let Some(dir) = cache {
+                write_cached(dir, path, &sketch);
+            }
+            Some(Arc::new(sketch))
+        }
+        Err(e) => {
+            log::debug!("Wellenform von {}: {e:#}", path.display());
+            None
+        }
+    }
 }
 
 /// BPM eines Titels: aus dem Tag (ohne `force`) oder aus der Tempo-Erkennung. Liefert (BPM, analysiert).

@@ -57,7 +57,7 @@ fn track(rng: &mut Rng) -> Arc<TrackAudio> {
 fn random_command(rng: &mut Rng) -> Command {
     let deck = rng.below(3) as usize;
     let d2 = rng.below(2) as usize;
-    match rng.below(32) {
+    match rng.below(33) {
         0 | 1 => Command::Load { deck, id: rng.next(), track: track(rng), keep_playing: rng.below(2) == 0, start_secs: rng.f(0.0, 2.0) as f64 },
         2 => Command::Eject { deck },
         3 | 4 => Command::Play { deck },
@@ -94,6 +94,7 @@ fn random_command(rng: &mut Rng) -> Command {
         28 => Command::LoadFx { slot: rng.below(FX_SLOTS as u64 + 1) as usize, sound: track(rng) },
         29 => Command::TriggerFx { slot: rng.below(FX_SLOTS as u64 + 1) as usize, to_master: rng.below(2) == 0 },
         30 => Command::SetFxVolume(rng.f(0.0, 1.0)),
+        31 => Command::SetSplitFade(rng.below(2) == 0),
         _ => Command::SetHeadVolume(rng.f(0.0, 1.0)),
     }
 }

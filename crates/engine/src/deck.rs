@@ -159,6 +159,11 @@ impl Deck {
         }
     }
 
+    /// Macht die aktuelle Stelle zum Cue-Punkt, ohne die Wiedergabe zu berühren.
+    pub fn set_cue_here(&mut self) {
+        self.cue = self.pos;
+    }
+
     pub fn seek_secs(&mut self, secs: f64) {
         if let Some(t) = &self.track {
             self.pos = (secs * t.sample_rate as f64).clamp(0.0, t.len_frames() as f64);

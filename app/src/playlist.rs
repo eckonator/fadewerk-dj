@@ -3,6 +3,8 @@
 
 use std::path::PathBuf;
 
+use crate::fadewerk::TrackFade;
+
 /// Was per Drag & Drop transportiert wird.
 #[derive(Clone, Debug)]
 pub enum DragItem {
@@ -17,9 +19,41 @@ pub struct Playlist {
     pub entries: Vec<PathBuf>,
     /// Index des Titels, der im Player geladen ist (oder zuletzt war).
     pub current: Option<usize>,
+    /// FadeWerk-Bereiche je Eintrag, parallel zu `entries`. Kann kürzer sein (fehlende = nicht gesetzt),
+    /// die Methoden hier halten beides gleich lang.
+    pub fades: Vec<TrackFade>,
 }
 
 impl Playlist {
+    pub fn new(entries: Vec<PathBuf>, current: Option<usize>) -> Self {
+        Self { entries, current, fades: Vec::new() }
+    }
+
+    /// Bringt `fades` auf die Länge von `entries` (etwa nachdem `entries` direkt gesetzt wurde).
+    fn sync(&mut self) {
+        self.fades.resize(self.entries.len(), TrackFade::default());
+    }
+
+    pub fn fade(&self, i: usize) -> TrackFade {
+        self.fades.get(i).copied().unwrap_or_default()
+    }
+
+    pub fn set_fade(&mut self, i: usize, fade: TrackFade) {
+        self.sync();
+        if let Some(f) = self.fades.get_mut(i) {
+            *f = fade;
+        }
+    }
+
+    pub fn has_fades(&self) -> bool {
+        self.fades.iter().any(|f| !f.is_empty())
+    }
+
+    pub fn clear_fades(&mut self) {
+        self.fades.clear();
+        self.sync();
+    }
+
     /// Nächster Titel nach dem aktuellen. Mit `wrap` geht es am Ende von vorn los.
     pub fn next_index(&self, wrap: bool) -> Option<usize> {
         let n = self.current.map_or(0, |c| c + 1);
@@ -37,10 +71,17 @@ impl Playlist {
     }
 
     pub fn insert(&mut self, at: usize, paths: impl IntoIterator<Item = PathBuf>) -> usize {
+        self.insert_with_fades(at, paths.into_iter().map(|p| (p, TrackFade::default())))
+    }
+
+    /// Wie [`Playlist::insert`], mit den Fade-Bereichen der Einträge (beim Verschieben zwischen den Playlists).
+    pub fn insert_with_fades(&mut self, at: usize, items: impl IntoIterator<Item = (PathBuf, TrackFade)>) -> usize {
+        self.sync();
         let at = at.min(self.entries.len());
         let mut n = 0;
-        for (k, p) in paths.into_iter().enumerate() {
+        for (k, (p, f)) in items.into_iter().enumerate() {
             self.entries.insert(at + k, p);
+            self.fades.insert(at + k, f);
             n += 1;
         }
         if let Some(c) = self.current.as_mut()
@@ -56,16 +97,22 @@ impl Playlist {
     }
 
     pub fn remove(&mut self, i: usize) -> Option<PathBuf> {
+        self.remove_with_fade(i).map(|(p, _)| p)
+    }
+
+    pub fn remove_with_fade(&mut self, i: usize) -> Option<(PathBuf, TrackFade)> {
         if i >= self.entries.len() {
             return None;
         }
+        self.sync();
         let p = self.entries.remove(i);
+        let f = self.fades.remove(i);
         self.current = match self.current {
             Some(c) if c == i => None,
             Some(c) if i < c => Some(c - 1),
             c => c,
         };
-        Some(p)
+        Some((p, f))
     }
 
     /// Verschiebt einen Eintrag. `before` ist die Einfügestelle in der Liste vor dem Entfernen.
@@ -78,8 +125,11 @@ impl Playlist {
         if to == from {
             return;
         }
+        self.sync();
         let p = self.entries.remove(from);
         self.entries.insert(to, p);
+        let f = self.fades.remove(from);
+        self.fades.insert(to, f);
         if let Some(c) = self.current.as_mut() {
             if *c == from {
                 *c = to;
@@ -97,8 +147,10 @@ impl Playlist {
     /// Mischt die kommenden Titel zufällig. Der geladene Titel und die schon gespielten davor bleiben,
     /// wo sie sind, damit ein laufender Set nicht durcheinanderkommt. Ohne geladenen Titel wird alles gemischt.
     pub fn shuffle_upcoming(&mut self, seed: u64) {
+        self.sync();
         let start = self.current.map_or(0, |c| c + 1).min(self.entries.len());
         let tail = &mut self.entries[start..];
+        let fades = &mut self.fades[start..];
         // Xorshift genügt hier; Fisher-Yates für eine gleichmäßige Verteilung
         let mut x = seed | 1;
         let mut next = || {
@@ -110,6 +162,7 @@ impl Playlist {
         for i in (1..tail.len()).rev() {
             let j = (next() % (i as u64 + 1)) as usize;
             tail.swap(i, j);
+            fades.swap(i, j);
         }
     }
 
@@ -122,11 +175,14 @@ impl Playlist {
         match (keep_current, self.current) {
             (true, Some(c)) => {
                 let p = self.entries[c].clone();
+                let f = self.fade(c);
                 self.entries = vec![p];
+                self.fades = vec![f];
                 self.current = Some(0);
             }
             _ => {
                 self.entries.clear();
+                self.fades.clear();
                 self.current = None;
             }
         }
@@ -138,11 +194,37 @@ mod tests {
     use super::*;
 
     fn pl(n: usize, current: Option<usize>) -> Playlist {
-        Playlist { entries: (0..n).map(|i| PathBuf::from(format!("{i}"))).collect(), current }
+        Playlist::new((0..n).map(|i| PathBuf::from(format!("{i}"))).collect(), current)
     }
 
     fn names(p: &Playlist) -> String {
         p.entries.iter().map(|e| e.to_string_lossy().into_owned()).collect::<Vec<_>>().join("")
+    }
+
+    #[test]
+    fn fades_move_with_their_entries() {
+        use crate::fadewerk::{Region, TrackFade};
+        let mark = |x: f32| TrackFade { fade_in: Some(Region { start: 0.0, end: x }), fade_out: None };
+        let mut p = pl(4, Some(0));
+        p.set_fade(3, mark(3.0));
+        p.set_fade(1, mark(1.0));
+        p.move_entry(3, 1);
+        assert_eq!(names(&p), "0312");
+        assert_eq!((p.fade(1), p.fade(2)), (mark(3.0), mark(1.0)));
+        p.shuffle_upcoming(42);
+        for i in 0..4 {
+            let n: f32 = p.entries[i].to_string_lossy().parse().unwrap();
+            let expect = if n == 3.0 || n == 1.0 { mark(n) } else { TrackFade::default() };
+            assert_eq!(p.fade(i), expect, "Eintrag {n}");
+        }
+        let at = p.entries.iter().position(|e| e.to_string_lossy() == "3").unwrap();
+        let item = p.remove_with_fade(at).unwrap();
+        let mut q = pl(1, None);
+        q.insert_with_fades(0, [item]);
+        assert_eq!(q.fade(0), mark(3.0));
+        assert_eq!(q.fade(1), TrackFade::default());
+        q.clear_fades();
+        assert!(!q.has_fades());
     }
 
     #[test]

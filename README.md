@@ -20,6 +20,14 @@ written in Rust. Click a folder and start playing: no database, no library impor
   loads its next track. Fade curve smooth, linear, sharp or drawn by hand. Optional **bass swap**:
   the incoming track starts without bass and the basses swap halfway through the fade.
   Starting a deck while the other one is stopped glides the crossfader over to it.
+- **FadeWerk mode**: the FADEWERK button in the playlist headers shows the waveform behind every
+  track. Click a track to mark where it fades in (first 30 s) and out (last 30 s), or set a hard cut.
+  The track then starts at its fade-in range and ends at the end of its fade-out range, so intros and
+  outros can be skipped. Auto-fade runs in two phases: the new track fades in while the old one stays
+  at full level, then the old one fades out. A side without a range uses half the fade time.
+  The ranges belong to the playlist entry, move with it and are saved with the playlists.
+  In the editor, each range can be previewed on the headphones, alone or as the finished transition
+  with the neighbouring track from the other playlist.
 - **No import**: click a folder and all tracks, including subfolders, are there instantly.
   BPM detected by the tempo analysis is remembered; “Analyse BPM” (tracks) and “Detect missing BPM”
   (folders) run it in the background.

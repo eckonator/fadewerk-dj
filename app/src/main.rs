@@ -9,6 +9,8 @@ mod audio;
 mod bpm_cache;
 mod browser;
 mod deck_ui;
+mod fade_preview;
+mod fadewerk;
 mod fonts;
 mod fx;
 mod fx_icons;

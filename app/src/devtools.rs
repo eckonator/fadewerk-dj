@@ -42,6 +42,11 @@ const SCREENSHOT_AFTER_FRAMES: u64 = 240;
 /// Mindestwartezeit, damit kurze Hinweise (3 s) wieder verschwunden sind.
 const SCREENSHOT_AFTER_SECS: f32 = 4.5;
 
+/// Wartezeit bis zum Bildschirmfoto, mit `FW_SHOT_SECS` verlängerbar (etwa um eine Überblendung abzuwarten).
+fn shot_secs() -> f32 {
+    std::env::var("FW_SHOT_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(SCREENSHOT_AFTER_SECS)
+}
+
 #[derive(Default)]
 pub struct DevTools {
     screenshot: Option<PathBuf>,
@@ -181,7 +186,7 @@ impl DevTools {
         self.frame += 1;
         // Auch nach Zeit: Hinweise (3 s) sollen verschwunden sein, egal wie schnell gezeichnet wird
         let started = *self.started.get_or_insert_with(std::time::Instant::now);
-        if !self.requested && self.frame >= SCREENSHOT_AFTER_FRAMES && started.elapsed().as_secs_f32() >= SCREENSHOT_AFTER_SECS {
+        if !self.requested && self.frame >= SCREENSHOT_AFTER_FRAMES && started.elapsed().as_secs_f32() >= shot_secs() {
             ctx.send_viewport_cmd(ViewportCommand::Screenshot(Default::default()));
             self.requested = true;
         }

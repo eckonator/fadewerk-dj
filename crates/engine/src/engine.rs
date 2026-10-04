@@ -44,6 +44,8 @@ pub enum Command {
     ScratchEnd { deck: usize },
     SetCrossfader(f32),
     SetCurve(Curve),
+    /// Crossfader zweiphasig auswerten ([`Curve::split_gains`]), für FadeWerk-Überblendungen.
+    SetSplitFade(bool),
     SetChannelVolume { deck: usize, volume: f32 },
     SetPfl { deck: usize, on: bool },
     /// Pegel eines EQ-Bandes (0 = Bässe, 1 = Mitten, 2 = Höhen) als Faktor, 0 = Kill.
@@ -198,6 +200,7 @@ pub struct Engine {
     xf_target: f32,
     xf: f32,
     curve: Curve,
+    split_fade: bool,
     repeat_fade_secs: f32,
     volume: [f32; DECKS],
     pfl: [bool; DECKS],
@@ -238,6 +241,7 @@ impl Engine {
             xf_target: -1.0,
             xf: -1.0,
             curve: Curve::Soft,
+            split_fade: false,
             repeat_fade_secs: 0.0,
             volume: [0.85; DECKS],
             pfl: [false; DECKS],
@@ -277,7 +281,9 @@ impl Engine {
             Load { deck, id, track, keep_playing, start_secs } if ok(deck) => {
                 let old = self.decks[deck].load(track, id, keep_playing);
                 if start_secs > 0.0 {
+                    // Die Startstelle ist zugleich der Cue-Punkt (Stopp kehrt dorthin zurück)
                     self.decks[deck].seek_secs(start_secs);
+                    self.decks[deck].set_cue_here();
                 }
                 self.discard(old);
             }
@@ -299,6 +305,7 @@ impl Engine {
             ScratchTo { deck, secs } if ok(deck) => self.decks[deck].scratch_to_secs(secs),
             ScratchEnd { deck } if ok(deck) => self.decks[deck].scratch_end(),
             SetCrossfader(x) => self.xf_target = x.clamp(-1.0, 1.0),
+            SetSplitFade(on) => self.split_fade = on,
             SetCurve(c) => {
                 self.curve = c;
                 for d in &mut self.decks {
@@ -366,8 +373,9 @@ impl Engine {
             let xf0 = self.xf;
             let xf1 = xf0 + (self.xf_target - xf0).clamp(-max_step, max_step);
             self.xf = xf1;
-            let (ga0, gb0) = self.curve.gains(xf0);
-            let (ga1, gb1) = self.curve.gains(xf1);
+            let gains = |x| if self.split_fade { self.curve.split_gains(x) } else { self.curve.gains(x) };
+            let (ga0, gb0) = gains(xf0);
+            let (ga1, gb1) = gains(xf1);
 
             for i in 0..n {
                 let t = i as f32 / n as f32;

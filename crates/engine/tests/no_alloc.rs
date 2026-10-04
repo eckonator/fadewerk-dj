@@ -96,6 +96,7 @@ fn audio_thread_never_allocates() {
     check(&mut engine, &mut ctl, "Mixer, EQ, Kurve", vec![
         Command::SetCrossfader(0.3),
         Command::SetCurve(Curve::Custom([0.9, 0.7, 0.4, 0.1])),
+        Command::SetSplitFade(true),
         Command::SetEq { deck: 0, band: 0, gain: 0.0 },
         Command::SetEq { deck: 1, band: 2, gain: 1.5 },
         Command::SetHeadMode(HeadMode::Split),
