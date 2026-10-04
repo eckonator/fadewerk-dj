@@ -234,7 +234,12 @@ pub struct FadeWerkDjApp {
     session_checked: f64,
     /// Ordnerbrowser im letzten Bild (ändert sich nur der Browser, hat der Nutzer ihn gezogen): (rechts, Fensterhöhe bzw. -breite, Höhe bzw. Breite des Browsers).
     last_sizes: (bool, f32, f32),
-    update_rx: Option<std::sync::mpsc::Receiver<Option<crate::update::NewVersion>>>,
+    update_rx: Option<std::sync::mpsc::Receiver<Result<Option<crate::update::NewVersion>, ()>>>,
+    /// Prüfung von Hand angestoßen (Einstellungen): dann auch „nichts Neues“ melden.
+    update_manual: bool,
+    /// Läuft das Update per Knopf, kommt hierüber der Fortschritt.
+    self_update: Option<std::sync::mpsc::Receiver<crate::self_update::Progress>>,
+    update_progress: Option<crate::self_update::Progress>,
     /// Gefundene neue Version (Hinweisleiste), bis der Nutzer sie wegklickt.
     new_version: Option<crate::update::NewVersion>,
     /// Frage „nach Updates suchen?“ beim ersten Start.
@@ -349,6 +354,9 @@ impl FadeWerkDjApp {
             session_checked: 0.0,
             last_sizes: (false, 0.0, 0.0),
             update_rx: None,
+            update_manual: false,
+            self_update: None,
+            update_progress: None,
             new_version: None,
             ask_update: false,
             history: History::default(),
@@ -373,6 +381,9 @@ impl FadeWerkDjApp {
             None if app.persist => app.ask_update = true,
             Some(true) if app.persist => app.update_rx = Some(crate::update::check_in_background(cc.egui_ctx.clone())),
             _ => {}
+        }
+        if std::env::args().any(|a| a == crate::self_update::AFTER_UPDATE_FLAG) {
+            app.notice = Some((trf("FadeWerk DJ wurde auf Version {} aktualisiert.", &[&env!("CARGO_PKG_VERSION")]), 0.0));
         }
         if app.persist && app.settings.fullscreen {
             cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
@@ -709,6 +720,12 @@ impl FadeWerkDjApp {
                 self.settings.update_check = Some(on);
                 self.ask_update = false;
             }
+            SettingsAction::CheckUpdateNow => {
+                if self.update_rx.is_none() && self.self_update.is_none() {
+                    self.update_rx = Some(crate::update::check_in_background(ctx.clone()));
+                    self.update_manual = true;
+                }
+            }
             SettingsAction::RevealLog => {
                 if let Some(path) = crate::diagnose::log_path()
                     && let Err(e) = reveal(&path)
@@ -762,20 +779,45 @@ impl FadeWerkDjApp {
     }
 
     /// Schwebende Leiste oben in der Mitte: einmalige Frage, ob nach Updates gesucht werden darf,
-    /// bzw. Hinweis auf eine neue Version. Schwebt über der Oberfläche, damit sich nichts verschiebt.
-    fn update_ui(&mut self, ctx: &egui::Context) {
+    /// bzw. Hinweis auf eine neue Version samt Update per Knopf. Schwebt über der Oberfläche, damit sich
+    /// nichts verschiebt.
+    fn update_ui(&mut self, ctx: &egui::Context, now: f64) {
+        use crate::self_update::Progress;
         if let Some(rx) = &self.update_rx
             && let Ok(result) = rx.try_recv()
         {
-            self.new_version = result;
             self.update_rx = None;
+            let manual = std::mem::take(&mut self.update_manual);
+            match result {
+                Ok(Some(v)) => {
+                    self.new_version = Some(v);
+                    self.update_progress = None;
+                }
+                Ok(None) if manual => self.notify(trf("FadeWerk DJ {} ist die neueste Version.", &[&env!("CARGO_PKG_VERSION")]), now),
+                Err(()) if manual => self.notify(tr("GitHub ist nicht erreichbar, bitte später noch einmal versuchen."), now),
+                _ => {}
+            }
+        }
+        if let Some(rx) = &self.self_update {
+            while let Ok(p) = rx.try_recv() {
+                if p == Progress::Restart {
+                    // Beim Schließen speichert `Drop` Einstellungen und Playlists; die neue Version startet danach
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                self.update_progress = Some(p);
+            }
+            if matches!(self.update_progress, Some(Progress::Restart | Progress::Failed(_))) {
+                self.self_update = None;
+            }
         }
         if !self.ask_update && self.new_version.is_none() {
             return;
         }
         let font = crate::fonts::bold(13.0);
+        let playing = self.ctl.shared.decks.iter().any(|s| s.is_playing());
         let mut answer = None;
         let mut close = false;
+        let mut install = None;
         egui::Area::new(egui::Id::new("update")).anchor(Align2::CENTER_TOP, vec2(0.0, 12.0)).show(ctx, |ui| {
             Frame::new()
                 .fill(theme::panel2())
@@ -797,14 +839,41 @@ impl FadeWerkDjApp {
                                 answer = Some(false);
                             }
                         } else if let Some(v) = &self.new_version {
-                            ui.label(RichText::new(trf("FadeWerk DJ {} ist verfügbar (installiert: {}).", &[&v.version, &env!("CARGO_PKG_VERSION")])).strong().color(theme::ink()));
-                            ui.add_space(10.0);
-                            if crate::hw::button(ui, vec2(190.0, 28.0), tr("Download-Seite öffnen"), font.clone(), crate::hw::Look::Color(theme::play()), false, true).clicked() {
-                                ctx.open_url(egui::OpenUrl::new_tab(&v.url));
-                                close = true;
-                            }
-                            if crate::hw::button(ui, vec2(80.0, 28.0), tr("Später"), font.clone(), crate::hw::Look::Plain, false, true).clicked() {
-                                close = true;
+                            match &self.update_progress {
+                                Some(Progress::Downloading) => {
+                                    ui.spinner();
+                                    ui.label(RichText::new(trf("Lade FadeWerk DJ {} …", &[&v.version])).strong().color(theme::ink()));
+                                }
+                                Some(Progress::Installing | Progress::Restart) => {
+                                    ui.spinner();
+                                    ui.label(RichText::new(trf("Installiere FadeWerk DJ {} – die App startet gleich neu …", &[&v.version])).strong().color(theme::ink()));
+                                }
+                                progress => {
+                                    ui.vertical(|ui| {
+                                        ui.label(RichText::new(trf("FadeWerk DJ {} ist verfügbar (installiert: {}).", &[&v.version, &env!("CARGO_PKG_VERSION")])).strong().color(theme::ink()));
+                                        if let Some(Progress::Failed(e)) = progress {
+                                            ui.label(RichText::new(trf("Update fehlgeschlagen: {}", &[e])).size(11.5).color(theme::cue()));
+                                        } else if v.asset.is_some() && playing {
+                                            ui.label(RichText::new(tr("Die App startet dabei neu. Erst, wenn keine Musik mehr läuft.")).size(11.5).color(theme::dim()));
+                                        }
+                                    });
+                                    ui.add_space(10.0);
+                                    let failed = matches!(progress, Some(Progress::Failed(_)));
+                                    if let Some(asset) = &v.asset
+                                        && !failed
+                                        && crate::hw::button(ui, vec2(170.0, 28.0), tr("Jetzt aktualisieren"), font.clone(), crate::hw::Look::Color(theme::play()), false, !playing).clicked()
+                                    {
+                                        install = Some(asset.clone());
+                                    }
+                                    let look = if v.asset.is_some() && !failed { crate::hw::Look::Plain } else { crate::hw::Look::Color(theme::play()) };
+                                    if crate::hw::button(ui, vec2(190.0, 28.0), tr("Download-Seite öffnen"), font.clone(), look, false, true).clicked() {
+                                        ctx.open_url(egui::OpenUrl::new_tab(&v.url));
+                                        close = true;
+                                    }
+                                    if crate::hw::button(ui, vec2(80.0, 28.0), tr("Später"), font.clone(), crate::hw::Look::Plain, false, true).clicked() {
+                                        close = true;
+                                    }
+                                }
                             }
                         }
                     });
@@ -818,8 +887,13 @@ impl FadeWerkDjApp {
                 self.update_rx = Some(crate::update::check_in_background(ctx.clone()));
             }
         }
+        if let Some(url) = install {
+            self.update_progress = Some(Progress::Downloading);
+            self.self_update = Some(crate::self_update::start(url, ctx.clone()));
+        }
         if close {
             self.new_version = None;
+            self.update_progress = None;
         }
     }
 
@@ -2221,7 +2295,7 @@ impl eframe::App for FadeWerkDjApp {
             self.browser_action(a, now);
         }
 
-        self.update_ui(&ctx);
+        self.update_ui(&ctx, now);
 
         // Hinweis unten in der Mitte
         if let Some((text, until)) = self.notice.clone() {

@@ -26,6 +26,10 @@ const LICENSE_TEXTS: [(&str, &str); 3] = [
     ("SIL OFL 1.1 (DSEG)", include_str!("../../assets/fonts/OFL-DSEG.txt")),
 ];
 
+/// Innere Breite des Einstellungsfensters, für alle Seiten gleich. Die breiteste Seite (Effekte: Nummer,
+/// Symbol, Name, Datei, Tasten) gibt sie vor; sonst drückt sie das Fenster breiter.
+const SETTINGS_W: f32 = 557.0;
+
 pub enum SettingsAction {
     Device(Option<String>),
     HeadDevice(Option<String>),
@@ -37,6 +41,8 @@ pub enum SettingsAction {
     Platters(bool),
     OpenGl(bool),
     UpdateCheck(bool),
+    /// Sofort bei GitHub nach einer neuen Version fragen.
+    CheckUpdateNow,
     RecordHistory(bool),
     KeepAwake(bool),
     Zoom(f32),
@@ -113,10 +119,10 @@ impl SettingsUi {
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
-            .default_width(520.0)
+            .default_width(SETTINGS_W)
             .frame(Frame::window(&ctx.global_style()).fill(theme::panel()).inner_margin(Margin::same(16)))
             .show(ctx, |ui| {
-                ui.set_width(520.0);
+                ui.set_width(SETTINGS_W);
                 ui.horizontal(|ui| {
                     for (tab, label) in [
                         (Tab::General, "Allgemein"),
@@ -416,6 +422,13 @@ fn general_tab(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAct
         out.push(SettingsAction::UpdateCheck(check));
     }
     ui.label(RichText::new(tr("Gesendet wird nur die Frage nach der neuesten Version, keine Daten über Titel oder Ordner. GitHub sieht dabei wie bei jedem Webseitenaufruf deine IP-Adresse.")).size(11.5).color(theme::dim()));
+    ui.add_space(4.0);
+    if ui.button(tr("Jetzt nach Updates suchen")).clicked() {
+        out.push(SettingsAction::CheckUpdateNow);
+    }
+    if crate::self_update::asset_suffix().is_some() {
+        ui.label(RichText::new(tr("Eine neue Version installiert sich per Knopf selbst; die App startet danach neu. Auf dem Mac nur, wenn sie mit demselben Zertifikat signiert ist.")).size(11.5).color(theme::dim()));
+    }
 }
 
 fn language_tab(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction>) {

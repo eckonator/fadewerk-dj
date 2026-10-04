@@ -95,7 +95,8 @@ Ready-to-run builds are on the [Releases](../../releases) page, one release per 
 
 ### macOS: "cannot be verified"
 
-The app is signed ad hoc but not notarized (that needs a paid Apple Developer account).
+The app is signed with the project's own (self-signed) certificate but not notarized (that needs a
+paid Apple Developer account).
 Files downloaded in the browser get a quarantine flag, and Gatekeeper then refuses to
 open the app.
 
@@ -116,6 +117,20 @@ xattr -dr com.apple.quarantine "/Applications/FadeWerk DJ.app"
 
 Then open the app as usual. You need to do this once per downloaded version. The app is
 open source; you can also build it yourself (see below), which needs no workaround.
+
+### Updates
+
+With the update check switched on (asked on first start, Settings → General), FadeWerk DJ shows
+a bar when a new version is out. **Update now** downloads and installs it and restarts the app
+(only while no deck is playing):
+
+- **macOS:** the new app replaces the installed one, but only if it is signed with the same
+  certificate as the installed app. If the Applications folder is not writable for you, macOS asks
+  for an administrator password. No quarantine flag, so no security prompt.
+- **Windows:** `FadeWerk DJ.exe` from the zip is replaced in its folder (the folder must be writable).
+- **Linux:** when installed with `./install.sh`, the new archive is unpacked and its `install.sh` run.
+
+Otherwise the bar links to the download page.
 
 ## Building
 
@@ -174,7 +189,7 @@ Code comments are in German; issues and contributions in English are welcome.
 | `FW_SETTINGS=allgemein\|audio\|effekte\|sprache\|aussehen\|ueber` | Opens the settings window. |
 | `FW_TAB=pads\|kopfhoerer\|fade\|motor\|zu` | Opens this tab below the crossfader (`zu` = all closed). |
 | `FW_UPDATE_ASK=1` | Shows the question whether to check for updates. |
-| `FW_UPDATE_URL=file:///path/release.json` | Checks for updates against your own release JSON (`tag_name`, `html_url`). |
+| `FW_UPDATE_URL=file:///path/release.json` | Checks for updates against your own release JSON (`tag_name`, `html_url`, optionally `assets[].browser_download_url`). |
 
 With these switches FadeWerk DJ saves nothing (`FW_PERSIST=1` forces saving, best with a separate `HOME`).
 

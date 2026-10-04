@@ -25,6 +25,7 @@ mod playlist;
 mod playlist_ui;
 mod search;
 mod selection;
+mod self_update;
 mod tag_editor;
 mod session;
 mod settings;
@@ -42,6 +43,7 @@ fn main() -> eframe::Result {
     // Entwicklerläufe (Demo, Screenshot …) schreiben keine Logdatei, wie sie auch nichts speichern
     let isolated = devtools::DevTools::from_env().isolated();
     diagnose::init(!isolated);
+    self_update::clean_up();
     let mut settings = settings::Settings::load();
     // Optional: ein Musikordner als Argument wird beim Start direkt geöffnet
     let start_dir = std::env::args_os().nth(1).map(std::path::PathBuf::from).filter(|p| p.is_dir());

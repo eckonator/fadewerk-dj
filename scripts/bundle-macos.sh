@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Baut „FadeWerk DJ.app“ für macOS nach dist/.
+# FW_SIGN_IDENTITY / FW_SIGN_KEYCHAIN: Zertifikat zum Signieren (Standard: ad-hoc), siehe scripts/signing-keychain.sh
 # Aufruf: scripts/bundle-macos.sh   (FW_SKIP_BUILD=1 überspringt das Bauen)
 set -euo pipefail
 
@@ -42,6 +43,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Ad-hoc-Signatur, damit Apple-Silicon-Macs die App ohne Entwicklerkonto starten
-codesign --force --deep --sign - "$APP" >/dev/null
+# Mit dem eigenen Zertifikat des Projekts signiert, wenn es eins gibt (scripts/signing-keychain.sh):
+# Dann nimmt das Update per Knopf nur Versionen mit demselben Zertifikat an. Sonst ad-hoc, damit
+# Apple-Silicon-Macs die App überhaupt starten.
+SIGN=(--force --sign "${FW_SIGN_IDENTITY:--}" --identifier de.eckonator.fadewerkdj)
+if [ -n "${FW_SIGN_KEYCHAIN:-}" ]; then
+  SIGN+=(--keychain "$FW_SIGN_KEYCHAIN")
+fi
+codesign "${SIGN[@]}" "$APP" >/dev/null
+codesign --verify --deep --strict "$APP"
 echo "Fertig: $APP"

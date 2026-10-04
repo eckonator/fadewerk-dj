@@ -75,13 +75,24 @@ jobs:
         shell: bash
         run: echo "version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
 
-      # macOS: Universal-Binary (Apple Silicon + Intel), als .app gebündelt und ad-hoc signiert
+      # macOS: Universal-Binary (Apple Silicon + Intel), als .app gebündelt. Signiert mit dem eigenen
+      # Zertifikat des Projekts (Secrets MACOS_SIGN_P12 als Base64 und MACOS_SIGN_PASSWORD), damit das
+      # Update per Knopf die neue Version als echt erkennt; ohne die Secrets ad-hoc.
       - name: macOS bauen
         if: matrix.name == 'macOS'
         # Gleiche Mindestversion wie im Info.plist (LSMinimumSystemVersion), auch für die Intel-Hälfte
         env:
           MACOSX_DEPLOYMENT_TARGET: "11.0"
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          FW_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
         run: |
+          if [ -n "$MACOS_SIGN_P12" ]; then
+            echo "$MACOS_SIGN_P12" | base64 --decode > "$RUNNER_TEMP/sign.p12"
+            eval "$(scripts/signing-keychain.sh "$RUNNER_TEMP/sign.p12" "$RUNNER_TEMP/sign.keychain-db")"
+            rm "$RUNNER_TEMP/sign.p12"
+          else
+            echo "::warning::kein Signatur-Zertifikat, die App wird ad-hoc signiert"
+          fi
           cargo build --release -p fadewerk-dj --target aarch64-apple-darwin
           cargo build --release -p fadewerk-dj --target x86_64-apple-darwin
           mkdir -p target/release
@@ -166,6 +177,8 @@ jobs:
             curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install-macos.sh | bash
             ```
             Or open the `.dmg` and drag FadeWerk DJ to Applications.
+
+            **Already installed?** Use **Update now** in the app (macOS, the Windows `.exe` from the zip, Linux installed with `install.sh`).
 
             Built from commit ${{ github.sha }}. Installation notes are in the README.
           files: pkg/*
