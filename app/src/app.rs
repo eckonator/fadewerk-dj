@@ -2357,14 +2357,29 @@ fn reveal(path: &Path) -> std::io::Result<()> {
     if cfg!(target_os = "macos") {
         Cmd::new("open").arg("-R").arg(path).spawn()?;
     } else if cfg!(windows) {
-        let mut arg = std::ffi::OsString::from("/select,");
-        arg.push(path);
-        Cmd::new("explorer").arg(arg).spawn()?;
+        explorer_select(path)?;
     } else {
         // Ohne einheitliches „Datei markieren“ unter Linux: den Ordner öffnen
         let dir = if path.is_dir() { path } else { path.parent().unwrap_or(path) };
         Cmd::new("xdg-open").arg(dir).spawn()?;
     }
+    Ok(())
+}
+
+/// `explorer /select,"Pfad"`, unverändert übergeben: Mit Leerzeichen im Pfad („FadeWerk DJ“) setzt Rust
+/// sonst das ganze Argument in Anführungszeichen, und der Explorer tut dann gar nichts.
+#[cfg(windows)]
+fn explorer_select(path: &Path) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    let mut arg = std::ffi::OsString::from("/select,\"");
+    arg.push(path);
+    arg.push("\"");
+    std::process::Command::new("explorer").raw_arg(arg).spawn()?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn explorer_select(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
