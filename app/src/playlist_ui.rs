@@ -270,7 +270,9 @@ pub fn show(
             let mark_color = if is_now { color } else if i == next { theme::ink() } else { theme::faint() };
             p.text(pos2(rect.left() + 10.0, rect.center().y), Align2::LEFT_CENTER, mark, FontId::monospace(11.0), mark_color.gamma_multiply(alpha));
             let text_left = rect.left() + 38.0;
-            let text_right = rect.right() - 140.0;
+            let fade = pl.fade(i);
+            // Eigene Fades: zwei Dreiecke vor der Kopfhörertaste, dafür endet der Text früher
+            let text_right = rect.right() - if fade.is_empty() { 140.0 } else { 174.0 };
             let clip = Rect::from_min_max(pos2(text_left, rect.top()), pos2(text_right, rect.bottom()));
             let pc = p.with_clip_rect(clip);
             pc.text(pos2(text_left, rect.top() + 5.0), Align2::LEFT_TOP, &m.title, fonts::bold(14.0), theme::ink().gamma_multiply(alpha));
@@ -279,6 +281,15 @@ pub fn show(
             p.text(pos2(rect.right() - 60.0, rect.center().y), Align2::RIGHT_CENTER, bpm, FontId::monospace(12.0), theme::dim().gamma_multiply(alpha));
             let dur = if m.duration_secs > 0.0 { fmt_time(m.duration_secs) } else { String::new() };
             p.text(pos2(rect.right() - 8.0, rect.center().y), Align2::RIGHT_CENTER, dur, FontId::monospace(12.0), theme::dim().gamma_multiply(alpha));
+
+            if !fade.is_empty() {
+                let mark = Rect::from_center_size(pos2(rect.right() - 157.0, rect.center().y), vec2(24.0, 11.0));
+                let tip = fade_mark(ui.painter(), mark, fade, alpha);
+                // Tooltip über die Zeile: ein eigenes Element darüber bekäme unter der anklickbaren Zeile kein Hover
+                if resp.hover_pos().is_some_and(|pt| mark.expand(4.0).contains(pt)) {
+                    resp.clone().on_hover_text_at_pointer(tip);
+                }
+            }
 
             // Vorhören: Kopfhörertaste vor BPM und Länge, leuchtet, solange dieser Titel vorgehört wird
             let previewing = preview == Some(path.as_path());
@@ -714,9 +725,32 @@ fn edge_well(
     result
 }
 
+/// Kennzeichen für eigene Fades: links ein steigendes Dreieck (Einblenden), rechts ein fallendes (Ausblenden).
+/// Gesetzte Seiten leuchten gelb, die andere bleibt schwach sichtbar.
+/// Liefert den Text für den Tooltip.
+fn fade_mark(p: &egui::Painter, rect: Rect, fade: TrackFade, alpha: f32) -> String {
+    let on = theme::yellow().gamma_multiply(alpha);
+    let off = theme::faint().gamma_multiply(0.45 * alpha);
+    let w = (rect.width() - 2.0) / 2.0;
+    let (top, bottom) = (rect.top(), rect.bottom());
+    let l = rect.left();
+    let rising = vec![pos2(l, bottom), pos2(l + w, bottom), pos2(l + w, top)];
+    let r = rect.right();
+    let falling = vec![pos2(r - w, top), pos2(r - w, bottom), pos2(r, bottom)];
+    p.add(egui::Shape::convex_polygon(rising, if fade.fade_in.is_some() { on } else { off }, Stroke::NONE));
+    p.add(egui::Shape::convex_polygon(falling, if fade.fade_out.is_some() { on } else { off }, Stroke::NONE));
+    let text = |r: Option<Region>, head: &str| match r {
+        None => format!("{head}: {}", tr("nicht gesetzt (halbe Überblendzeit)")),
+        Some(r) if r.len() < 0.05 => format!("{head}: {}", trf("harter Schnitt bei {}", &[&fmt_point(r.start)])),
+        Some(r) => format!("{head}: {}", trf("{} bis {} · {} s", &[&fmt_point(r.start), &fmt_point(r.end), &fmt_secs(r.len())])),
+    };
+    format!("{}\n{}\n{}", tr("Eigene Fade-Bereiche"), text(fade.fade_in, tr("Einblenden")), text(fade.fade_out, tr("Ausblenden")))
+}
+
 /// Waagerechter Bereich der Wellenform in einer Zeile: hinter Titel und Interpret, bis vor die Kopfhörertaste.
 fn wave_span(rect: Rect) -> (f32, f32) {
-    (rect.left() + 32.0, rect.right() - 136.0)
+    // Endet vor dem Platz für das Fade-Kennzeichen, damit beide nicht übereinanderliegen
+    (rect.left() + 32.0, rect.right() - 174.0)
 }
 
 /// Wellenform eines Titels als Hintergrund der Zeile (wie die Übersicht im Player), dezent unter dem Text.
