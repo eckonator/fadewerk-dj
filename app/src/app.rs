@@ -506,7 +506,7 @@ impl FadeWerkDjApp {
                 app.fadewerk = true;
                 if v == "edit" && app.playlists[1].entries.len() > 1 {
                     use crate::fadewerk::{Region, TrackFade};
-                    app.playlists[1].set_fade(0, TrackFade { fade_in: None, fade_out: Some(Region { start: 186.0, end: 196.0 }) });
+                    app.playlists[1].set_fade(0, TrackFade { fade_in: Some(Region { start: 1.5, end: 7.0 }), fade_out: Some(Region { start: 186.0, end: 196.0 }) });
                     app.playlists[1].set_fade(1, TrackFade { fade_in: Some(Region { start: 2.5, end: 9.0 }), fade_out: Some(Region { start: 192.0, end: 192.0 }) });
                     // FW_EDIT_INDEX wählt den Eintrag (Standard 1)
                     let k = std::env::var("FW_EDIT_INDEX").ok().and_then(|v| v.parse().ok()).filter(|&k: &usize| k < app.playlists[1].entries.len()).unwrap_or(1);

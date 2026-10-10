@@ -801,7 +801,12 @@ fn quick_search(ui: &mut egui::Ui, list: usize, pl: &Playlist, metas: &HashMap<P
     let mut query: String = ui.data(|d| d.get_temp(id)).unwrap_or_default();
     // Trefferzahl der letzten Suche, als (Stelle, Anzahl)
     let hits_id = id.with("hits");
-    let w = (ui.available_width() * 0.45).clamp(80.0, 200.0);
+    // In schmalen Köpfen nur so breit wie der Platz vor der FADEWERK-Taste, ganz ohne Platz gar nicht
+    let room = ui.available_width() - 6.0;
+    if room < 40.0 {
+        return None;
+    }
+    let w = (ui.available_width() * 0.45).clamp(80.0, 200.0).min(room);
     let resp = ui.add(egui::TextEdit::singleline(&mut query).hint_text(tr("Suchen")).desired_width(w));
     let (enter, shift, esc) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.modifiers.shift, i.key_pressed(egui::Key::Escape)));
     let mut jump = None;

@@ -5,6 +5,8 @@ written in Rust. Click a folder and start playing: no database, no library impor
 
 ![FadeWerk DJ with the “Night” skin](docs/screenshot.png)
 
+![FadeWerk mode: waveforms behind the playlist tracks and the fade editor open below a track](docs/screenshot-fadewerk.png)
+
 <details>
 <summary>“Classic” skin with brushed steel, the crossfade curve, a day of the history and a track playing in the headphones</summary>
 
