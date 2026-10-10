@@ -57,6 +57,8 @@ struct OpenEditor {
     list: usize,
     index: usize,
     path: PathBuf,
+    /// Gerade aufgeklappt: einmal so scrollen, dass Zeile und Editor ganz zu sehen sind.
+    reveal: bool,
 }
 
 fn editor_id() -> egui::Id {
@@ -70,7 +72,7 @@ pub fn open_editor(ctx: &egui::Context) -> Option<(usize, usize)> {
 
 /// Öffnet den Fade-Editor für einen Eintrag (nur für die Demo, `FW_FADEWERK=edit`).
 pub fn demo_open_editor(ctx: &egui::Context, list: usize, index: usize, path: PathBuf) {
-    ctx.data_mut(|d| d.insert_temp(editor_id(), OpenEditor { list, index, path }));
+    ctx.data_mut(|d| d.insert_temp(editor_id(), OpenEditor { list, index, path, reveal: false }));
 }
 
 const ROW_H: f32 = 44.0;
@@ -97,7 +99,10 @@ pub fn show(
     // Markierter Titel für Pfeiltasten und Eingabetaste (nach Klick auf eine Zeile dieser Liste)
     let me = KeyList::Playlist(list);
     let cursor_id = egui::Id::new(("pl_cursor", list));
-    let mut cursor: Option<usize> = ui.data(|d| d.get_temp::<usize>(cursor_id)).filter(|&c| c < pl.entries.len());
+    // Gemerkt mit dem Titel: wurde er verschoben (Ziehen, „Als Nächstes spielen“), folgt die Markierung ihm
+    let mut cursor: Option<usize> = ui.data(|d| d.get_temp::<(usize, PathBuf)>(cursor_id)).and_then(|(c, path)| {
+        if pl.entries.get(c) == Some(&path) { Some(c) } else { pl.entries.iter().position(|p| *p == path) }
+    });
     let keys = keynav::take(ui.ctx(), me);
     // Ausrichtung beim Scrollen zur Markierung: Pfeiltasten nur bis sichtbar, Suchtreffer in die Mitte
     let mut scroll_to_cursor: Option<Option<egui::Align>> = None;
@@ -317,7 +322,7 @@ pub fn show(
             // Im FadeWerk-Modus öffnet ein Klick den Fade-Editor dieser Zeile (ein anderer schließt dabei)
             if sketches.is_some() && resp.clicked() && edit != Some(i) {
                 // Erst im nächsten Bild aufklappen, die Zeilen dieses Bilds liegen schon fest
-                open = Some(OpenEditor { list, index: i, path: path.clone() });
+                open = Some(OpenEditor { list, index: i, path: path.clone(), reveal: true });
                 ui.ctx().request_repaint();
             }
             if resp.double_clicked() {
@@ -388,6 +393,11 @@ pub fn show(
                 if fade_editor(ui, (list, i), erect, sk, duration, pl.fade(i), color, editor_audio, out) || eresp.secondary_clicked() {
                     close_editor = true;
                 }
+                // Unten in der Liste aufgeklappt: nur so weit scrollen, bis auch die Fußzeile im Bild ist
+                if let Some(o) = open.as_mut().filter(|o| o.reveal) {
+                    o.reveal = false;
+                    ui.scroll_to_rect(rect.union(erect).translate(vec2(0.0, spacing)), None);
+                }
             }
         }
 
@@ -417,9 +427,11 @@ pub fn show(
     });
     match cursor {
         Some(c) => ui.data_mut(|d| {
-            d.insert_temp(cursor_id, c);
+            if let Some(path) = pl.entries.get(c) {
+                d.insert_temp(cursor_id, (c, path.clone()));
+            }
         }),
-        None => ui.data_mut(|d| d.remove::<usize>(cursor_id)),
+        None => ui.data_mut(|d| d.remove::<(usize, PathBuf)>(cursor_id)),
     }
     if close_editor {
         open = None;

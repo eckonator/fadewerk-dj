@@ -1985,9 +1985,8 @@ impl FadeWerkDjApp {
                 // Kopie samt Fade-Bereichen hinter den aktuellen Titel
                 Some(p) => {
                     let item = (p.clone(), self.playlists[list].fade(index));
-                    let pl = &mut self.playlists[d];
-                    let at = pl.current.map_or(pl.entries.len(), |c| c + 1);
-                    pl.insert_with_fades(at, [item]);
+                    let at = self.drop_insert_point(d);
+                    self.playlists[d].insert_with_fades(at, [item]);
                     self.load_index(d, at, false, false);
                     return;
                 }
@@ -1998,10 +1997,20 @@ impl FadeWerkDjApp {
         if paths.is_empty() {
             return;
         }
-        let pl = &mut self.playlists[d];
-        let at = pl.current.map_or(pl.entries.len(), |c| c + 1);
-        pl.insert(at, paths);
+        let at = self.drop_insert_point(d);
+        self.playlists[d].insert(at, paths);
         self.load_index(d, at, false, false);
+    }
+
+    /// Wohin ein auf den Player gezogener Titel in dessen Playlist kommt: hinter den geladenen Titel. War der
+    /// noch gar nicht zu hören (steht an seinem Anfang bzw. am Beginn seines Einblendbereichs), davor, damit
+    /// er der nächste bleibt und nicht als gespielt übersprungen wird.
+    fn drop_insert_point(&self, d: usize) -> usize {
+        let pl = &self.playlists[d];
+        let Some(c) = pl.current.filter(|&c| c < pl.entries.len()) else { return pl.entries.len() };
+        let start = pl.fade(c).fade_in.map_or(0.0, |r| r.start as f64);
+        let untouched = self.has_track(d) && !self.decks[d].spent && self.ctl.shared.decks[d].position_secs() <= start + 1.0;
+        if untouched { c } else { c + 1 }
     }
 
     fn browser_action(&mut self, a: BrowserAction, now: f64) {
@@ -2550,7 +2559,18 @@ impl eframe::App for FadeWerkDjApp {
                 }
                 egui::Area::new(egui::Id::new("notice")).anchor(Align2::CENTER_BOTTOM, vec2(0.0, -24.0)).show(&ctx, |ui| {
                     Frame::new().fill(theme::ink()).corner_radius(CornerRadius::same(5)).inner_margin(Margin::symmetric(14, 8)).show(ui, |ui| {
-                        ui.label(RichText::new(text).color(theme::ground()).strong());
+                        // Die Fläche kennt ihre Breite erst nach dem ersten Bild und bräche sonst zu früh um:
+                        // kurze Hinweise einzeilig, lange auf eine feste Breite umbrechen
+                        const NOTICE_MAX_W: f32 = 560.0;
+                        let font = egui::TextStyle::Body.resolve(ui.style());
+                        let w = ui.painter().layout_no_wrap(text.clone(), font, theme::ground()).size().x;
+                        let label = egui::Label::new(RichText::new(text).color(theme::ground()).strong());
+                        if w <= NOTICE_MAX_W {
+                            ui.add(label.wrap_mode(egui::TextWrapMode::Extend));
+                        } else {
+                            ui.set_width(NOTICE_MAX_W);
+                            ui.add(label.wrap());
+                        }
                     });
                 });
             }

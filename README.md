@@ -22,15 +22,19 @@ written in Rust. Click a folder and start playing: no database, no library impor
   loads its next track. Fade curve smooth, linear, sharp or drawn by hand. Optional **bass swap**:
   the incoming track starts without bass and the basses swap halfway through the fade.
   Starting a deck while the other one is stopped glides the crossfader over to it.
+  **AUTO SYNC**: a deck that starts while the other one is audible takes over its tempo (also at
+  double or half speed) and follows it; once it plays alone, its pitch drifts slowly back to 0 %.
 - **FadeWerk mode**: the FADEWERK button in the playlist headers shows the waveform behind every
   track. Click a track to mark where it fades in (first 30 s) and out (last 30 s), or set a hard cut.
   The track then starts at its fade-in range and ends at the end of its fade-out range, so intros and
   outros can be skipped. Auto-fade runs in two phases: the new track fades in while the old one stays
   at full level, then the old one fades out. A side without a range uses half the fade time.
-  The ranges belong to the playlist entry, move with it and are saved with the playlists.
+  The ranges belong to the playlist entry, move with it and are saved with the playlists; two small
+  triangles in front of the headphone button mark tracks with custom fades.
   In the editor, each range can be previewed on the headphones, alone or as the finished transition
   with the neighbouring track from the other playlist.
-- **No import**: click a folder and all tracks, including subfolders, are there instantly.
+- **No import**: click a folder and all its tracks are there instantly, including subfolders
+  (switchable per folder; off by default for drives and the home folder). Refresh with 🔄, ⌘R or F5.
   BPM detected by the tempo analysis is remembered; “Analyse BPM” (tracks) and “Detect missing BPM”
   (folders) run it in the background.
   Quick search across title, artist, album and path; the advanced search (magnifier, ⇧⌘F) filters
@@ -40,6 +44,8 @@ written in Rust. Click a folder and start playing: no database, no library impor
   Choose the track list columns (artist, album, genre, year, comment, subfolder, file name, format,
   BPM, time) and drag their widths; click a column header to sort ascending or descending. All of
   this is remembered.
+- **Track info & tags**: right-click a track in the folder browser or a playlist to view and edit
+  its tags (title, artist, album, album artist, genre, year, track number, BPM, comment).
 - **History**: below the folders, “History” lists every day with the tracks that were played, in order,
   with time and deck. A track counts once it has been audible on master for 30 seconds; tracks until
   6 am belong to the day before. Give a day a name (“Grandma’s birthday”), remove entries, export it as
@@ -57,6 +63,7 @@ written in Rust. Click a folder and start playing: no database, no library impor
   (start and stop time adjustable in the Motor tab). CUE jumps instantly.
 - **Transport per deck**: CUE, play/pause, stop, previous, next, repeat (off, track, list;
   track repeat fades the end into the start with the fade time and curve), eject, pitch ±8 %, sync, reverse (the record spins down and starts up the other way), loops of 4, 8 or 16 beats.
+  The frame of a playing deck flashes red in the last 15 seconds of its track.
 - **Pre-listening** per deck, in the playlists and right in the folder browser. Headphones via
   split output (left master, right headphones), on outputs 3/4 of a multichannel interface,
   or on a separate second audio device.
@@ -77,7 +84,8 @@ written in Rust. Click a folder and start playing: no database, no library impor
   the marked track into the deck (playlists) or pre-listens to it (folder browser).
   Each playlist has a quick search that jumps to the matching track (Enter: next match).
 - **Skins** Night, Classic, Day and Neon, optionally with a brushed steel look.
-  The layout adapts to the window size, including 4K monitors. **Full screen** via the button
+  The layout adapts to the window size, including 4K monitors; drag the handle between decks and
+  playlists to share the height, and zoom with ⌘/Ctrl +, − and 0 (70 to 150 %). **Full screen** via the button
   in the folder browser, F11 or ⌃⌘F on macOS. On wide monitors, the button next to it moves the
   folder browser from below the decks to their right (folder tree above the track list).
 - **Light on resources**: when nothing is playing, the interface only redraws on input. A
@@ -205,10 +213,10 @@ With these switches FadeWerk DJ saves nothing (`FW_PERSIST=1` forces saving, bes
 
 ## Roadmap
 
-- Cache for the waveform, so it shows up right away
+- Cache for the deck waveform, so it shows up right away (the small playlist waveforms are cached already)
 - Beat grid with phase, hot cues, key detection, keylock
 - MIDI controllers (jog wheels as turntables)
-- Recording
+- Mix recording
 - Importing playlists from other DJ software
 
 ## Legal

@@ -192,6 +192,8 @@ pub struct BrowserCtx<'a> {
 /// Wie oft die Titelliste höchstens neu gefiltert und sortiert wird, solange nur Tags und BPM
 /// nachkommen (beim Einlesen großer Ordner kommen sie in fast jedem Bild).
 const LIST_REBUILD_SECS: f64 = 0.5;
+/// Bis zu so vielen Titeln werden beim Öffnen eines Ordners alle Tags gelesen, damit die Gesamtdauer stimmt.
+const ALL_TAGS_LIMIT: usize = 2000;
 
 /// Fertig gefilterte und sortierte Titelliste samt Angaben, die sonst jedes Bild alle Titel durchgehen müssten.
 /// Neu berechnet nur, wenn sich Ordner, Suche, Sortierung oder (gedrosselt) Tags/BPM ändern.
@@ -200,6 +202,8 @@ struct ListData {
     /// Pfade der abspielbaren Zeilen (in der Historie ohne fehlende Dateien).
     paths: Vec<PathBuf>,
     total_secs: f64,
+    /// Für manche Titel ist die Länge noch nicht bekannt (Tags nicht gelesen): dann keine Gesamtdauer zeigen.
+    duration_unknown: bool,
     has_subfolders: bool,
     hidden_dups: usize,
     /// Titel der Liste ohne bekannte BPM.
@@ -1190,8 +1194,10 @@ impl Browser {
             hidden_dups = before - rows.len();
         }
         let paths: Vec<PathBuf> = rows.iter().filter(|r| hist_day.is_none() || !missing.contains(&r.slot)).map(|r| r.path.clone()).collect();
+        let duration = |r: &Row| ctx.metas.get(&r.path).map(|m| m.duration_secs).or_else(|| entry_of(r).map(|e| e.duration_secs));
         ListData {
-            total_secs: rows.iter().map(|r| ctx.metas.get(&r.path).map_or_else(|| entry_of(r).map_or(0.0, |e| e.duration_secs), |m| m.duration_secs)).sum(),
+            total_secs: rows.iter().filter_map(duration).sum(),
+            duration_unknown: rows.iter().any(|r| duration(r).is_none()),
             has_subfolders: hist_day.is_none() && (dirs.len() > 1 || self.tracks.iter().any(|p| p.parent() != Some(dirs[0].as_path()))),
             missing_bpm: paths.iter().filter(|p| !bpm_known(ctx, p)).count(),
             hidden_dups,
@@ -1216,8 +1222,9 @@ impl Browser {
         let dirs = self.selected.clone();
         let f = self.filter.trim().to_lowercase();
         let searching = !f.is_empty() || !self.adv.is_empty();
-        // Zum Sortieren nach Tags werden wie bei der Suche alle Tags gelesen
-        let need_all_meta = searching || self.sort.is_some_and(|(c, _)| c.needs_tags());
+        // Zum Sortieren nach Tags werden wie bei der Suche alle Tags gelesen, in nicht zu großen Ordnern
+        // auch sonst (für die Gesamtdauer in der Kopfzeile)
+        let need_all_meta = searching || self.sort.is_some_and(|(c, _)| c.needs_tags()) || self.tracks.len() <= ALL_TAGS_LIMIT;
         // Einträge der Historie, deren Datei fehlt (ausgegraut, nicht abspielbar)
         let mut missing: HashSet<usize> = HashSet::new();
         if let Some(day) = hist_day {
@@ -1308,7 +1315,7 @@ impl Browser {
                 };
                 ui.label(RichText::new(folder).font(fonts::bold(17.0)));
                 let count = if f.is_empty() && self.adv.is_empty() {
-                    count_tracks(rows.len(), &fmt_time(data.total_secs))
+                    count_tracks(rows.len(), &if data.duration_unknown { "…".to_owned() } else { fmt_time(data.total_secs) })
                 } else {
                     trf("{} von {} Titeln", &[&rows.len(), &total_count])
                 };

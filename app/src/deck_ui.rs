@@ -550,9 +550,23 @@ fn paint_platter(ui: &egui::Ui, c: Pos2, r: f32, angle: f32, color: Color32, m: 
     }
     let text_color = Color32::from_rgba_unmultiplied(10, 14, 22, 220);
     let label_text = |text: &str, size: f32, dy: f32| {
-        let mut t: String = text.to_uppercase();
-        if t.chars().count() > 18 {
-            t = t.chars().take(17).collect::<String>() + "…";
+        // So breit ist das Label auf dieser Höhe (Sehne des Kreises, mit etwas Rand). Passt der Text nicht,
+        // wird die Schrift bis auf drei Viertel kleiner und dann mit „…“ gekürzt (sonst verschwände der Rest
+        // dunkel auf dem schwarzen Vinyl)
+        let lr = r * 0.30;
+        let max_w = 2.0 * (lr * lr - dy * dy).max(0.0).sqrt();
+        let upper = text.to_uppercase();
+        let mut size = size;
+        let min_size = (size * 0.75).max(6.0);
+        let width = |t: &str, size: f32| p.layout_no_wrap(t.to_owned(), FontId::proportional(size), text_color).size().x;
+        while size > min_size && width(&upper, size) > max_w {
+            size = (size * 0.92).max(min_size);
+        }
+        let mut t = upper.clone();
+        let mut n = upper.chars().count();
+        while n > 1 && width(&t, size) > max_w {
+            n -= 1;
+            t = upper.chars().take(n).collect::<String>().trim_end().to_owned() + "…";
         }
         let galley = p.layout_no_wrap(t, FontId::proportional(size), text_color);
         let anchor = c + egui::emath::Rot2::from_angle(angle) * vec2(0.0, dy);
