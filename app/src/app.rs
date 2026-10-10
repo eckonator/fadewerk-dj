@@ -199,6 +199,15 @@ pub struct FadeWerkDjApp {
     bpms: HashMap<PathBuf, f32>,
     /// Gemerkte BPM aus der Tempo-Erkennung (`bpm.json`).
     bpm_cache: crate::bpm_cache::BpmCache,
+    /// Gemerkte Tags (große Sammlungen, Netzlaufwerke): sofort gezeigt, im Hintergrund geprüft.
+    tag_cache: crate::tag_cache::TagCache,
+    /// Gemerkte Titellisten langsamer Ordner, gezeigt während der Live-Suche.
+    folder_cache: crate::folder_cache::FolderCache,
+    /// Laufende Ordnersuche: Kennung, gesuchte Ordner, Start (zum Merken langsamer Ordner).
+    scan_job: Option<(u64, crate::folder_cache::Roots, std::time::Instant)>,
+    /// Größe der Caches für die Einstellungen (gemessen, solange das Fenster offen ist).
+    cache_sizes: Option<crate::caches::CacheSizes>,
+    cache_sizes_rx: Option<std::sync::mpsc::Receiver<crate::caches::CacheSizes>>,
     /// Titel, deren BPM-Analyse noch läuft, und Gesamtzahl seit dem letzten Leerlauf (für die Fortschrittsanzeige).
     bpm_pending: HashSet<PathBuf>,
     bpm_total: usize,
@@ -207,6 +216,8 @@ pub struct FadeWerkDjApp {
     /// Kleine Wellenformen für die Playlist-Zeilen (`None` = Datei nicht lesbar).
     sketches: HashMap<PathBuf, Option<Arc<WaveSketch>>>,
     sketch_requested: HashSet<PathBuf>,
+    /// In diesem Bild angeforderte Wellenformen je Playlist, von oben nach unten (siehe [`App::send_sketch_requests`]).
+    sketch_batch: [Vec<PathBuf>; 2],
     /// FadeWerk-Modus: Playlists zeigen Wellenformen und Fade-Bereiche.
     fadewerk: bool,
     autofade: AutoFade,
@@ -325,6 +336,8 @@ impl FadeWerkDjApp {
                 b.set_columns(&settings.track_columns, &settings.column_widths);
                 b.set_sort(settings.track_sort.as_ref());
                 b.tree_height = settings.tree_height;
+                b.folder_columns = settings.folder_columns;
+                b.columns_share = settings.columns_share;
                 b.set_search_memory(settings.remember_search, settings.hide_duplicates, &settings.advanced_search);
                 b
             },
@@ -333,8 +346,14 @@ impl FadeWerkDjApp {
             meta_requested: HashSet::new(),
             bpms: HashMap::new(),
             bpm_cache: Default::default(),
+            tag_cache: Default::default(),
+            folder_cache: Default::default(),
+            scan_job: None,
+            cache_sizes: None,
+            cache_sizes_rx: None,
             sketches: HashMap::new(),
             sketch_requested: HashSet::new(),
+            sketch_batch: Default::default(),
             fadewerk: false,
             bpm_pending: HashSet::new(),
             bpm_total: 0,
@@ -410,6 +429,9 @@ impl FadeWerkDjApp {
             Some(true) if app.persist => app.update_rx = Some(crate::update::check_in_background(cc.egui_ctx.clone())),
             _ => {}
         }
+        if std::env::args().any(|a| a == crate::self_update::AFTER_RESET_FLAG) {
+            app.notice = Some((tr("FadeWerk DJ wurde zurückgesetzt.").to_owned(), 0.0));
+        }
         if std::env::args().any(|a| a == crate::self_update::AFTER_UPDATE_FLAG) {
             app.notice = Some((trf("FadeWerk DJ wurde auf Version {} aktualisiert.", &[&env!("CARGO_PKG_VERSION")]), 0.0));
         }
@@ -423,6 +445,9 @@ impl FadeWerkDjApp {
             app.bpm_cache = crate::bpm_cache::BpmCache::load();
             app.bpms.extend(app.bpm_cache.all().map(|(p, b)| (p.clone(), b)));
             app.bpm_check = Some(app.bpm_cache.start_check());
+            app.tag_cache = crate::tag_cache::TagCache::load();
+            app.folder_cache = crate::folder_cache::FolderCache::load();
+            log::info!("Tag-Cache: {} Titel", app.tag_cache.len());
             let dir = crate::settings::config_dir().map(|d| d.join("wellenformen"));
             if let Some(dir) = dir.clone() {
                 let _ = std::thread::Builder::new().name("fw-wave-clean".into()).spawn(move || {
@@ -522,6 +547,10 @@ impl FadeWerkDjApp {
             // FW_BROWSER=rechts: Ordnerbrowser rechts neben den Playern
             if std::env::var("FW_BROWSER").is_ok_and(|v| v == "rechts") {
                 app.settings.browser_side = true;
+            }
+            // FW_FOLDERS=spalten: Ordner in Spalten statt als Baum
+            if std::env::var("FW_FOLDERS").is_ok_and(|v| v == "spalten") {
+                app.browser.folder_columns = true;
             }
             // FW_TAB=kopfhoerer|fade|motor|zu: Reiter unter dem Crossfader
             if let Ok(tab) = std::env::var("FW_TAB") {
@@ -763,6 +792,29 @@ impl FadeWerkDjApp {
                 self.save_settings();
             }
             SettingsAction::FxPreview(slot) => self.trigger_fx(slot, false, now),
+            SettingsAction::MeasureCaches => {
+                if self.cache_sizes_rx.is_none() {
+                    self.cache_sizes_rx = Some(crate::caches::measure());
+                }
+            }
+            SettingsAction::ClearCaches { bpm } => {
+                self.tag_cache = Default::default();
+                self.folder_cache = Default::default();
+                if bpm {
+                    self.bpm_cache = Default::default();
+                    self.bpms.clear();
+                    self.data_gen += 1;
+                }
+                if self.persist {
+                    crate::caches::clear(bpm);
+                }
+                // Der Wellenform-Ordner wird noch im Hintergrund geleert: gleich als leer anzeigen
+                let kept_bpm = if bpm { 0 } else { self.cache_sizes.map_or(0, |s| s.bpm) };
+                self.cache_sizes = Some(crate::caches::CacheSizes { bpm: kept_bpm, ..Default::default() });
+                self.cache_sizes_rx = None;
+                self.notify(tr("Caches geleert."), now);
+            }
+            SettingsAction::ResetAll => self.reset_all(ctx, now),
             SettingsAction::FxResetAll => {
                 self.settings.fx_slots.clear();
                 for slot in 0..fw_engine::FX_SLOTS {
@@ -961,6 +1013,31 @@ impl FadeWerkDjApp {
         }
     }
 
+    /// „FadeWerk DJ zurücksetzen“: Einstellungsordner leeren und neu starten. Danach wird nichts mehr
+    /// gespeichert, sonst schriebe das Beenden die alten Einstellungen gleich wieder hin.
+    fn reset_all(&mut self, ctx: &egui::Context, now: f64) {
+        if self.ctl.shared.decks.iter().any(|s| s.is_playing()) {
+            return;
+        }
+        if !self.persist {
+            self.notify(tr("Entwicklerlauf: es wird nichts gelöscht."), now);
+            return;
+        }
+        self.persist = false;
+        self.save_due = None;
+        self.lib.set_sketch_cache(None);
+        if let Err(e) = crate::caches::reset_all() {
+            log::warn!("Zurücksetzen unvollständig: {e}");
+        }
+        match crate::self_update::restart_after_exit(crate::self_update::AFTER_RESET_FLAG) {
+            Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Err(e) => {
+                log::warn!("Neustart nach dem Zurücksetzen nicht möglich: {e}");
+                self.notify(tr("Zurückgesetzt. Bitte FadeWerk DJ neu starten."), now);
+            }
+        }
+    }
+
     /// Speichert die Playlists, wenn sie sich seit dem letzten Mal geändert haben.
     fn save_session_if_changed(&mut self) {
         if !self.persist {
@@ -974,9 +1051,9 @@ impl FadeWerkDjApp {
     }
 
     /// Gemerkte BPM für einen Titel prüfen: geänderte Datei → verwerfen, umgezogene Datei → übernehmen.
-    fn resolve_bpm(&mut self, path: &Path) {
+    fn resolve_bpm(&mut self, path: &Path, stamp: Option<fw_library::Stamp>) {
         self.data_gen += 1;
-        match self.bpm_cache.resolve(path) {
+        match self.bpm_cache.resolve_stamped(path, stamp) {
             crate::bpm_cache::Resolved::Bpm(b) => {
                 self.bpms.insert(path.to_path_buf(), b);
             }
@@ -1001,8 +1078,17 @@ impl FadeWerkDjApp {
     }
 
     fn request_meta(&mut self, path: PathBuf) {
-        if !self.metas.contains_key(&path) && self.meta_requested.insert(path.clone()) {
-            self.lib.request_meta(path);
+        if self.metas.contains_key(&path) || !self.meta_requested.insert(path.clone()) {
+            return;
+        }
+        // Gemerkte Tags gleich zeigen und im Hintergrund prüfen, ob die Datei sich geändert hat
+        match self.tag_cache.get(&path) {
+            Some((meta, stamp)) => {
+                self.metas.insert(path.clone(), meta);
+                self.data_gen += 1;
+                self.lib.check_meta(path, stamp);
+            }
+            None => self.lib.request_meta(path),
         }
     }
 
@@ -1257,14 +1343,20 @@ impl FadeWerkDjApp {
         }
         for resp in responses {
             match resp {
-                Response::Meta(path, meta) => {
+                Response::Meta { path, meta, stamp } => {
                     // Geladene Titel zeigen geänderte Tags sofort
                     for v in self.decks.iter_mut().filter(|v| v.path.as_ref() == Some(&path)) {
                         v.meta = Some(meta.clone());
                     }
-                    self.resolve_bpm(&path);
+                    if let Some(stamp) = stamp
+                        && self.persist
+                    {
+                        self.tag_cache.insert(&path, &meta, stamp);
+                    }
+                    self.resolve_bpm(&path, stamp);
                     self.metas.insert(path, meta);
                 }
+                Response::MetaValid { path, stamp } => self.resolve_bpm(&path, Some(stamp)),
                 Response::Bpm { path, bpm, analyzed } => {
                     self.bpm_pending.remove(&path);
                     if self.bpm_pending.is_empty() {
@@ -1280,7 +1372,18 @@ impl FadeWerkDjApp {
                 Response::Sketch { path, sketch } => {
                     self.sketches.insert(path, sketch);
                 }
-                Response::Scan { token, tracks, done, limited } => self.browser.receive_scan(token, tracks, done, limited),
+                Response::Scan { token, tracks, done, limited } => {
+                    self.browser.receive_scan(token, tracks, done, limited);
+                    // Langsame Ordner merken (und gemerkte auf den frischen Stand bringen)
+                    if done
+                        && let Some((_, roots, started)) = self.scan_job.take_if(|j| j.0 == token)
+                    {
+                        let slow = started.elapsed().as_secs_f64() >= crate::folder_cache::MIN_SCAN_SECS;
+                        if self.persist && (slow || self.folder_cache.contains(&roots)) {
+                            self.folder_cache.put(roots, self.browser.tracks());
+                        }
+                    }
+                }
                 Response::Loaded(l) => {
                     let l = *l;
                     self.metas.insert(l.path.clone(), l.meta.clone());
@@ -1786,6 +1889,7 @@ impl FadeWerkDjApp {
 
     fn mixer_action(&mut self, a: MixerAction, now: f64) {
         match a {
+            MixerAction::OpenAbout => self.settings_ui.open_at("ueber"),
             MixerAction::Volume(d, v) => {
                 self.decks[d].volume = v;
                 self.ctl.send(Command::SetChannelVolume { deck: d, volume: v });
@@ -1893,6 +1997,24 @@ impl FadeWerkDjApp {
         }
     }
 
+    /// Schickt die Wellenform-Anfragen dieses Bildes abwechselnd aus A und B, je von oben nach unten.
+    /// So bauen sich beide Playlists gleichzeitig von oben auf (der Thread rechnet nur eine Wellenform zur Zeit).
+    fn send_sketch_requests(&mut self) {
+        let [a, b] = std::mem::take(&mut self.sketch_batch);
+        if a.is_empty() && b.is_empty() {
+            return;
+        }
+        let mut order = Vec::with_capacity(a.len() + b.len());
+        let (mut a, mut b) = (a.into_iter(), b.into_iter());
+        loop {
+            match (a.next(), b.next()) {
+                (None, None) => break,
+                (x, y) => order.extend(x.into_iter().chain(y)),
+            }
+        }
+        self.lib.request_sketches(order);
+    }
+
     fn playlist_action(&mut self, d: usize, a: PlaylistAction, now: f64) {
         match a {
             PlaylistAction::Load(i) => {
@@ -1915,7 +2037,7 @@ impl FadeWerkDjApp {
             PlaylistAction::NeedMeta(p) => self.request_meta(p),
             PlaylistAction::NeedSketch(p) => {
                 if self.sketch_requested.insert(p.clone()) {
-                    self.lib.request_sketch(p);
+                    self.sketch_batch[d].push(p);
                 }
             }
             PlaylistAction::FadeWerk(on) => self.fadewerk = on,
@@ -2086,6 +2208,14 @@ impl FadeWerkDjApp {
                 self.settings.tree_height = h;
                 self.save_settings();
             }
+            BrowserAction::FolderColumns(on) => {
+                self.settings.folder_columns = on;
+                self.save_settings();
+            }
+            BrowserAction::ColumnsShare(share) => {
+                self.settings.columns_share = share;
+                self.save_settings();
+            }
             BrowserAction::Preview(path) => {
                 let token = self.token();
                 self.preview = Some(PreviewView { path: path.clone(), token, ended_seen: 0, clip: None });
@@ -2102,7 +2232,7 @@ impl FadeWerkDjApp {
                 for p in paths {
                     // Vielleicht nur umgezogen (Ordner umbenannt): dann ist die BPM schon bekannt
                     if !force {
-                        self.resolve_bpm(&p);
+                        self.resolve_bpm(&p, fw_library::file_stamp(&p));
                     }
                     // Ohne `force` nur Titel ohne bekannte BPM
                     if (force || !self.bpms.contains_key(&p)) && self.bpm_pending.insert(p.clone()) {
@@ -2214,6 +2344,8 @@ impl eframe::App for FadeWerkDjApp {
             self.save_session_if_changed();
             if self.persist {
                 self.bpm_cache.save_if_dirty();
+                self.tag_cache.save_if_dirty(false);
+                self.folder_cache.save_if_dirty();
                 self.history.save_dirty();
             }
         }
@@ -2266,6 +2398,10 @@ impl eframe::App for FadeWerkDjApp {
         if let Some(dirs) = self.browser.take_pending_scan() {
             let token = self.token();
             self.browser.begin_scan(token);
+            if let Some(cached) = self.folder_cache.get(&dirs) {
+                self.browser.prefill(cached);
+            }
+            self.scan_job = Some((token, dirs.clone(), std::time::Instant::now()));
             self.lib.scan(token, dirs);
         }
 
@@ -2616,6 +2752,16 @@ impl eframe::App for FadeWerkDjApp {
             self.settings_ui.toggle();
         }
         let mut settings_actions = Vec::new();
+        // Cache-Größen nur messen, solange die Einstellungen offen sind; beim nächsten Öffnen frisch
+        if let Some(rx) = &self.cache_sizes_rx
+            && let Ok(sizes) = rx.try_recv()
+        {
+            self.cache_sizes = Some(sizes);
+            self.cache_sizes_rx = None;
+        }
+        if !self.settings_ui.open {
+            self.cache_sizes = None;
+        }
         let sctx = SettingsCtx {
             settings: &self.settings,
             active_device: self.audio.as_ref().map(|a| a.device.as_str()),
@@ -2623,6 +2769,8 @@ impl eframe::App for FadeWerkDjApp {
             active_head: self.head_audio.as_ref().map(|h| h.device.as_str()),
             sample_rate: self.ctl.shared.sample_rate,
             channels: self.ctl.shared.channels,
+            cache_sizes: self.cache_sizes,
+            playing: self.ctl.shared.decks.iter().any(|s| s.is_playing()),
         };
         self.settings_ui.show(&ctx, &sctx, &mut settings_actions);
         if let Some(event) = self.tag_editor.as_mut().and_then(|ed| ed.show(&ctx)) {
@@ -2659,6 +2807,7 @@ impl eframe::App for FadeWerkDjApp {
         }
         self.track_settings(now);
 
+        self.send_sketch_requests();
         self.dev.on_frame(&ctx);
         // Rad-Ereignisse, die kein Regler genommen hat: dort läuft gerade ein Scrollen
         crate::hw::note_foreign_scroll(&ctx);
@@ -2735,6 +2884,8 @@ impl Drop for FadeWerkDjApp {
         self.save_session_if_changed();
         if self.persist {
             self.bpm_cache.save_if_dirty();
+            self.tag_cache.save_if_dirty(true);
+            self.folder_cache.save_if_dirty();
             self.history.save_dirty();
         }
     }

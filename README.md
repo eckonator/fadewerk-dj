@@ -44,6 +44,12 @@ written in Rust. Click a folder and start playing: no database, no library impor
   Choose the track list columns (artist, album, genre, year, comment, subfolder, file name, format,
   BPM, time) and drag their widths; click a column header to sort ascending or descending. All of
   this is remembered.
+  Folders show as a tree or, like a column browser, as columns side by side (two buttons next to
+  “FOLDERS”); below the decks the columns take 40 % of the width.
+- **Fast with large collections and network drives**: tags that were read once and the track lists
+  of slow folders are remembered (no database: the folder is still read live in the background and
+  its result wins, changed files are re-read). Tags are read with four threads. The caches can be
+  cleared under Settings → General, where FadeWerk DJ can also be reset completely.
 - **Track info & tags**: right-click a track in the folder browser or a playlist to view and edit
   its tags (title, artist, album, album artist, genre, year, track number, BPM, comment).
 - **History**: below the folders, “History” lists every day with the tracks that were played, in order,
@@ -88,6 +94,7 @@ written in Rust. Click a folder and start playing: no database, no library impor
   playlists to share the height, and zoom with ⌘/Ctrl +, − and 0 (70 to 150 %). **Full screen** via the button
   in the folder browser, F11 or ⌃⌘F on macOS. On wide monitors, the button next to it moves the
   folder browser from below the decks to their right (folder tree above the track list).
+  The version number sits next to the MIXER heading; clicking it opens “About”.
 - **Light on resources**: when nothing is playing, the interface only redraws on input. A
   **lightweight display** for older or slower computers drops shadows, gradients, glow and the
   spectrum and limits drawing to 30 frames per second.
@@ -203,6 +210,7 @@ Code comments are in German; issues and contributions in English are welcome.
 | `FW_SEARCH="genre=rock,year=1980-1989"` | Opens the advanced search with these fields. |
 | `FW_COLUMNS=artist,album,genre,…` | Shows these columns in the track list. |
 | `FW_SORT=artist` / `FW_SORT=bpm:desc` | Sorts the track list by this column. |
+| `FW_BROWSER=rechts`, `FW_FOLDERS=spalten` | Folder browser to the right of the decks; folders as columns. |
 | `FW_POINTER=x,y` | Moves the mouse there (points); `x,y,1` clicks, `x,y,2` right-clicks, `x1,y1,x2,y2` drags. |
 | `FW_SETTINGS=allgemein\|audio\|effekte\|sprache\|aussehen\|ueber` | Opens the settings window. |
 | `FW_TAB=pads\|kopfhoerer\|fade\|motor\|zu` | Opens this tab below the crossfader (`zu` = all closed). |

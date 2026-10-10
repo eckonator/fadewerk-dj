@@ -59,6 +59,12 @@ pub enum SettingsAction {
     FxIcon(usize, String),
     /// Alle Effekt-Pads auf die mitgelieferten Klänge, Namen und Symbole zurücksetzen.
     FxResetAll,
+    /// Größe der Caches messen (für die Anzeige unter Allgemein).
+    MeasureCaches,
+    /// Caches leeren, mit `bpm` auch die ermittelten BPM.
+    ClearCaches { bpm: bool },
+    /// Alles löschen (Einstellungen, Playlists, Historie, Caches) und neu starten.
+    ResetAll,
 }
 
 pub struct SettingsCtx<'a> {
@@ -69,6 +75,10 @@ pub struct SettingsCtx<'a> {
     pub active_head: Option<&'a str>,
     pub sample_rate: u32,
     pub channels: usize,
+    /// Gemessene Größe der Caches, `None` solange nicht gemessen.
+    pub cache_sizes: Option<crate::caches::CacheSizes>,
+    /// Spielt ein Player? Dann lässt sich nicht zurücksetzen (die App startet neu).
+    pub playing: bool,
 }
 
 #[derive(Default)]
@@ -82,12 +92,17 @@ pub struct SettingsUi {
     icon_picker: Option<usize>,
     /// „Alle Effekte zurücksetzen“ wurde einmal geklickt und wartet auf Bestätigung.
     confirm_fx_reset: bool,
+    /// „Caches leeren“ bzw. „Zurücksetzen“ wartet auf Bestätigung.
+    confirm_clear: bool,
+    confirm_reset: bool,
+    /// Beim Leeren auch die ermittelten BPM löschen.
+    clear_bpm: bool,
 }
 
 const BUFFERS: [Option<u32>; 7] = [None, Some(64), Some(128), Some(256), Some(512), Some(1024), Some(2048)];
 
 impl SettingsUi {
-    /// Öffnet das Fenster auf einer Seite (für die Entwicklerhilfen).
+    /// Öffnet das Fenster auf einer Seite (Entwicklerhilfen, Klick auf die Versionsnummer).
     pub fn open_at(&mut self, page: &str) {
         self.open = true;
         self.tab = match page {
@@ -145,7 +160,7 @@ impl SettingsUi {
                 ui.separator();
                 ui.add_space(8.0);
                 match self.tab {
-                    Tab::General => general_tab(ui, c, out),
+                    Tab::General => self.general_tab(ui, c, out),
                     Tab::Audio => self.audio_tab(ui, c, out),
                     Tab::Effects => self.effects_tab(ui, c, out),
                     Tab::Language => language_tab(ui, c, out),
@@ -250,6 +265,77 @@ impl SettingsUi {
                 let b = ui.add_enabled(changed, egui::Button::new(tr("Alle Effekte zurücksetzen")));
                 if b.on_hover_text(tr("Alle Pads wieder mit den mitgelieferten Effekten, Namen und Symbolen belegen")).clicked() {
                     self.confirm_fx_reset = true;
+                }
+            }
+        });
+    }
+
+    /// Allgemeine Häkchen, darunter Caches und ganz unten, abgesetzt, das Zurücksetzen.
+    fn general_tab(&mut self, ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction>) {
+        general_options(ui, c, out);
+
+        ui.add_space(10.0);
+        ui.label(RichText::new(tr("Caches")).strong());
+        ui.label(
+            RichText::new(tr("Gemerkte Tags, Ordnerlisten und Wellenformen beschleunigen große Sammlungen und Netzlaufwerke. Leeren ist ungefährlich: Alles wird bei Bedarf neu gelesen."))
+                .size(12.0)
+                .color(theme::dim()),
+        );
+        use crate::caches::fmt_bytes;
+        match c.cache_sizes {
+            Some(s) => {
+                let line = trf("Tags {} · Ordnerlisten {} · Wellenformen {} · ermittelte BPM {}", &[&fmt_bytes(s.tags), &fmt_bytes(s.folders), &fmt_bytes(s.waves), &fmt_bytes(s.bpm)]);
+                ui.label(RichText::new(line).size(12.5));
+            }
+            None => {
+                out.push(SettingsAction::MeasureCaches);
+                ui.label(RichText::new(tr("Wird gemessen …")).size(12.5).color(theme::dim()));
+            }
+        }
+        ui.checkbox(&mut self.clear_bpm, RichText::new(tr("Auch ermittelte BPM löschen")).size(14.0))
+            .on_hover_text(tr("Die Tempo-Erkennung dauert lange; ohne Häkchen bleiben ermittelte BPM erhalten."));
+        ui.horizontal(|ui| {
+            if self.confirm_clear {
+                ui.label(RichText::new(tr("Caches wirklich leeren?")).color(theme::yellow()));
+                if ui.button(tr("Ja, leeren")).clicked() {
+                    out.push(SettingsAction::ClearCaches { bpm: self.clear_bpm });
+                    self.confirm_clear = false;
+                }
+                if ui.button(tr("Abbrechen")).clicked() {
+                    self.confirm_clear = false;
+                }
+            } else if ui.button(tr("Caches leeren …")).clicked() {
+                self.confirm_clear = true;
+            }
+        });
+
+        // Abgesetzt und rot, damit man es nicht mit „Caches leeren“ verwechselt
+        ui.add_space(18.0);
+        ui.separator();
+        ui.add_space(6.0);
+        ui.label(RichText::new(tr("Zurücksetzen")).strong().color(theme::cue()));
+        ui.label(
+            RichText::new(tr("Löscht alle Einstellungen, Playlists, die Historie, eigene Effekt-Pads und alle Caches. Deine Musikdateien bleiben unberührt. Danach startet FadeWerk DJ neu wie beim ersten Mal."))
+                .size(12.0)
+                .color(theme::dim()),
+        );
+        ui.horizontal(|ui| {
+            if self.confirm_reset && !c.playing {
+                ui.label(RichText::new(tr("Wirklich alles löschen? Das lässt sich nicht rückgängig machen.")).color(theme::cue()));
+                if ui.button(RichText::new(tr("Ja, zurücksetzen")).color(theme::cue())).clicked() {
+                    out.push(SettingsAction::ResetAll);
+                    self.confirm_reset = false;
+                }
+                if ui.button(tr("Abbrechen")).clicked() {
+                    self.confirm_reset = false;
+                }
+            } else {
+                self.confirm_reset = false;
+                let b = ui
+                    .add_enabled(!c.playing, egui::Button::new(RichText::new(tr("FadeWerk DJ zurücksetzen …")).color(theme::cue())))
+                    .on_disabled_hover_text(tr("Gesperrt, solange ein Player spielt"));
+                if b.clicked() {
+                    self.confirm_reset = true;
                 }
             }
         });
@@ -391,7 +477,7 @@ impl SettingsUi {
 }
 
 /// Was zu keinem Gerät und keiner Optik gehört: Historie, Ruhezustand, Updates.
-fn general_tab(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction>) {
+fn general_options(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction>) {
     ui.label(RichText::new(tr("Historie")).strong());
     let mut record = c.settings.record_history;
     if ui.checkbox(&mut record, RichText::new(tr("Gespielte Titel aufzeichnen")).size(14.0)).changed() {

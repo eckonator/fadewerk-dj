@@ -39,6 +39,8 @@ pub struct MixerModel<'a> {
 }
 
 pub enum MixerAction {
+    /// Einstellungen auf der Seite „Über“ öffnen (Klick auf die Versionsnummer).
+    OpenAbout,
     Volume(usize, f32),
     HeadMode(HeadMode),
     HeadMix(f32),
@@ -51,8 +53,18 @@ pub enum MixerAction {
     FxVolume(f32),
 }
 
-pub fn section_title(ui: &mut egui::Ui, text: &'static str) {
-    ui.vertical_centered(|ui| ui.label(RichText::new(tr(text)).font(fonts::bold(15.0)).extra_letter_spacing(2.5)));
+/// Versionsnummer klein rechts neben der Überschrift, ohne sie aus der Mitte zu schieben.
+/// Klick öffnet Einstellungen → Über.
+fn version_tag(ui: &mut egui::Ui, title: Rect, out: &mut Vec<MixerAction>) {
+    let galley = ui.painter().layout_no_wrap(format!("v{}", env!("CARGO_PKG_VERSION")), fonts::list(10.5), theme::faint());
+    // Grundlinie wie die Überschrift: unten bündig, etwas angehoben
+    let rect = Rect::from_min_size(pos2(title.right() + 6.0, title.bottom() - galley.size().y - 1.5), galley.size());
+    let resp = ui.interact(rect.expand(3.0), ui.id().with("version"), Sense::click()).on_hover_text(tr("Über FadeWerk DJ")).on_hover_cursor(egui::CursorIcon::PointingHand);
+    let color = if resp.hovered() { theme::dim() } else { theme::faint() };
+    ui.painter().galley_with_override_text_color(rect.min, galley, color);
+    if resp.clicked() {
+        out.push(MixerAction::OpenAbout);
+    }
 }
 
 fn small(text: &'static str) -> RichText {
@@ -65,7 +77,8 @@ fn scale(ui: &egui::Ui) -> f32 {
 }
 
 pub fn show_mixer(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerAction>) {
-    section_title(ui, "MIXER");
+    let title = ui.vertical_centered(|ui| ui.label(RichText::new(tr("MIXER")).font(fonts::bold(15.0)).extra_letter_spacing(2.5))).inner;
+    version_tag(ui, title.rect, out);
     eq_strip(ui, m, out);
 
     // Pegelbrücke: LED A | Fader A | MAIN | Fader B | LED B

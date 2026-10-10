@@ -15,4 +15,4 @@ pub use meta::{Cover, FileInfo, TagFields, TrackMeta, read_cover, read_tags, wri
 pub use scan::{DirListing, is_system_dir, list_dir, walk_audio};
 pub use sketch::WaveSketch;
 pub use waveform::Waveform;
-pub use worker::{Library, Loaded, Response, SCAN_LIMIT};
+pub use worker::{Library, Loaded, Response, SCAN_LIMIT, Stamp, file_stamp};

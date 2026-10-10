@@ -37,7 +37,11 @@ pub struct Loaded {
 pub const SCAN_LIMIT: usize = 50_000;
 
 pub enum Response {
-    Meta(PathBuf, TrackMeta),
+    /// Gelesene Tags samt Größe und Änderungszeit der Datei (`None`, wenn die nicht lesbar sind).
+    Meta { path: PathBuf, meta: TrackMeta, stamp: Option<Stamp> },
+    /// Ergebnis von [`Library::check_meta`]: die Datei ist unverändert, die gemerkten Tags gelten.
+    /// (Hat sie sich geändert, kommt stattdessen [`Response::Meta`] mit den neuen Tags.)
+    MetaValid { path: PathBuf, stamp: Stamp },
     /// Gefundene Titel einer Ordnersuche. `done` kommt einmal am Ende, `limited` wenn die Höchstzahl erreicht ist.
     Scan { token: u64, tracks: Vec<PathBuf>, done: bool, limited: bool },
     Loaded(Box<Loaded>),
@@ -45,7 +49,7 @@ pub enum Response {
     /// Ergebnis von [`Library::analyze_bpm`]. `analyzed` = aus der Tempo-Erkennung, sonst aus dem Tag.
     /// `bpm` ist `None`, wenn die Datei nicht lesbar ist oder kein Beat erkennbar war.
     Bpm { path: PathBuf, bpm: Option<f32>, analyzed: bool },
-    /// Ergebnis von [`Library::request_sketch`], `None` wenn die Datei nicht lesbar ist.
+    /// Ergebnis von [`Library::request_sketches`], `None` wenn die Datei nicht lesbar ist.
     Sketch { path: PathBuf, sketch: Option<Arc<WaveSketch>> },
 }
 
@@ -56,6 +60,21 @@ struct SketchQueue {
     jobs: Mutex<VecDeque<PathBuf>>,
     ready: Condvar,
 }
+
+/// Größe und Änderungszeit (Millisekunden seit 1970) einer Datei: ändert sich eins davon, gelten gemerkte
+/// Angaben (Tags, BPM) nicht mehr.
+pub type Stamp = (u64, u64);
+
+/// Größe und Änderungszeit der Datei, `None` wenn sie nicht lesbar ist.
+pub fn file_stamp(path: &std::path::Path) -> Option<Stamp> {
+    let m = std::fs::metadata(path).ok()?;
+    let modified = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as u64;
+    Some((m.len(), modified))
+}
+
+/// Threads zum Lesen der Tags. Auf Netzlaufwerken wartet jeder fast nur auf Antworten des Servers;
+/// mehrere gleichzeitig verkürzen das Lesen einer großen Sammlung deutlich.
+const TAG_THREADS: usize = 4;
 
 /// Threads für die BPM-Analyse. Zwei reichen: Dekodieren ist schwer, und während des Auflegens soll
 /// genug Rechenzeit für Oberfläche und Laden bleiben.
@@ -79,6 +98,7 @@ struct LoadJob {
 /// Getrennt, damit ein Ordner voller Tag-Anfragen das Laden in einen Player nicht aufhält.
 pub struct Library {
     meta_tx: Sender<PathBuf>,
+    check_tx: Sender<(PathBuf, Stamp)>,
     scan_tx: Sender<(u64, Vec<(PathBuf, bool)>)>,
     /// Kennung der aktuellen Ordnersuche; ältere Suchen brechen ab.
     scan_current: Arc<AtomicU64>,
@@ -96,6 +116,7 @@ impl Library {
     /// Startet die Arbeiter. `wake` wird nach jedem Ergebnis aufgerufen, damit die Oberfläche neu zeichnet.
     pub fn start(wake: Arc<dyn Fn() + Send + Sync>) -> Self {
         let (meta_tx, meta_rx) = unbounded::<PathBuf>();
+        let (check_tx, check_rx) = unbounded::<(PathBuf, Stamp)>();
         let (load_tx, load_rx) = unbounded::<LoadJob>();
         let (tx, rx) = unbounded::<Response>();
         let (scan_tx, scan_rx) = unbounded::<(u64, Vec<(PathBuf, bool)>)>();
@@ -156,19 +177,25 @@ impl Library {
                 .expect("Such-Thread startet nicht");
         }
 
-        {
-            let tx = tx.clone();
-            let wake = wake.clone();
+        for i in 0..TAG_THREADS {
+            let (tx, wake, meta_rx, check_rx) = (tx.clone(), wake.clone(), meta_rx.clone(), check_rx.clone());
             thread::Builder::new()
-                .name("fw-tags".into())
+                .name(format!("fw-tags-{i}"))
                 .spawn(move || {
-                    for path in meta_rx {
-                        let resp = match read_meta(&path) {
-                            Ok(m) => Response::Meta(path, m),
-                            Err(e) => {
-                                log::debug!("Tags von {} nicht lesbar: {e}", path.display());
-                                Response::Meta(path.clone(), TrackMeta::from_filename(&path))
-                            }
+                    loop {
+                        // Tags, die noch niemand kennt, gehen vor dem Prüfen gemerkter Tags
+                        let resp = crossbeam_channel::select_biased! {
+                            recv(meta_rx) -> job => match job {
+                                Ok(path) => read_tags_response(path),
+                                Err(_) => break,
+                            },
+                            recv(check_rx) -> job => match job {
+                                Ok((path, stamp)) => match file_stamp(&path) {
+                                    Some(now) if now == stamp => Response::MetaValid { path, stamp },
+                                    _ => read_tags_response(path),
+                                },
+                                Err(_) => break,
+                            },
                         };
                         if tx.send(resp).is_err() {
                             break;
@@ -223,7 +250,7 @@ impl Library {
             })
             .expect("Lade-Thread startet nicht");
 
-        Self { meta_tx, scan_tx, scan_current, load_tx, bpm_tx, bpm_generation, sketches, sketch_cache, rx }
+        Self { meta_tx, check_tx, scan_tx, scan_current, load_tx, bpm_tx, bpm_generation, sketches, sketch_cache, rx }
     }
 
     /// Startet eine Suche nach Titeln in `paths`, Ordner für Ordner in dieser Reihenfolge; `true` heißt
@@ -242,6 +269,13 @@ impl Library {
         let _ = self.meta_tx.send(path);
     }
 
+    /// Prüft im Hintergrund, ob gemerkte Tags noch gelten (Datei mit derselben Größe und Änderungszeit).
+    /// Antwort [`Response::MetaValid`] oder, bei geänderter Datei, [`Response::Meta`] mit neuen Tags.
+    /// Läuft nachrangig: unbekannte Tags ([`Self::request_meta`]) werden zuerst gelesen.
+    pub fn check_meta(&self, path: PathBuf, stamp: Stamp) {
+        let _ = self.check_tx.send((path, stamp));
+    }
+
     pub fn load(&self, deck: usize, token: u64, path: PathBuf) {
         let sketch_cache = self.sketch_cache.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let _ = self.load_tx.send(LoadJob { deck, token, path, sketch_cache });
@@ -252,10 +286,11 @@ impl Library {
         *self.sketch_cache.lock().unwrap_or_else(|e| e.into_inner()) = dir;
     }
 
-    /// Fordert die kleine Wellenform eines Titels an, Ergebnis als [`Response::Sketch`].
-    /// Aus dem Cache, sonst wird die Datei im Hintergrund dekodiert. Neuere Anfragen gehen vor.
-    pub fn request_sketch(&self, path: PathBuf) {
-        self.sketches.jobs.lock().unwrap_or_else(|e| e.into_inner()).push_back(path);
+    /// Fordert die kleinen Wellenformen von Titeln an, Ergebnisse als [`Response::Sketch`].
+    /// Aus dem Cache, sonst wird die Datei im Hintergrund dekodiert. Der erste Titel kommt zuerst dran,
+    /// und die ganze Gruppe geht vor ältere Anfragen (etwa die Zeilen, die vor dem Scrollen sichtbar waren).
+    pub fn request_sketches(&self, paths: Vec<PathBuf>) {
+        self.sketches.jobs.lock().unwrap_or_else(|e| e.into_inner()).extend(paths.into_iter().rev());
         self.sketches.ready.notify_one();
     }
 
@@ -328,4 +363,17 @@ fn analyze(job: &BpmJob) -> (Option<f32>, bool) {
             (None, true)
         }
     }
+}
+
+/// Liest die Tags einer Datei; sind sie unlesbar, gelten die Angaben aus dem Dateinamen.
+fn read_tags_response(path: PathBuf) -> Response {
+    let stamp = file_stamp(&path);
+    let meta = match read_meta(&path) {
+        Ok(m) => m,
+        Err(e) => {
+            log::debug!("Tags von {} nicht lesbar: {e}", path.display());
+            TrackMeta::from_filename(&path)
+        }
+    };
+    Response::Meta { path, meta, stamp }
 }

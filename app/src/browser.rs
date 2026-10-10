@@ -37,6 +37,10 @@ pub enum BrowserAction {
     TreeWidth(f32),
     /// Höhe des Ordnerbaums, wenn er über der Titelliste steht (Browser rechts).
     TreeHeight(f32),
+    /// Ordner in Spalten statt als Baum zeigen.
+    FolderColumns(bool),
+    /// Anteil der Spalten an der Breite, wenn der Browser unten steht (0 = Standard).
+    ColumnsShare(f32),
     /// Erweiterte Suche zum Speichern: „Suchfilter merken“ an/aus, „Doppelte Titel ausblenden“
     /// und die Suche (leer, wenn nicht gemerkt).
     SearchMemory(bool, bool, AdvancedSearch),
@@ -270,6 +274,10 @@ const TREE_MIN_W: f32 = 140.0;
 const TREE_MIN_H: f32 = 90.0;
 /// Breite des Griffs zwischen Baum und Titelliste.
 const SPLIT_W: f32 = 9.0;
+/// Breite einer Spalte in der Spaltenansicht der Ordner: drei passen nebeneinander, in diesen Grenzen.
+const FOLDER_COL_W: std::ops::RangeInclusive<f32> = 140.0..=240.0;
+/// Anteil der Spaltenansicht an der Breite, wenn der Browser unten steht (Rest: Titelliste).
+const DEFAULT_COLUMNS_SHARE: f32 = 0.4;
 
 /// Ein Einstiegspunkt im Ordnerbaum.
 #[derive(Clone)]
@@ -296,8 +304,19 @@ pub struct Browser {
     selected: Vec<PathBuf>,
     /// Alle Titel in den Ordnern und ihren Unterordnern, kommen nach und nach aus der Hintergrundsuche.
     tracks: Vec<PathBuf>,
+    /// `tracks` kommt aus dem Ordner-Cache; die Live-Suche sammelt in `live` und ersetzt die Liste am Ende.
+    prefilled: bool,
+    live: Vec<PathBuf>,
     /// Höhe des Baums über der Titelliste (Browser rechts) in Punkten, 0 = automatisch.
     pub tree_height: f32,
+    /// Ordner in Spalten statt als Baum.
+    pub folder_columns: bool,
+    /// Anteil der Spalten an der Breite, wenn der Browser unten steht, 0 = [`DEFAULT_COLUMNS_SHARE`].
+    pub columns_share: f32,
+    /// Wurzel, unter der die Spaltenansicht die Ordnerkette zeigt (Wurzeln können ineinander liegen).
+    col_root: Option<PathBuf>,
+    /// Zuletzt gezeigte Kette der Spaltenansicht (gewählter Ordner, Historie); ändert sie sich, wird mitgescrollt.
+    col_seen: Option<(Option<PathBuf>, Option<HistView>)>,
     /// Ausgewählte Titel in der Liste.
     picked: Selection<Row>,
     /// Statt der Ordner ist die Historie gewählt.
@@ -382,6 +401,8 @@ impl Browser {
             roots,
             selected: Vec::new(),
             tracks: Vec::new(),
+            prefilled: false,
+            live: Vec::new(),
             picked: Selection::default(),
             hist: None,
             exists: HashMap::new(),
@@ -390,6 +411,10 @@ impl Browser {
             queued: None,
             tree_width: if tree_width > 0.0 { tree_width } else { DEFAULT_TREE_W },
             tree_height: 0.0,
+            folder_columns: false,
+            columns_share: 0.0,
+            col_root: None,
+            col_seen: None,
             columns: TrackColumn::DEFAULT.to_vec(),
             widths: HashMap::new(),
             table_gen: 0,
@@ -639,6 +664,7 @@ impl Browser {
     /// Öffnet einen Ordner (und nur diesen). Die Titel samt Unterordnern sucht die Bibliothek im
     /// Hintergrund (siehe [`Self::take_pending_scan`]); sie erscheinen, sobald sie gefunden sind.
     pub fn open(&mut self, path: PathBuf) {
+        self.note_root(&path);
         self.hist = None;
         self.selected = vec![path];
         self.filter.clear();
@@ -657,9 +683,18 @@ impl Browser {
             }
             self.selected.remove(i);
         } else {
+            self.note_root(path);
             self.selected.push(path.to_path_buf());
         }
         self.rescan();
+    }
+
+    /// Wurde eine Wurzel gewählt, zeigt die Spaltenansicht die Ordner unter ihr (auch wenn eine andere
+    /// Wurzel wie „Musik“ im Benutzerordner näher läge).
+    fn note_root(&mut self, path: &Path) {
+        if self.roots.iter().any(|r| r.path == path) {
+            self.col_root = Some(path.to_path_buf());
+        }
     }
 
     /// Liest Ordnerbaum und Titelliste neu ein (Taste „Aktualisieren“, ⌘R, F5).
@@ -674,6 +709,8 @@ impl Browser {
 
     fn rescan(&mut self) {
         self.tracks.clear();
+        self.prefilled = false;
+        self.live.clear();
         self.tracks_gen += 1;
         self.limited = false;
         self.picked.clear();
@@ -738,11 +775,36 @@ impl Browser {
         if token != self.scan_token {
             return;
         }
-        self.tracks.extend(tracks);
-        self.tracks_gen += 1;
+        if self.prefilled {
+            // Gemerkte Liste bleibt stehen, bis die Live-Suche fertig ist; dann gilt deren Ergebnis
+            self.live.extend(tracks);
+            if done {
+                self.prefilled = false;
+                let live = std::mem::take(&mut self.live);
+                if live != self.tracks {
+                    log::debug!("Ordner-Cache: Liste geändert ({} → {} Titel)", self.tracks.len(), live.len());
+                    self.tracks = live;
+                    self.tracks_gen += 1;
+                    self.meta_requested_upto = 0;
+                }
+            }
+        } else {
+            self.tracks.extend(tracks);
+            self.tracks_gen += 1;
+        }
         if done {
             self.scanning = false;
             self.limited = limited;
+        }
+    }
+
+    /// Zeigt die gemerkte Titelliste, solange die gerade gestartete Live-Suche läuft.
+    pub fn prefill(&mut self, tracks: Vec<PathBuf>) {
+        if self.scanning && self.tracks.is_empty() {
+            log::debug!("Ordner-Cache: {} Titel gleich gezeigt, Live-Suche läuft", tracks.len());
+            self.tracks = tracks;
+            self.tracks_gen += 1;
+            self.prefilled = true;
         }
     }
 
@@ -812,6 +874,9 @@ impl Browser {
         let compact = ctx.side || ui.available_width() < HEADER_ONE_ROW_W;
         ui.horizontal(|ui| {
             ui.label(RichText::new(tr("ORDNER")).font(fonts::bold(16.0)).extra_letter_spacing(1.5));
+            if !compact {
+                self.view_switch(ui, out);
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button(RichText::new("⚙").size(15.0)).on_hover_text(tr("Einstellungen (⌘,)")).clicked() {
                     out.push(BrowserAction::OpenSettings);
@@ -838,6 +903,8 @@ impl Browser {
         });
         if compact {
             ui.horizontal(|ui| {
+                // In der schmalen Kopfzeile stehen Baum/Spalten vorn in der zweiten Zeile
+                self.view_switch(ui, out);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     self.header_tools(ui, ctx, out, true);
                 });
@@ -865,7 +932,11 @@ impl Browser {
             ui.spacing_mut().item_spacing.y = 0.0;
             ui.allocate_ui_with_layout(vec2(ui.available_width(), tree_h), egui::Layout::top_down(egui::Align::Min), |ui| {
                 ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
-                self.tree(ui, ctx, out);
+                if self.folder_columns {
+                    self.folder_columns(ui, ctx, out);
+                } else {
+                    self.tree(ui, ctx, out);
+                }
             });
             self.row_splitter(ui, tree_h, max_h, out);
             let list_h = ui.available_height();
@@ -876,13 +947,19 @@ impl Browser {
         } else {
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
-                let max_w = (ui.available_width() * 0.6).max(TREE_MIN_W);
-                let tree_w = self.tree_width.clamp(TREE_MIN_W, max_w);
+                let total = ui.available_width();
+                let max_w = (total * 0.6).max(TREE_MIN_W);
+                // Spalten brauchen mehr Platz als der Baum: Standard 40 % der Breite
+                let tree_w = if self.folder_columns { self.columns_share() * total } else { self.tree_width }.clamp(TREE_MIN_W, max_w);
                 ui.allocate_ui_with_layout(vec2(tree_w, avail), egui::Layout::top_down(egui::Align::Min), |ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
-                    self.tree(ui, ctx, out);
+                    if self.folder_columns {
+                        self.folder_columns(ui, ctx, out);
+                    } else {
+                        self.tree(ui, ctx, out);
+                    }
                 });
-                self.splitter(ui, avail, tree_w, max_w, out);
+                self.splitter(ui, avail, tree_w, total, max_w, out);
                 ui.allocate_ui_with_layout(vec2(ui.available_width(), avail), egui::Layout::top_down(egui::Align::Min), |ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     self.track_list(ui, ctx, out);
@@ -935,20 +1012,39 @@ impl Browser {
         }
     }
 
-    /// Griff zwischen Ordnerbaum und Titelliste: ziehen ändert die Breite, Doppelklick setzt sie zurück.
-    fn splitter(&mut self, ui: &mut egui::Ui, height: f32, tree_w: f32, max_w: f32, out: &mut Vec<BrowserAction>) {
+    fn columns_share(&self) -> f32 {
+        if self.columns_share > 0.0 { self.columns_share } else { DEFAULT_COLUMNS_SHARE }
+    }
+
+    /// Griff zwischen Ordnerbaum (oder Spalten) und Titelliste: ziehen ändert die Breite, Doppelklick setzt
+    /// sie zurück. Der Baum merkt sich Punkte, die Spalten einen Anteil an der Breite `total`.
+    fn splitter(&mut self, ui: &mut egui::Ui, height: f32, tree_w: f32, total: f32, max_w: f32, out: &mut Vec<BrowserAction>) {
         let (rect, resp) = ui.allocate_exact_size(vec2(SPLIT_W, height), Sense::click_and_drag());
         let resp = resp.on_hover_cursor(CursorIcon::ResizeHorizontal);
         if resp.dragged() {
             ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
-            self.tree_width = (tree_w + resp.drag_delta().x).clamp(TREE_MIN_W, max_w);
+            let w = (tree_w + resp.drag_delta().x).clamp(TREE_MIN_W, max_w);
+            if self.folder_columns {
+                self.columns_share = w / total.max(1.0);
+            } else {
+                self.tree_width = w;
+            }
         }
         if resp.drag_stopped() {
-            out.push(BrowserAction::TreeWidth(self.tree_width.round()));
+            out.push(if self.folder_columns {
+                BrowserAction::ColumnsShare((self.columns_share * 1000.0).round() / 1000.0)
+            } else {
+                BrowserAction::TreeWidth(self.tree_width.round())
+            });
         }
         if resp.double_clicked() {
-            self.tree_width = DEFAULT_TREE_W;
-            out.push(BrowserAction::TreeWidth(DEFAULT_TREE_W));
+            if self.folder_columns {
+                self.columns_share = 0.0;
+                out.push(BrowserAction::ColumnsShare(0.0));
+            } else {
+                self.tree_width = DEFAULT_TREE_W;
+                out.push(BrowserAction::TreeWidth(DEFAULT_TREE_W));
+            }
         }
         let active = resp.hovered() || resp.dragged();
         let (w, color) = if active { (2.0, theme::ink().gamma_multiply(0.5)) } else { (1.0, theme::line()) };
@@ -966,25 +1062,15 @@ impl Browser {
     /// Zeichnet einen Ordner im Baum samt aufgeklappter Unterordner.
     fn tree_node(&mut self, ui: &mut egui::Ui, name: &str, path: &Path, depth: usize, removable: bool, out: &mut Vec<BrowserAction>) {
         let id = ui.id().with(("tree", path));
-        let selected = self.hist.is_none() && self.selected.iter().any(|p| p == path);
-        // Ein Menü auf einem ausgewählten Ordner gilt für alle ausgewählten
-        let count = if selected { self.selected.len() } else { 1 };
+        let selected = self.is_selected(path);
+        let count = self.menu_count(selected);
         let state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, depth == 0 && selected);
-        let mut open_this = false;
-        let mut toggle_this = false;
-        let mut menu = None;
+        let mut input = FolderInput::default();
         state
             .show_header(ui, |ui| {
                 let icon = if depth == 0 { "🗀" } else { "📁" };
                 let resp = tree_button(ui, &format!("{icon} {name}"), selected);
-                if resp.clicked() {
-                    if ui.input(|i| i.modifiers.command) { toggle_this = true } else { open_this = true }
-                }
-                // Rechtsklick auf einen nicht ausgewählten Ordner wählt ihn aus, wie im Finder
-                if resp.secondary_clicked() && !selected {
-                    open_this = true;
-                }
-                resp.context_menu(|ui| menu = folder_menu(ui, count, removable));
+                input = folder_input(ui, resp, selected, count, removable);
             })
             .body(|ui| {
                 for child in self.children(path) {
@@ -992,12 +1078,26 @@ impl Browser {
                     self.tree_node(ui, &n, &child, depth + 1, false, out);
                 }
             });
-        if open_this {
+        self.apply_folder_input(path, input, out);
+    }
+
+    fn is_selected(&self, path: &Path) -> bool {
+        self.hist.is_none() && self.selected.iter().any(|p| p == path)
+    }
+
+    /// Ein Menü auf einem ausgewählten Ordner gilt für alle ausgewählten.
+    fn menu_count(&self, selected: bool) -> usize {
+        if selected { self.selected.len() } else { 1 }
+    }
+
+    /// Führt Klick, ⌘/Strg-Klick oder Menüeintrag auf einem Ordner aus (Baum und Spalten).
+    fn apply_folder_input(&mut self, path: &Path, input: FolderInput, out: &mut Vec<BrowserAction>) {
+        if input.open {
             self.open(path.to_path_buf());
-        } else if toggle_this {
+        } else if input.toggle {
             self.toggle_folder(path);
         }
-        match menu {
+        match input.menu {
             Some(FolderMenu::Op(op)) => {
                 if !self.selected.iter().any(|p| p == path) {
                     self.open(path.to_path_buf());
@@ -1010,6 +1110,82 @@ impl Browser {
         }
     }
 
+    /// Spaltenansicht: links die Wurzeln und die Historie, rechts daneben je eine Spalte
+    /// mit den Unterordnern des gewählten Ordners und seiner Eltern. Die Titel stehen darunter in der Liste.
+    fn folder_columns(&mut self, ui: &mut egui::Ui, ctx: &BrowserCtx<'_>, out: &mut Vec<BrowserAction>) {
+        let focus = if self.hist.is_some() { None } else { self.selected.last().cloned() };
+        // Ordner von der Wurzel bis zum gewählten; jeder bekommt eine Spalte mit seinen Unterordnern
+        let mut chain = Vec::new();
+        if let Some(f) = &focus
+            && let Some(root) = self.column_root(f)
+        {
+            chain = f.ancestors().take_while(|p| p.starts_with(&root)).map(Path::to_path_buf).collect();
+            chain.reverse();
+        }
+        let seen = Some((focus.clone(), self.hist.clone()));
+        let follow = self.col_seen != seen;
+        self.col_seen = seen;
+        let h = ui.available_height();
+        let w = (ui.available_width() / 3.0).clamp(*FOLDER_COL_W.start(), *FOLDER_COL_W.end()).floor();
+        egui::ScrollArea::horizontal().id_salt("folder-columns").auto_shrink([false, false]).show(ui, |ui| {
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let mut last = folder_column(ui, "col-roots", w, h, |ui| {
+                    for root in self.roots.clone() {
+                        let selected = self.is_selected(&root.path);
+                        let open = chain.first() == Some(&root.path);
+                        let resp = column_item(ui, &format!("🗀 {}", root.name()), selected, open, true);
+                        if follow && focus.as_ref() == Some(&root.path) {
+                            resp.scroll_to_me(None);
+                        }
+                        let input = folder_input(ui, resp, selected, self.menu_count(selected), root.user);
+                        self.apply_folder_input(&root.path, input, out);
+                    }
+                    let resp = column_item(ui, &format!("🕘 {}", tr("Historie")), self.hist == Some(HistView::Root), self.hist.is_some(), true);
+                    self.history_root_input(resp, ctx, out);
+                });
+                if self.hist.is_some() {
+                    last = folder_column(ui, "col-history", w, h, |ui| {
+                        let (day, menu) = self.history_days(ui, ctx, true);
+                        self.apply_day(day, menu, ctx, out);
+                    });
+                }
+                for (k, dir) in chain.iter().enumerate() {
+                    let children = self.children(dir);
+                    if children.is_empty() {
+                        break;
+                    }
+                    last = folder_column(ui, ("col", dir), w, h, |ui| {
+                        for child in children {
+                            let n = child.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                            let selected = self.is_selected(&child);
+                            let open = chain.get(k + 1) == Some(&child);
+                            let resp = column_item(ui, &format!("📁 {n}"), selected, open, true);
+                            if follow && focus.as_ref() == Some(&child) {
+                                resp.scroll_to_me(None);
+                            }
+                            let input = folder_input(ui, resp, selected, self.menu_count(selected), false);
+                            self.apply_folder_input(&child, input, out);
+                        }
+                    });
+                }
+                // Neue Spalte rechts ins Bild holen (nach den Zeilen, damit dieses Ziel gilt)
+                if follow {
+                    ui.scroll_to_rect(last, None);
+                }
+            });
+        });
+    }
+
+    /// Wurzel, unter der die Spalten den Ordner zeigen: die zuletzt gewählte, sonst die nächstliegende.
+    fn column_root(&self, path: &Path) -> Option<PathBuf> {
+        let roots = || self.roots.iter().map(|r| &r.path).filter(|r| path.starts_with(r));
+        roots()
+            .find(|r| self.col_root.as_ref() == Some(*r))
+            .or_else(|| roots().max_by_key(|r| r.components().count()))
+            .cloned()
+    }
+
     /// Virtueller Ordner „Historie“ unter den Ordnern im Baum, darin die Tage (neueste zuerst).
     fn history_tree(&mut self, ui: &mut egui::Ui, ctx: &BrowserCtx<'_>, out: &mut Vec<BrowserAction>) {
         let id = ui.id().with("history-root");
@@ -1017,74 +1193,97 @@ impl Browser {
         if std::mem::take(&mut self.expand_history) {
             state.set_open(true);
         }
-        let mut open_root = false;
-        let mut import = false;
-        let mut open_day: Option<String> = None;
-        let mut day_menu: Option<(String, DayMenu)> = None;
+        let mut root_resp = None;
+        let mut picked = (None, None);
         let root_selected = self.hist == Some(HistView::Root);
         state
             .show_header(ui, |ui| {
-                let resp = tree_button(ui, &format!("🕘 {}", tr("Historie")), root_selected);
-                if resp.clicked() || resp.secondary_clicked() {
-                    open_root = true;
-                }
-                resp.on_hover_text(tr("Gespielte Titel, Tag für Tag")).context_menu(|ui| {
-                    if ui.add_enabled(!ctx.importing, Button::new(tr("Historie importieren …"))).clicked() {
-                        import = true;
-                        ui.close();
-                    }
-                });
+                root_resp = Some(tree_button(ui, &format!("🕘 {}", tr("Historie")), root_selected));
             })
-            .body(|ui| {
-                if ctx.history.is_empty() {
-                    ui.label(RichText::new(tr("noch leer")).font(fonts::list(12.0)).color(theme::faint()));
-                }
-                for day in ctx.history.days() {
-                    let selected = self.hist == Some(HistView::Day(day.date.clone()));
-                    // Umbenennen direkt im Baum: Enter oder Klick daneben übernimmt, Esc bricht ab
-                    if let Some((date, text, focus)) = self.renaming.as_mut().filter(|r| r.0 == day.date) {
-                        let r = ui.add(egui::TextEdit::singleline(text).hint_text(tr("Name, z. B. Omas Geburtstag")).desired_width(ui.available_width() - 8.0));
-                        if std::mem::take(focus) {
-                            r.request_focus();
-                        }
-                        let esc = ui.input(|i| i.key_pressed(Key::Escape));
-                        if esc {
-                            self.renaming = None;
-                        } else if r.lost_focus() {
-                            out.push(BrowserAction::HistoryRename { date: date.clone(), name: text.trim().to_owned() });
-                            self.renaming = None;
-                        }
-                        continue;
-                    }
-                    let resp = tree_button(ui, &format!("📅 {}", day.label()), selected);
-                    if resp.clicked() || (resp.secondary_clicked() && !selected) {
-                        open_day = Some(day.date.clone());
-                    }
-                    if resp.double_clicked() {
-                        day_menu = Some((day.date.clone(), DayMenu::Rename));
-                    }
-                    let n = day.entries.len();
-                    resp.on_hover_text(trf("{} Titel", &[&n])).context_menu(|ui| {
-                        if let Some(m) = history_menu(ui) {
-                            day_menu = Some((day.date.clone(), m));
-                        }
-                    });
-                }
-            });
-        if open_root {
+            .body(|ui| picked = self.history_days(ui, ctx, false));
+        if let Some(resp) = root_resp {
+            let opened = self.history_root_input(resp, ctx, out);
+            if opened {
+                let mut st = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
+                st.set_open(true);
+                st.store(ui.ctx());
+            }
+        }
+        self.apply_day(picked.0, picked.1, ctx, out);
+    }
+
+    /// Klick und Menü auf dem Ordner „Historie“ (Baum und Spalten). `true`, wenn er geöffnet wurde.
+    fn history_root_input(&mut self, resp: egui::Response, ctx: &BrowserCtx<'_>, out: &mut Vec<BrowserAction>) -> bool {
+        let open = resp.clicked() || resp.secondary_clicked();
+        let mut import = false;
+        resp.on_hover_text(tr("Gespielte Titel, Tag für Tag")).context_menu(|ui| {
+            if ui.add_enabled(!ctx.importing, Button::new(tr("Historie importieren …"))).clicked() {
+                import = true;
+                ui.close();
+            }
+        });
+        if open {
             self.hist = Some(HistView::Root);
             self.picked.clear();
-            let mut st = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
-            st.set_open(true);
-            st.store(ui.ctx());
         }
         if import {
             out.push(BrowserAction::HistoryImport);
         }
+        open
+    }
+
+    /// Tage der Historie als Einträge, im Baum oder als Spalte. Liefert den angeklickten Tag und ein
+    /// gewähltes Menü; ausgeführt wird beides in [`Self::apply_day`].
+    fn history_days(&mut self, ui: &mut egui::Ui, ctx: &BrowserCtx<'_>, columns: bool) -> (Option<String>, Option<(String, DayMenu)>) {
+        let mut open_day: Option<String> = None;
+        let mut day_menu: Option<(String, DayMenu)> = None;
+        if ctx.history.is_empty() {
+            ui.label(RichText::new(tr("noch leer")).font(fonts::list(12.0)).color(theme::faint()));
+        }
+        for day in ctx.history.days() {
+            let selected = self.hist == Some(HistView::Day(day.date.clone()));
+            // Umbenennen direkt im Baum: Enter oder Klick daneben übernimmt, Esc bricht ab
+            if let Some((date, text, focus)) = self.renaming.as_mut().filter(|r| r.0 == day.date) {
+                let r = ui.add(egui::TextEdit::singleline(text).hint_text(tr("Name, z. B. Omas Geburtstag")).desired_width(ui.available_width() - 8.0));
+                if std::mem::take(focus) {
+                    r.request_focus();
+                }
+                let esc = ui.input(|i| i.key_pressed(Key::Escape));
+                if esc {
+                    self.renaming = None;
+                } else if r.lost_focus() {
+                    day_menu = Some((date.clone(), DayMenu::Renamed(text.trim().to_owned())));
+                    self.renaming = None;
+                }
+                continue;
+            }
+            let label = format!("📅 {}", day.label());
+            let resp = if columns { column_item(ui, &label, selected, false, false) } else { tree_button(ui, &label, selected) };
+            if resp.clicked() || (resp.secondary_clicked() && !selected) {
+                open_day = Some(day.date.clone());
+            }
+            if resp.double_clicked() {
+                day_menu = Some((day.date.clone(), DayMenu::Rename));
+            }
+            let n = day.entries.len();
+            resp.on_hover_text(trf("{} Titel", &[&n])).context_menu(|ui| {
+                if let Some(m) = history_menu(ui) {
+                    day_menu = Some((day.date.clone(), m));
+                }
+            });
+        }
+        (open_day, day_menu)
+    }
+
+    fn apply_day(&mut self, open_day: Option<String>, day_menu: Option<(String, DayMenu)>, ctx: &BrowserCtx<'_>, out: &mut Vec<BrowserAction>) {
         if let Some(date) = open_day {
             self.open_history_day(date);
         }
         if let Some((date, m)) = day_menu {
+            if let DayMenu::Renamed(name) = m {
+                out.push(BrowserAction::HistoryRename { date, name });
+                return;
+            }
             let Some(day) = ctx.history.day(&date) else { return };
             // Nur vorhandene Dateien gehen in die Playlists
             let mut paths = || day.entries.iter().map(|e| e.path.clone()).filter(|p| *self.exists.entry(p.clone()).or_insert_with(|| p.is_file())).collect::<Vec<_>>();
@@ -1093,6 +1292,7 @@ impl Browser {
                 DayMenu::Add(list) => out.push(BrowserAction::Add { list, paths: paths() }),
                 DayMenu::Distribute => out.push(BrowserAction::Distribute(paths())),
                 DayMenu::Rename => self.renaming = Some((date.clone(), day.name.clone(), true)),
+                DayMenu::Renamed(_) => {}
                 DayMenu::Export(format) => out.push(BrowserAction::HistoryExport { date: date.clone(), format }),
                 DayMenu::Delete => out.push(BrowserAction::HistoryDelete(date.clone())),
             }
@@ -1342,7 +1542,8 @@ impl Browser {
                 }
                 if self.scanning {
                     ui.add(egui::Spinner::new().size(14.0));
-                    ui.label(RichText::new(tr("Durchsucht Unterordner …")).size(12.0).color(theme::dim()));
+                    let text = if self.prefilled { tr("Prüft auf Änderungen …") } else { tr("Durchsucht Unterordner …") };
+                    ui.label(RichText::new(text).size(12.0).color(theme::dim()));
                     if ui.small_button(tr("Stopp")).on_hover_text(tr("Suche anhalten, gefundene Titel bleiben")).clicked() {
                         self.scanning = false;
                         self.stopped = true;
@@ -1917,6 +2118,8 @@ enum DayMenu {
     Add(usize),
     Distribute,
     Rename,
+    /// Umbenennen im Baum abgeschlossen, mit dem neuen Namen.
+    Renamed(String),
     Export(ExportFormat),
     Delete,
 }
@@ -1965,6 +2168,108 @@ enum FolderMenu {
     Op(FolderOp),
     Reveal,
     Remove,
+}
+
+/// Was der Nutzer mit einem Ordner im Baum oder in den Spalten gemacht hat.
+#[derive(Default)]
+struct FolderInput {
+    open: bool,
+    /// ⌘/Strg-Klick: zur Auswahl hinzufügen oder herausnehmen.
+    toggle: bool,
+    menu: Option<FolderMenu>,
+}
+
+/// Wertet Klick, ⌘/Strg-Klick und Rechtsklick (samt Menü) auf einem Ordner aus.
+fn folder_input(ui: &egui::Ui, resp: egui::Response, selected: bool, count: usize, removable: bool) -> FolderInput {
+    let mut input = FolderInput::default();
+    if resp.clicked() {
+        if ui.input(|i| i.modifiers.command) { input.toggle = true } else { input.open = true }
+    }
+    // Rechtsklick auf einen nicht ausgewählten Ordner wählt ihn aus, wie im Finder
+    if resp.secondary_clicked() && !selected {
+        input.open = true;
+    }
+    resp.context_menu(|ui| input.menu = folder_menu(ui, count, removable));
+    input
+}
+
+/// Eine Spalte der Spaltenansicht: feste Breite, senkrecht scrollbar, Trennlinie rechts. Liefert ihre Fläche.
+fn folder_column(ui: &mut egui::Ui, id: impl std::hash::Hash + std::fmt::Debug, width: f32, height: f32, add: impl FnOnce(&mut egui::Ui)) -> egui::Rect {
+    let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+    let inner = rect.shrink2(vec2(4.0, 2.0));
+    let mut col = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::Min)));
+    egui::ScrollArea::vertical().id_salt(id).auto_shrink([false, false]).min_scrolled_height(0.0).show(&mut col, |ui| {
+        ui.spacing_mut().item_spacing.y = 1.0;
+        add(ui);
+    });
+    ui.painter().vline(rect.right() - 0.5, rect.y_range(), egui::Stroke::new(1.0, theme::line()));
+    rect
+}
+
+/// Zeile in der Spaltenansicht über die volle Spaltenbreite. `selected` = gewählt (Rahmen in der
+/// Auswahlfarbe), `open` = liegt auf dem Weg zum gewählten Ordner (schwach hinterlegt), `chevron` = Pfeil rechts.
+fn column_item(ui: &mut egui::Ui, text: &str, selected: bool, open: bool, chevron: bool) -> egui::Response {
+    let pad = ui.spacing().button_padding;
+    let size = vec2(ui.available_width(), ui.spacing().interact_size.y + 2.0);
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return resp;
+    }
+    let hovered = resp.hovered();
+    let p = ui.painter();
+    if selected {
+        p.rect_filled(rect, 4.0, theme::row_selected());
+    } else if open {
+        p.rect_filled(rect, 4.0, theme::ink().gamma_multiply(0.10));
+    } else if hovered {
+        p.rect_filled(rect, 4.0, theme::row_hover());
+    }
+    let color = if selected || open || hovered { theme::ink() } else { theme::dim() };
+    let arrow_w = if chevron { 12.0 } else { 0.0 };
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), fonts::list(12.5), color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(rect.width() - 2.0 * pad.x - arrow_w);
+    let galley = ui.fonts_mut(|f| f.layout_job(job));
+    let elided = galley.elided;
+    let pos = egui::pos2(rect.left() + pad.x, rect.center().y - galley.size().y / 2.0);
+    let p = ui.painter();
+    p.galley(pos, galley, color);
+    if chevron {
+        let c = egui::pos2(rect.right() - pad.x - 3.0, rect.center().y);
+        let stroke = egui::Stroke::new(1.4, color.gamma_multiply(if selected || open { 1.0 } else { 0.7 }));
+        p.line_segment([c + vec2(-2.5, -4.0), c + vec2(1.5, 0.0)], stroke);
+        p.line_segment([c + vec2(1.5, 0.0), c + vec2(-2.5, 4.0)], stroke);
+    }
+    if selected {
+        p.rect_stroke(rect, 4.0, egui::Stroke::new(1.5, theme::select_accent()), egui::StrokeKind::Inside);
+    }
+    // Abgeschnittene Namen ganz als Tooltip
+    let name = text.split_once(' ').map_or(text, |(_, n)| n).to_owned();
+    if elided { resp.on_hover_text(name) } else { resp }
+}
+
+/// Umschalter der Ordneransicht: Baum (eingerückte Zeilen) oder Spalten (Rahmen mit Fächern).
+/// Die gewählte Ansicht leuchtet in der Auswahlfarbe.
+fn view_button(ui: &mut egui::Ui, columns: bool, active: bool) -> egui::Response {
+    let tip = if columns { tr("Ordner in Spalten zeigen") } else { tr("Ordner als Baum zeigen") };
+    let h = ui.spacing().interact_size.y;
+    let resp = ui.add(egui::Button::new("").min_size(egui::vec2(h + 4.0, h))).on_hover_text(tip);
+    let color = if active { theme::select_accent() } else { ui.style().interact(&resp).fg_stroke.color };
+    let stroke = egui::Stroke::new(1.4, color);
+    let c = resp.rect.center();
+    let p = ui.painter();
+    if columns {
+        let frame = egui::Rect::from_center_size(c, egui::vec2(16.0, 11.0));
+        p.rect_stroke(frame, 1.5, stroke, egui::StrokeKind::Middle);
+        for dx in [-2.5, 2.5] {
+            p.vline(c.x + dx, frame.y_range(), stroke);
+        }
+    } else {
+        for (dy, indent) in [(-4.0, 0.0), (0.0, 4.0), (4.0, 4.0)] {
+            p.circle_filled(egui::pos2(c.x - 6.0 + indent, c.y + dy), 1.1, color);
+            p.hline(c.x - 3.5 + indent..=c.x + 7.0, c.y + dy, stroke);
+        }
+    }
+    resp
 }
 
 /// Rechtsklick-Menü eines Ordners. `count` = Anzahl der Ordner, für die es gilt.
@@ -2223,6 +2528,20 @@ impl Browser {
         if !compact {
             self.header_path(ui);
         }
+    }
+
+    /// Umschalter Baum/Spalten.
+    fn view_switch(&mut self, ui: &mut egui::Ui, out: &mut Vec<BrowserAction>) {
+        let gap = ui.spacing().item_spacing.x;
+        ui.spacing_mut().item_spacing.x = 2.0;
+        for columns in [false, true] {
+            if view_button(ui, columns, self.folder_columns == columns).clicked() && self.folder_columns != columns {
+                self.folder_columns = columns;
+                self.col_seen = None;
+                out.push(BrowserAction::FolderColumns(columns));
+            }
+        }
+        ui.spacing_mut().item_spacing.x = gap;
     }
 
     /// Gewählte Ordner, gekürzt auf den restlichen Platz links.

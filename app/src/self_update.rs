@@ -18,6 +18,8 @@ use eframe::egui;
 
 /// Bekommt die neue Version beim Start nach einem Update mit.
 pub const AFTER_UPDATE_FLAG: &str = "--after-update";
+/// Bekommt die App beim Start nach „FadeWerk DJ zurücksetzen“ mit.
+pub const AFTER_RESET_FLAG: &str = "--after-reset";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Progress {
@@ -132,24 +134,49 @@ pub fn installed_for_user() -> Option<PathBuf> {
     (exe.parent()? == bin && exe.file_name()? == "fadewerk-dj").then_some(exe)
 }
 
-/// Startet `program` (mit `AFTER_UPDATE_FLAG`), sobald dieser Prozess beendet ist.
+/// Startet `program` mit dem Argument `flag`, sobald dieser Prozess beendet ist.
 #[cfg(unix)]
-fn relaunch(open: &str, program: &Path) -> Result<(), String> {
+fn relaunch(open: &str, program: &Path, flag: &str) -> Result<(), String> {
     command("/bin/sh")
         .args(["-c", &format!("while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done; {open}")])
         .arg(program)
         .arg(std::process::id().to_string())
-        .arg(AFTER_UPDATE_FLAG)
+        .arg(flag)
         .spawn()
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+fn relaunch_windows(exe: &Path, flag: &str) -> Result<(), String> {
+    let pid = std::process::id();
+    let script = format!(
+        "while (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 200 }}; Start-Process -FilePath '{}' -ArgumentList '{flag}'",
+        exe.display().to_string().replace('\'', "''")
+    );
+    command("powershell").args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &script]).spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Startet diese App neu, sobald sie beendet ist (der Aufrufer schließt danach das Fenster).
+pub fn restart_after_exit(flag: &str) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    #[cfg(target_os = "macos")]
+    if let Some(bundle) = bundle() {
+        return relaunch("open \"$0\" --args \"$2\"", &bundle, flag);
+    }
+    #[cfg(unix)]
+    return relaunch("exec \"$0\" \"$2\" >/dev/null 2>&1", &exe, flag);
+    #[cfg(windows)]
+    return relaunch_windows(&exe, flag);
+    #[allow(unreachable_code)]
+    Err("auf diesem System nicht möglich".into())
 }
 
 #[cfg(target_os = "macos")]
 fn run(url: &str, report: &impl Fn(Progress)) -> Result<(), String> {
     let bundle = bundle().ok_or("läuft nicht aus einem App-Bundle")?;
     install_app(url, &bundle, report)?;
-    relaunch("open \"$0\" --args \"$2\"", &bundle)
+    relaunch("open \"$0\" --args \"$2\"", &bundle, AFTER_UPDATE_FLAG)
 }
 
 /// Legt die App aus der ZIP unter `url` an die Stelle von `bundle`.
@@ -235,12 +262,7 @@ fn run(url: &str, report: &impl Fn(Progress)) -> Result<(), String> {
     }
     let _ = std::fs::remove_dir_all(&dir);
     // Neue Version starten, sobald diese beendet ist
-    let pid = std::process::id();
-    let script = format!(
-        "while (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 200 }}; Start-Process -FilePath '{}' -ArgumentList '{AFTER_UPDATE_FLAG}'",
-        exe.display().to_string().replace('\'', "''")
-    );
-    command("powershell").args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &script]).spawn().map(|_| ()).map_err(|e| e.to_string())
+    relaunch_windows(&exe, AFTER_UPDATE_FLAG)
 }
 
 #[cfg(target_os = "linux")]
@@ -260,7 +282,7 @@ fn run(url: &str, report: &impl Fn(Progress)) -> Result<(), String> {
         .ok_or("im Download ist kein install.sh")?;
     checked(command("bash").arg(unpacked.join("install.sh")), "Installieren")?;
     let _ = std::fs::remove_dir_all(&dir);
-    relaunch("exec \"$0\" \"$2\" >/dev/null 2>&1", &exe)
+    relaunch("exec \"$0\" \"$2\" >/dev/null 2>&1", &exe, AFTER_UPDATE_FLAG)
 }
 
 #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]

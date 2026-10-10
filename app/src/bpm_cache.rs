@@ -64,12 +64,7 @@ fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
-/// Größe und Änderungszeit der Datei, `None` wenn sie nicht lesbar ist.
-fn stamp(file: &Path) -> Option<(u64, u64)> {
-    let m = std::fs::metadata(file).ok()?;
-    let modified = m.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_millis() as u64;
-    Some((m.len(), modified))
-}
+use fw_library::{Stamp, file_stamp as stamp};
 
 fn moved_key(file: &Path, size: u64) -> Option<Moved> {
     Some((file.file_name()?.to_string_lossy().into_owned(), size))
@@ -146,8 +141,15 @@ impl BpmCache {
     /// Gemerkte BPM für `file`. Steht sie unter dem Pfad, muss die Datei unverändert sein. Sonst wird über
     /// Dateiname und Größe gesucht: ein Treffer, dessen alte Datei es nicht mehr gibt, zieht auf den neuen
     /// Pfad um. Kostet einen `stat` der Datei.
-    pub fn resolve(&mut self, file: &Path) -> Resolved {
-        let Some((size, modified)) = stamp(file) else { return Resolved::Unknown };
+    #[cfg(test)]
+    fn resolve(&mut self, file: &Path) -> Resolved {
+        self.resolve_stamped(file, stamp(file))
+    }
+
+    /// Wie [`Self::resolve`] mit schon bekannter Größe und Änderungszeit (aus dem Tag-Thread, damit die
+    /// Oberfläche Dateien auf Netzlaufwerken nicht selbst abfragen muss).
+    pub fn resolve_stamped(&mut self, file: &Path, stamp: Option<Stamp>) -> Resolved {
+        let Some((size, modified)) = stamp else { return Resolved::Unknown };
         if let Some(e) = self.entries.get_mut(file) {
             if (e.size, e.modified) != (size, modified) {
                 self.remove(file);

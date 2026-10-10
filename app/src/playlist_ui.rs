@@ -138,8 +138,13 @@ pub fn show(
             if ui.add_enabled(!pl.entries.is_empty(), egui::Button::new(tr("Leeren"))).clicked() {
                 out.push(PlaylistAction::Clear);
             }
+            // In schmalen Köpfen (Browser rechts) kurz „Mischen“, sonst schiebt sich die Taste über FADEWERK
+            let long = tr("Zufällige Reihenfolge");
+            let font = egui::TextStyle::Button.resolve(ui.style());
+            let long_w = ui.painter().layout_no_wrap(long.to_owned(), font, theme::ink()).size().x + 2.0 * ui.spacing().button_padding.x;
+            let label = if ui.available_width() >= long_w + ui.spacing().item_spacing.x { long } else { tr("Mischen") };
             let shuffle = ui
-                .add_enabled(pl.upcoming() > 1, egui::Button::new(tr("Zufällige Reihenfolge")))
+                .add_enabled(pl.upcoming() > 1, egui::Button::new(label))
                 .on_hover_text(tr("Mischt die kommenden Titel. Der geladene und die schon gespielten bleiben an ihrem Platz."));
             if shuffle.clicked() {
                 out.push(PlaylistAction::Shuffle);
