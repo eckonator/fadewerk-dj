@@ -11,7 +11,7 @@ use fw_engine::TrackAudio;
 use crate::bpm::estimate_bpm;
 use crate::decode::decode_file;
 use crate::meta::{Cover, TrackMeta, read_cover, read_meta};
-use crate::scan::{list_dir, walk_audio};
+use crate::scan::{list_dir, walk_audio_progress};
 use crate::sketch::{WaveSketch, read_cached, write_cached};
 use crate::waveform::Waveform;
 
@@ -43,7 +43,8 @@ pub enum Response {
     /// (Hat sie sich geändert, kommt stattdessen [`Response::Meta`] mit den neuen Tags.)
     MetaValid { path: PathBuf, stamp: Stamp },
     /// Gefundene Titel einer Ordnersuche. `done` kommt einmal am Ende, `limited` wenn die Höchstzahl erreicht ist.
-    Scan { token: u64, tracks: Vec<PathBuf>, done: bool, limited: bool },
+    /// `progress` = geschätzter erledigter Anteil (0 bis 1, siehe [`crate::walk_audio_progress`]).
+    Scan { token: u64, tracks: Vec<PathBuf>, progress: f32, done: bool, limited: bool },
     Loaded(Box<Loaded>),
     Failed { path: PathBuf, deck: Option<usize>, error: String },
     /// Ergebnis von [`Library::analyze_bpm`]. `analyzed` = aus der Tempo-Erkennung, sonst aus dem Tag.
@@ -155,21 +156,34 @@ impl Library {
                             continue;
                         }
                         let total = std::cell::Cell::new(0usize);
-                        for (path, recursive) in &paths {
-                            let emit = |tracks: Vec<PathBuf>| {
+                        let count = paths.len().max(1) as f64;
+                        // Ordner ohne Titel melden nur den Fortschritt, und das höchstens alle 100 ms
+                        let mut last_sent = std::time::Instant::now();
+                        for (i, (path, recursive)) in paths.iter().enumerate() {
+                            let mut emit = |tracks: Vec<PathBuf>, part: f64| {
+                                // Entwicklerschalter: langsames Laufwerk nachstellen (Millisekunden je Ordner)
+                                #[cfg(debug_assertions)]
+                                if let Some(ms) = std::env::var("FW_SCAN_SLOW").ok().and_then(|v| v.parse().ok()) {
+                                    thread::sleep(std::time::Duration::from_millis(ms));
+                                }
+                                if tracks.is_empty() && last_sent.elapsed() < std::time::Duration::from_millis(100) {
+                                    return;
+                                }
+                                last_sent = std::time::Instant::now();
                                 total.set(total.get() + tracks.len());
-                                let _ = tx.send(Response::Scan { token, tracks, done: false, limited: false });
+                                let progress = ((i as f64 + part) / count) as f32;
+                                let _ = tx.send(Response::Scan { token, tracks, progress, done: false, limited: false });
                                 wake();
                             };
                             if *recursive {
-                                walk_audio(path, || current.load(Ordering::Relaxed) == token && total.get() < SCAN_LIMIT, emit);
+                                walk_audio_progress(path, || current.load(Ordering::Relaxed) == token && total.get() < SCAN_LIMIT, &mut emit);
                             } else if let Ok(listing) = list_dir(path) {
                                 // Ohne Unterordner: nur die Titel direkt in diesem Ordner
-                                emit(listing.tracks);
+                                emit(listing.tracks, 1.0);
                             }
                         }
                         if current.load(Ordering::Relaxed) == token {
-                            let _ = tx.send(Response::Scan { token, tracks: Vec::new(), done: true, limited: total.get() >= SCAN_LIMIT });
+                            let _ = tx.send(Response::Scan { token, tracks: Vec::new(), progress: 1.0, done: true, limited: total.get() >= SCAN_LIMIT });
                             wake();
                         }
                     }

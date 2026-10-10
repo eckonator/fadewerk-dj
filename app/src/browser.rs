@@ -347,6 +347,12 @@ pub struct Browser {
     /// Entwicklerschalter `FW_BPM`: ermittelt einmal die fehlenden BPM des geöffneten Ordners.
     pub demo_bpm: bool,
     scanning: bool,
+    /// Laufende Suche: geschätzter erledigter Anteil, Startzeit, Titelzahl der gemerkten Liste (0 = keine)
+    /// und die zuletzt gezeigte Restzeit (wird höchstens einmal je Sekunde neu gerechnet, sonst flackert sie).
+    scan_progress: f32,
+    scan_started: Option<std::time::Instant>,
+    scan_expected: usize,
+    scan_eta: Option<(std::time::Instant, f32)>,
     limited: bool,
     scan_token: u64,
     pending_scan: Option<Vec<(PathBuf, bool)>>,
@@ -424,6 +430,10 @@ impl Browser {
             demo_select: false,
             demo_bpm: false,
             scanning: false,
+            scan_progress: 0.0,
+            scan_started: None,
+            scan_expected: 0,
+            scan_eta: None,
             limited: false,
             scan_token: 0,
             pending_scan: None,
@@ -738,6 +748,10 @@ impl Browser {
             .map(|p| (p.clone(), self.recursive(p)))
             .collect();
         self.scanning = !roots.is_empty();
+        self.scan_progress = 0.0;
+        self.scan_started = Some(std::time::Instant::now());
+        self.scan_expected = 0;
+        self.scan_eta = None;
         self.pending_scan = (!roots.is_empty()).then_some(roots);
     }
 
@@ -771,10 +785,11 @@ impl Browser {
     }
 
     /// Ergebnisse der Hintergrundsuche. Ergebnisse alter Suchen werden verworfen.
-    pub fn receive_scan(&mut self, token: u64, tracks: Vec<PathBuf>, done: bool, limited: bool) {
+    pub fn receive_scan(&mut self, token: u64, tracks: Vec<PathBuf>, progress: f32, done: bool, limited: bool) {
         if token != self.scan_token {
             return;
         }
+        self.scan_progress = self.scan_progress.max(progress);
         if self.prefilled {
             // Gemerkte Liste bleibt stehen, bis die Live-Suche fertig ist; dann gilt deren Ergebnis
             self.live.extend(tracks);
@@ -802,10 +817,73 @@ impl Browser {
     pub fn prefill(&mut self, tracks: Vec<PathBuf>) {
         if self.scanning && self.tracks.is_empty() {
             log::debug!("Ordner-Cache: {} Titel gleich gezeigt, Live-Suche läuft", tracks.len());
+            self.scan_expected = tracks.len();
             self.tracks = tracks;
             self.tracks_gen += 1;
             self.prefilled = true;
         }
+    }
+
+    /// Erledigter Anteil der laufenden Suche. Gibt es eine gemerkte Liste, zählt die Live-Suche gegen deren
+    /// Titelzahl (fast genau), sonst gilt die Schätzung aus der Ordnerstruktur. 100 % erst am Ende.
+    fn scan_fraction(&self) -> f32 {
+        let p = if self.prefilled && self.scan_expected > 0 {
+            self.live.len() as f32 / self.scan_expected as f32
+        } else {
+            self.scan_progress
+        };
+        p.clamp(0.0, 0.99)
+    }
+
+    /// Stand der laufenden Suche in der Kopfzeile: was sie tut, Balken, Prozent, Restzeit, Stopp.
+    fn scan_status(&mut self, ui: &mut egui::Ui, out: &mut Vec<BrowserAction>) {
+        let text = if self.prefilled { tr("Prüft auf Änderungen …") } else { tr("Durchsucht Unterordner …") };
+        let how = if self.prefilled && self.scan_expected > 0 {
+            tr("Gerechnet mit der Titelzahl der letzten Suche.")
+        } else {
+            tr("Geschätzt nach der Ordnerstruktur, bei sehr unterschiedlich großen Unterordnern ungenau.")
+        };
+        let tip = format!("{text}\n{how}");
+        let frac = self.scan_fraction();
+        ui.label(RichText::new(text).size(12.0).color(theme::dim())).on_hover_text(&tip);
+        scan_bar(ui, frac).on_hover_text(&tip);
+        let mut label = format!("{} %", (frac * 100.0).floor() as u32);
+        if let Some(rest) = self.scan_rest_secs() {
+            label.push_str(" · ");
+            label.push_str(&fmt_rest(rest));
+        }
+        // Platz für die längste Angabe, damit die Stopp-Taste und alles dahinter stehen bleiben
+        let font = egui::FontId::proportional(12.0);
+        let widest = format!("100 % · {}", trf("noch ca. {} Min.", &[&55]));
+        let w = ui.painter().layout_no_wrap(widest, font.clone(), theme::dim()).size().x;
+        let h = ui.spacing().interact_size.y;
+        ui.allocate_ui_with_layout(vec2(w, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.set_min_width(w);
+            ui.label(RichText::new(label).font(font).color(theme::dim())).on_hover_text(&tip);
+        });
+        if ui.small_button(tr("Stopp")).on_hover_text(tr("Suche anhalten, gefundene Titel bleiben")).clicked() {
+            self.scanning = false;
+            self.stopped = true;
+            out.push(BrowserAction::StopScan);
+        }
+    }
+
+    /// Geschätzte Restzeit der Suche in Sekunden, aus dem bisherigen Tempo. Erst nach ein paar Sekunden.
+    fn scan_rest_secs(&mut self) -> Option<f32> {
+        let now = std::time::Instant::now();
+        if let Some((at, rest)) = self.scan_eta
+            && now.duration_since(at).as_secs_f32() < 1.0
+        {
+            return Some((rest - now.duration_since(at).as_secs_f32()).max(0.0));
+        }
+        let elapsed = self.scan_started?.elapsed().as_secs_f32();
+        let p = self.scan_fraction();
+        if elapsed < 3.0 || p < 0.02 {
+            return None;
+        }
+        let rest = elapsed * (1.0 - p) / p;
+        self.scan_eta = Some((now, rest));
+        Some(rest)
     }
 
     /// Titel in den ausgewählten Ordnern samt Unterordnern (soweit schon gefunden).
@@ -1514,6 +1592,11 @@ impl Browser {
                     (None, many) => trf("{} Ordner", &[&many.len()]),
                 };
                 ui.label(RichText::new(folder).font(fonts::bold(17.0)));
+                // Fortschritt direkt hinter dem Namen und in fester Breite: so wandert nichts hin und her,
+                // während die Titelzahl dahinter wächst
+                if self.scanning {
+                    self.scan_status(ui, out);
+                }
                 let count = if f.is_empty() && self.adv.is_empty() {
                     count_tracks(rows.len(), &if data.duration_unknown { "…".to_owned() } else { fmt_time(data.total_secs) })
                 } else {
@@ -1540,16 +1623,7 @@ impl Browser {
                 if ui.checkbox(&mut rec, tr("Mit Unterordnern")).on_hover_text(tip).changed() {
                     self.set_recursive(rec, out);
                 }
-                if self.scanning {
-                    ui.add(egui::Spinner::new().size(14.0));
-                    let text = if self.prefilled { tr("Prüft auf Änderungen …") } else { tr("Durchsucht Unterordner …") };
-                    ui.label(RichText::new(text).size(12.0).color(theme::dim()));
-                    if ui.small_button(tr("Stopp")).on_hover_text(tr("Suche anhalten, gefundene Titel bleiben")).clicked() {
-                        self.scanning = false;
-                        self.stopped = true;
-                        out.push(BrowserAction::StopScan);
-                    }
-                } else if self.stopped {
+                if self.stopped {
                     ui.label(RichText::new(tr("Suche angehalten")).size(12.0).color(theme::yellow()));
                 } else if self.limited {
                     ui.label(RichText::new(trf("Nur die ersten {} Titel. Für mehr einen Unterordner wählen.", &[&SCAN_LIMIT])).size(12.0).color(theme::yellow()));
@@ -2614,6 +2688,30 @@ fn fullscreen_button(ui: &mut egui::Ui, fullscreen: bool) -> egui::Response {
         p.line_segment([vertex, vertex + egui::vec2(0.0, dy)], stroke);
     }
     resp
+}
+
+
+/// Schmaler Fortschrittsbalken der Ordnersuche, eingelassen wie ein Display.
+fn scan_bar(ui: &mut egui::Ui, frac: f32) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(90.0, 8.0), Sense::hover());
+    let p = ui.painter();
+    crate::hw::well(p, rect, 3.0);
+    let inner = rect.shrink(1.5);
+    let fill = egui::Rect::from_min_size(inner.min, vec2(inner.width() * frac.clamp(0.0, 1.0), inner.height()));
+    if fill.width() >= 1.0 {
+        let c = theme::play();
+        crate::hw::gradient_rrect(p, fill, 2.0, crate::hw::lighten(c, 0.2), crate::hw::darken(c, 0.15));
+    }
+    resp
+}
+
+/// Restzeit grob gerundet: unter einer Minute in 5-s-Schritten, sonst in Minuten.
+fn fmt_rest(secs: f32) -> String {
+    if secs < 55.0 {
+        trf("noch ca. {} s", &[&(((secs / 5.0).ceil().max(1.0) as u32) * 5)])
+    } else {
+        trf("noch ca. {} Min.", &[&((secs / 60.0).round().max(1.0) as u32)])
+    }
 }
 
 #[cfg(test)]

@@ -1372,8 +1372,8 @@ impl FadeWerkDjApp {
                 Response::Sketch { path, sketch } => {
                     self.sketches.insert(path, sketch);
                 }
-                Response::Scan { token, tracks, done, limited } => {
-                    self.browser.receive_scan(token, tracks, done, limited);
+                Response::Scan { token, tracks, progress, done, limited } => {
+                    self.browser.receive_scan(token, tracks, progress, done, limited);
                     // Langsame Ordner merken (und gemerkte auf den frischen Stand bringen)
                     if done
                         && let Some((_, roots, started)) = self.scan_job.take_if(|j| j.0 == token)

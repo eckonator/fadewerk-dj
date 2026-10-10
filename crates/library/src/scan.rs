@@ -74,26 +74,46 @@ pub fn is_system_dir(path: &Path) -> bool {
 /// Sucht Audiodateien in `root` und allen Unterordnern, Ordner für Ordner in sortierter Reihenfolge
 /// (erst die Titel eines Ordners, dann seine Unterordner). `emit` bekommt die Titel je Ordner,
 /// `keep_going` erlaubt den Abbruch zwischen zwei Ordnern. Verknüpfte Ordner werden nur einmal besucht.
-pub fn walk_audio(root: &Path, mut keep_going: impl FnMut() -> bool, mut emit: impl FnMut(Vec<PathBuf>)) {
+pub fn walk_audio(root: &Path, keep_going: impl FnMut() -> bool, mut emit: impl FnMut(Vec<PathBuf>)) {
+    walk_audio_progress(root, keep_going, |tracks, _| {
+        if !tracks.is_empty() {
+            emit(tracks);
+        }
+    });
+}
+
+/// Wie [`walk_audio`], aber `emit` kommt nach jedem Ordner (auch ohne Titel) mit dem geschätzten
+/// erledigten Anteil (0 bis 1). Geschätzt ohne zusätzliches Lesen: Jeder Ordner gibt seinen Anteil zu
+/// gleichen Teilen an seine Unterordner weiter; ein Ordner ohne Unterordner ist mit seinem Anteil fertig.
+/// Der Wert wächst nur, ist aber ungenau, wenn die Unterordner sehr unterschiedlich groß sind.
+pub fn walk_audio_progress(root: &Path, mut keep_going: impl FnMut() -> bool, mut emit: impl FnMut(Vec<PathBuf>, f64)) {
     const MAX_DEPTH: usize = 32;
     let mut visited = std::collections::HashSet::new();
-    let mut stack = vec![(root.to_path_buf(), 0usize)];
-    while let Some((dir, depth)) = stack.pop() {
+    let mut stack = vec![(root.to_path_buf(), 0usize, 1.0f64)];
+    let mut done = 0.0f64;
+    while let Some((dir, depth, share)) = stack.pop() {
         if !keep_going() {
             return;
         }
         let key = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
         if !visited.insert(key) {
+            done += share;
             continue;
         }
-        let Ok(listing) = list_dir(&dir) else { continue };
-        if !listing.tracks.is_empty() {
-            emit(listing.tracks);
-        }
-        if depth < MAX_DEPTH {
+        let Ok(listing) = list_dir(&dir) else {
+            done += share;
+            continue;
+        };
+        let subdirs: Vec<PathBuf> =
+            if depth < MAX_DEPTH { listing.dirs.into_iter().filter(|d| !is_system_dir(d)).collect() } else { Vec::new() };
+        if subdirs.is_empty() {
+            done += share;
+        } else {
             // Rückwärts auf den Stapel, damit der alphabetisch erste Unterordner zuerst dran ist
-            stack.extend(listing.dirs.into_iter().filter(|d| !is_system_dir(d)).rev().map(|d| (d, depth + 1)));
+            let part = share / subdirs.len() as f64;
+            stack.extend(subdirs.into_iter().rev().map(|d| (d, depth + 1, part)));
         }
+        emit(listing.tracks, done.min(1.0));
     }
 }
 
@@ -123,6 +143,22 @@ mod tests {
         let names = |v: &[PathBuf]| v.iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect::<Vec<_>>();
         assert_eq!(names(&l.dirs), ["a Album", "B Album"]);
         assert_eq!(names(&l.tracks), ["01 a.flac", "02 b.mp3"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn progress_grows_to_one() {
+        let dir = std::env::temp_dir().join(format!("fw-progress-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for sub in ["a/x", "a/y", "b", "c/z/w"] {
+            std::fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        let mut seen = Vec::new();
+        walk_audio_progress(&dir, || true, |_, p| seen.push(p));
+        assert!(seen.windows(2).all(|w| w[0] <= w[1]), "{seen:?}");
+        assert!((seen.last().unwrap() - 1.0).abs() < 1e-9, "{seen:?}");
+        // Nach dem ersten von drei Unterordnern (a mit x und y) ist ein Drittel geschafft
+        assert!(seen.iter().any(|p| (p - 1.0 / 3.0).abs() < 1e-9), "{seen:?}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
