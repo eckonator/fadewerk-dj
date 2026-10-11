@@ -32,6 +32,8 @@ pub struct Settings {
     pub browser_height: f32,
     /// Breite des Ordnerbaums im Browser in Punkten, 0 = Standard.
     pub tree_width: f32,
+    /// „Mit Unterordnern“ je Ordner, nur wo der Nutzer vom Standard abweicht.
+    pub folder_recursion: Vec<(PathBuf, bool)>,
     /// Kennung des Ausgabegeräts (cpal `DeviceId`), `None` = Systemstandard.
     pub output_device: Option<String>,
     /// Eigenes Kopfhörergerät, `None` = Kopfhörer über Split L/R oder Ausgang 3/4 des Master-Geräts.
@@ -65,6 +67,7 @@ impl Default for Settings {
             brushed_steel: false,
             browser_height: 0.0,
             tree_width: 0.0,
+            folder_recursion: Vec::new(),
             output_device: None,
             head_device: None,
             buffer_frames: None,

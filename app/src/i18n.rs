@@ -40,6 +40,10 @@ pub fn lang() -> Lang {
 
 /// Übersetzt einen festen Text.
 pub fn tr(de: &'static str) -> &'static str {
+    // Ohne Buchstaben (leer, „#“, Zahlen) gibt es nichts zu übersetzen
+    if !de.chars().any(char::is_alphabetic) {
+        return de;
+    }
     match lang() {
         Lang::De => de,
         Lang::En => en(de).unwrap_or_else(|| {
@@ -112,7 +116,6 @@ fn en(de: &str) -> Option<&'static str> {
         "Mischung Vorhören ↔ Master" => "Mix cue ↔ master",
         "PEGEL" => "LEVEL",
         "Keine Audio-Ausgabe gefunden" => "No audio output found",
-        "Ausgabe: {}" => "Output: {}",
         // Auto-Fade
         "AUTO-FADE" => "AUTO-FADE",
         "SEK." => "SEC.",
@@ -144,7 +147,7 @@ fn en(de: &str) -> Option<&'static str> {
         // Ordnerbrowser
         "ORDNER" => "FOLDERS",
         "Ordner hinzufügen …" => "Add folder …",
-        "Suchen (mit Unterordnern)" => "Search (incl. subfolders)",
+        "Suchen" => "Search",
         "UNTERORDNER" => "SUBFOLDER",
         "Suche läuft …" => "Searching …",
         "Durchsucht Unterordner …" => "Searching subfolders …",
@@ -154,11 +157,9 @@ fn en(de: &str) -> Option<&'static str> {
         "⏺ Live gelesen, keine Datenbank" => "⏺ Read live, no database",
         "Ordner in Playlist {}" => "Folder to playlist {}",
         "In Playlist {}" => "To playlist {}",
-        "Keine Audiodateien in diesem Ordner. Links einen Unterordner wählen." => "No audio files in this folder. Pick a subfolder on the left.",
         "INTERPRET" => "ARTIST",
         "ZEIT" => "TIME",
         "Auf dem Kopfhörer vorhören" => "Pre-listen on headphones",
-        "STOPP" => "STOP",
         "Vorhören beenden" => "Stop pre-listening",
         "IM KOPFHÖRER" => "IN HEADPHONES",
         "Musik" => "Music",
@@ -167,6 +168,19 @@ fn en(de: &str) -> Option<&'static str> {
         "{} lässt sich nicht lesen: {}" => "Cannot read {}: {}",
         "Musikordner hinzufügen" => "Add music folder",
         "Aus der Liste entfernen" => "Remove from list",
+        "Als Nächstes spielen" => "Play next",
+        "Mit Unterordnern" => "Include subfolders",
+        "Auch alle Unterordner durchsuchen. Bei Laufwerken und dem Benutzerordner ist das anfangs aus, damit nicht die ganze Platte durchsucht wird. Systemordner werden immer ausgelassen."
+            => "Also search all subfolders. Off at first for drives and the home folder so the whole disk isn't scanned. System folders are always skipped.",
+        "Stopp" => "Stop",
+        "Suche anhalten, gefundene Titel bleiben" => "Stop searching, tracks found so far stay",
+        "Suche angehalten" => "Search stopped",
+        "Keine Audiodateien direkt in diesem Ordner. „Mit Unterordnern“ durchsucht auch die Ordner darin."
+            => "No audio files directly in this folder. “Include subfolders” also searches the folders inside.",
+        "Kopfhörer: {}" => "Headphones: {}",
+        "MST" => "MST",
+        "CUE" => "CUE",
+        "Split L/R" => "Split L/R",
         "Titelinfo & Tags" => "Track info & tags",
         "Titelinfo & Tags …" => "Track info & tags …",
         "Titel" => "Title",
@@ -226,7 +240,6 @@ fn en(de: &str) -> Option<&'static str> {
         "Player {} spielt gerade. Erst stoppen." => "Deck {} is playing. Stop it first.",
         "Playlist {}: kein weiterer Titel" => "Playlist {}: no further track",
         "Playlist {} hat keinen nächsten Titel" => "Playlist {} has no next track",
-        "Vorhören auf dem rechten Kanal (Split L/R)" => "Cue on the right channel (split L/R)",
         "Zu weit auseinander ({} ↔ {} BPM), Pitch reicht nur ±{} %" => "Too far apart ({} ↔ {} BPM), pitch only covers ±{} %",
         "Kein Ton: {}" => "No sound: {}",
         "{} Titel aus den Playlists gibt es nicht mehr" => "{} playlist tracks no longer exist",
@@ -237,7 +250,6 @@ fn en(de: &str) -> Option<&'static str> {
         "Audio" => "Audio",
         "Sprache" => "Language",
         "Aussehen" => "Appearance",
-        "Ausgabegerät" => "Output device",
         "Systemstandard" => "System default",
         "Puffergröße" => "Buffer size",
         "Standard" => "Default",
@@ -253,7 +265,6 @@ fn en(de: &str) -> Option<&'static str> {
             => "Without a separate device, headphones use “Split L/R” or “Out 3/4” in the mixer.",
         "Zwei Geräte laufen nie exakt gleich schnell. FadeWerk DJ gleicht das automatisch aus; der Kopfhörer liegt dabei etwa 20 ms hinter den Lautsprechern."
             => "Two devices never run at exactly the same speed. FadeWerk DJ compensates automatically; the headphones lag the speakers by about 20 ms.",
-        "Kopfhörer aktiv: {} · {} Hz" => "Headphones active: {} · {} Hz",
         "Gerät" => "Device",
         "Eigenes Kopfhörergerät aus den Einstellungen" => "Separate headphone device from the settings",
         "Kopfhörergerät nicht verfügbar: {}" => "Headphone device unavailable: {}",

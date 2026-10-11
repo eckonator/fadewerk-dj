@@ -10,7 +10,7 @@ use fw_engine::TrackAudio;
 use crate::bpm::estimate_bpm;
 use crate::decode::decode_file;
 use crate::meta::{TrackMeta, read_meta};
-use crate::scan::walk_audio;
+use crate::scan::{list_dir, walk_audio};
 use crate::waveform::Waveform;
 
 /// Ein fertig geladener Titel für einen Player oder das Vorhören.
@@ -46,7 +46,7 @@ struct LoadJob {
 /// Getrennt, damit ein Ordner voller Tag-Anfragen das Laden in einen Player nicht aufhält.
 pub struct Library {
     meta_tx: Sender<PathBuf>,
-    scan_tx: Sender<(u64, Vec<PathBuf>)>,
+    scan_tx: Sender<(u64, Vec<(PathBuf, bool)>)>,
     /// Kennung der aktuellen Ordnersuche; ältere Suchen brechen ab.
     scan_current: Arc<AtomicU64>,
     load_tx: Sender<LoadJob>,
@@ -59,7 +59,7 @@ impl Library {
         let (meta_tx, meta_rx) = unbounded::<PathBuf>();
         let (load_tx, load_rx) = unbounded::<LoadJob>();
         let (tx, rx) = unbounded::<Response>();
-        let (scan_tx, scan_rx) = unbounded::<(u64, Vec<PathBuf>)>();
+        let (scan_tx, scan_rx) = unbounded::<(u64, Vec<(PathBuf, bool)>)>();
         let scan_current = Arc::new(AtomicU64::new(0));
 
         {
@@ -74,16 +74,18 @@ impl Library {
                             continue;
                         }
                         let total = std::cell::Cell::new(0usize);
-                        for path in &paths {
-                            walk_audio(
-                                path,
-                                || current.load(Ordering::Relaxed) == token && total.get() < SCAN_LIMIT,
-                                |tracks| {
-                                    total.set(total.get() + tracks.len());
-                                    let _ = tx.send(Response::Scan { token, tracks, done: false, limited: false });
-                                    wake();
-                                },
-                            );
+                        for (path, recursive) in &paths {
+                            let emit = |tracks: Vec<PathBuf>| {
+                                total.set(total.get() + tracks.len());
+                                let _ = tx.send(Response::Scan { token, tracks, done: false, limited: false });
+                                wake();
+                            };
+                            if *recursive {
+                                walk_audio(path, || current.load(Ordering::Relaxed) == token && total.get() < SCAN_LIMIT, emit);
+                            } else if let Ok(listing) = list_dir(path) {
+                                // Ohne Unterordner: nur die Titel direkt in diesem Ordner
+                                emit(listing.tracks);
+                            }
                         }
                         if current.load(Ordering::Relaxed) == token {
                             let _ = tx.send(Response::Scan { token, tracks: Vec::new(), done: true, limited: total.get() >= SCAN_LIMIT });
@@ -136,11 +138,16 @@ impl Library {
         Self { meta_tx, scan_tx, scan_current, load_tx, rx }
     }
 
-    /// Startet eine Suche nach Titeln in `paths` samt Unterordnern, Ordner für Ordner in dieser
-    /// Reihenfolge. Eine laufende Suche bricht ab.
-    pub fn scan(&self, token: u64, paths: Vec<PathBuf>) {
+    /// Startet eine Suche nach Titeln in `paths`, Ordner für Ordner in dieser Reihenfolge; `true` heißt
+    /// mit Unterordnern. Eine laufende Suche bricht ab.
+    pub fn scan(&self, token: u64, paths: Vec<(PathBuf, bool)>) {
         self.scan_current.store(token, Ordering::Relaxed);
         let _ = self.scan_tx.send((token, paths));
+    }
+
+    /// Bricht die laufende Suche ab. Bereits gefundene Titel bleiben.
+    pub fn cancel_scan(&self) {
+        self.scan_current.store(0, Ordering::Relaxed);
     }
 
     pub fn request_meta(&self, path: PathBuf) {

@@ -154,7 +154,7 @@ impl FadeWerkDjApp {
             lib,
             decks: Default::default(),
             playlists: Default::default(),
-            browser: Browser::new(start_dir, &settings.folders, settings.tree_width),
+            browser: Browser::new(start_dir, &settings.folders, settings.tree_width, &settings.folder_recursion),
             metas: HashMap::new(),
             meta_requested: HashSet::new(),
             bpms: HashMap::new(),
@@ -854,6 +854,11 @@ impl FadeWerkDjApp {
             PlaylistAction::NeedMeta(p) => self.request_meta(p),
             PlaylistAction::Preview(p) => self.browser_action(BrowserAction::Preview(p), now),
             PlaylistAction::StopPreview => self.browser_action(BrowserAction::StopPreview, now),
+            PlaylistAction::PlayNext(i) => {
+                let pl = &mut self.playlists[d];
+                let before = pl.current.map_or(0, |c| c + 1);
+                pl.move_entry(i, before);
+            }
             PlaylistAction::EditTags(p) => self.browser_action(BrowserAction::EditTags(p), now),
             PlaylistAction::Drop { item, before } => match item {
                 DragItem::Files(paths) => {
@@ -948,6 +953,11 @@ impl FadeWerkDjApp {
                     log::warn!("Anzeigen im Dateimanager: {e}");
                     self.notify(trf("Lässt sich nicht anzeigen: {}", &[&e]), now);
                 }
+            }
+            BrowserAction::StopScan => self.lib.cancel_scan(),
+            BrowserAction::FolderRecursion(list) => {
+                self.settings.folder_recursion = list;
+                self.save_settings();
             }
             BrowserAction::EditTags(path) => self.tag_editor = Some(TagEditor::open(path)),
             BrowserAction::TreeWidth(w) => {
@@ -1127,6 +1137,7 @@ impl eframe::App for FadeWerkDjApp {
         let metas = &self.metas;
         let bpms = &self.bpms;
         let has = [self.decks[0].loaded_id != 0, self.decks[1].loaded_id != 0];
+        let playing = [self.ctl.shared.decks[0].is_playing(), self.ctl.shared.decks[1].is_playing()];
         let preview_path = self.preview.as_ref().map(|p| p.path.as_path());
 
         egui::CentralPanel::default().frame(Frame::new().fill(theme::ground()).inner_margin(Margin::same(8))).show(ui, |ui| {
@@ -1171,7 +1182,7 @@ impl eframe::App for FadeWerkDjApp {
                             rows.cell(|ui| {
                                 panel_frame(ui).show(ui, |ui| {
                                     ui.set_min_size(ui.available_size());
-                                    playlist_ui::show(ui, d, &playlists[d], has[d], preview_path, metas, bpms, &mut pl_actions[d]);
+                                    playlist_ui::show(ui, d, &playlists[d], has[d], playing[d], preview_path, metas, bpms, &mut pl_actions[d]);
                                 });
                             });
                         });

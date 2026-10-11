@@ -43,8 +43,7 @@ written in Rust. Click a folder and start playing: no database, no library impor
 
 ## Download
 
-Ready-to-run builds are on the [Releases](../../releases) page. The **Development build**
-pre-release is rebuilt automatically from the latest commit on `main`.
+Ready-to-run builds are on the [Releases](../../releases) page, one release per version.
 
 | System | File | Notes |
 |---|---|---|
