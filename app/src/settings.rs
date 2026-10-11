@@ -61,6 +61,8 @@ pub struct Settings {
     pub remember_search: bool,
     /// Beim Suchen Kopien desselben Titels ausblenden.
     pub hide_duplicates: bool,
+    /// Erweiterte Suche: Textfelder treffen nur ganze Wörter.
+    pub search_whole_words: bool,
     /// Zuletzt benutzte erweiterte Suche (nur mit `remember_search`).
     pub advanced_search: crate::search::AdvancedSearch,
     /// „Mit Unterordnern“ je Ordner, nur wo der Nutzer vom Standard abweicht.
@@ -130,6 +132,7 @@ impl Default for Settings {
             fx_volume: DEFAULT_FX_VOLUME,
             remember_search: true,
             hide_duplicates: true,
+            search_whole_words: false,
             advanced_search: Default::default(),
             folder_recursion: Vec::new(),
             output_device: None,

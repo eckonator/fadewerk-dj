@@ -340,7 +340,7 @@ impl FadeWerkDjApp {
                 b.tree_height = settings.tree_height;
                 b.folder_columns = settings.folder_columns;
                 b.columns_share = settings.columns_share;
-                b.set_search_memory(settings.remember_search, settings.hide_duplicates, &settings.advanced_search);
+                b.set_search_memory(settings.remember_search, settings.hide_duplicates, settings.search_whole_words, &settings.advanced_search);
                 b
             },
             metas: HashMap::new(),
@@ -481,7 +481,7 @@ impl FadeWerkDjApp {
             }
         }
         app.push_mixer_state();
-        app.start_head_audio(0.0);
+        app.start_head_audio(0.0, true);
         if let Some(s) = app.dev.skin {
             theme::set_skin(s);
             theme::apply(&cc.egui_ctx);
@@ -645,7 +645,9 @@ impl FadeWerkDjApp {
     }
 
     /// Öffnet das eigene Kopfhörergerät aus den Einstellungen (falls gewählt) und verbindet es mit der Engine.
-    fn start_head_audio(&mut self, now: f64) {
+    /// Ohne `wanted` bleibt es zu: Ein Gerät, das beim Start fehlte und erst später auftaucht (etwa AirPods),
+    /// soll beim Neustart der Ausgabe nicht unbemerkt mitlaufen, sondern erst nach erneuter Auswahl.
+    fn start_head_audio(&mut self, now: f64, wanted: bool) {
         self.head_audio = None;
         self.ctl.send(Command::SetHeadSink(None));
         let Some(id) = self.settings.head_device.clone() else {
@@ -654,6 +656,12 @@ impl FadeWerkDjApp {
             }
             return;
         };
+        if !wanted {
+            if self.head_mode == HeadMode::Device {
+                self.set_head_mode(HeadMode::Off);
+            }
+            return;
+        }
         let Some(master) = self.audio.as_ref() else { return };
         if master.id == id {
             self.notify(tr("Das Kopfhörergerät ist dasselbe wie die Lautsprecher. Bitte ein anderes wählen oder im Mixer Split L/R nutzen."), now);
@@ -662,6 +670,7 @@ impl FadeWerkDjApp {
         match audio::start_head(&id, master.sample_rate, self.settings.buffer_frames) {
             Ok((out, sink)) => {
                 self.ctl.send(Command::SetHeadSink(Some(sink)));
+                self.notify(trf("Kopfhörer: {}", &[&out.device]), now);
                 self.head_audio = Some(out);
                 // Wer ein Kopfhörergerät wählt, will es auch hören
                 if matches!(self.head_mode, HeadMode::Off | HeadMode::Split | HeadMode::Outputs34) {
@@ -692,9 +701,25 @@ impl FadeWerkDjApp {
         }
     }
 
+    /// Testton aus den Einstellungen. Auf dem Kopfhörer geht er an das eigene Gerät, falls eines läuft,
+    /// sonst an den im Mixer gewählten Weg (ist der Kopfhörer aus, wie beim Vorhören an).
+    fn test_tone(&mut self, to_master: bool, now: f64) {
+        if !to_master {
+            if self.head_audio.is_some() && self.head_mode != HeadMode::Device {
+                self.set_head_mode(HeadMode::Device);
+                self.notify(tr("Vorhören über das Kopfhörergerät"), now);
+            } else {
+                self.enable_headphones(now);
+            }
+        }
+        self.ctl.send(Command::TestTone { to_master });
+    }
+
     /// Startet die Audio-Ausgabe mit den aktuellen Einstellungen neu. Geladene Titel laufen an derselben Stelle weiter.
     fn restart_audio(&mut self, now: f64) {
         let st: Vec<(f64, bool)> = (0..2).map(|d| (self.ctl.shared.decks[d].position_secs(), self.ctl.shared.decks[d].is_playing())).collect();
+        // Kopfhörergerät nur wieder öffnen, wenn es lief (siehe `start_head_audio`)
+        let head_was_on = self.head_audio.is_some();
         // Alte Geräte zuerst freigeben, manche Treiber erlauben nur einen Stream
         self.head_audio = None;
         self.audio = None;
@@ -703,7 +728,7 @@ impl FadeWerkDjApp {
         self.ctl = ctl;
         self.audio_error = err.clone();
         self.push_mixer_state();
-        self.start_head_audio(now);
+        self.start_head_audio(now, head_was_on);
         for (d, &(pos, playing)) in st.iter().enumerate() {
             self.decks[d].ended_seen = 0;
             self.decks[d].reverse_ended_seen = 0;
@@ -736,11 +761,13 @@ impl FadeWerkDjApp {
                 }
             }
             SettingsAction::HeadDevice(id) => {
-                if self.settings.head_device != id {
+                // Dasselbe Gerät erneut wählen schaltet es ein, wenn es nicht läuft
+                if self.settings.head_device != id || self.head_audio.is_none() {
                     self.settings.head_device = id;
-                    self.start_head_audio(now);
+                    self.start_head_audio(now, true);
                 }
             }
+            SettingsAction::TestTone(to_master) => self.test_tone(to_master, now),
             SettingsAction::Buffer(b) => {
                 if self.settings.buffer_frames != b {
                     self.settings.buffer_frames = b;
@@ -2202,9 +2229,10 @@ impl FadeWerkDjApp {
                 self.save_settings();
             }
             BrowserAction::EditTags(path) => self.tag_editor = Some(TagEditor::open(path)),
-            BrowserAction::SearchMemory(remember, hide_duplicates, search) => {
+            BrowserAction::SearchMemory(remember, hide_duplicates, whole_words, search) => {
                 self.settings.remember_search = remember;
                 self.settings.hide_duplicates = hide_duplicates;
+                self.settings.search_whole_words = whole_words;
                 self.settings.advanced_search = search;
                 self.save_settings();
             }

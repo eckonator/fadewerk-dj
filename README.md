@@ -114,7 +114,7 @@ Ready-to-run builds are on the [Releases](../../releases) page, one release per 
 | System | File | Notes |
 |---|---|---|
 | macOS 11 or later (Apple Silicon and Intel) | `…-macOS.dmg` or `…-macOS.zip` | Easiest: the [one-line Terminal install](#macos-cannot-be-verified) below. Or open the DMG and drag FadeWerk DJ to Applications (or unzip and move it there). The app is not notarized by Apple, so see below for the first launch. |
-| Windows 10/11 (64-bit) | `…-Windows.zip` | Unzip and run `FadeWerk DJ.exe`. SmartScreen warns about unknown apps: **More info → Run anyway**. |
+| Windows 10/11 (64-bit) | `…-Windows-Setup.exe` or `…-Windows.zip` | Run the setup: it installs FadeWerk DJ to Program Files, adds it to the Start menu and (optionally) puts a shortcut on the desktop; uninstall under Settings → Apps. Or unzip the portable version and run `FadeWerk DJ.exe`. SmartScreen warns about unknown apps: **More info → Run anyway**. |
 | Linux (x86_64) | `…-Linux-x86_64.tar.gz` | Unpack and run `./fadewerk-dj`, or run `./install.sh` to add it with its icon to the application menu (per user, `./install.sh --uninstall` removes it). Needs ALSA (or PipeWire/PulseAudio with the ALSA layer). |
 | Linux (arm64) | `…-Linux-arm64.tar.gz` | The same for 64-bit ARM, e.g. Raspberry Pi 4 or 5 with 64-bit Raspberry Pi OS (not yet tested on a real Pi). On a Pi 4, the lightweight display (Settings → Appearance) is recommended. |
 
@@ -152,7 +152,9 @@ a bar when a new version is out. **Update now** downloads and installs it and re
 - **macOS:** the new app replaces the installed one, but only if it is signed with the same
   certificate as the installed app. If the Applications folder is not writable for you, macOS asks
   for an administrator password. No quarantine flag, so no security prompt.
-- **Windows:** `FadeWerk DJ.exe` from the zip is replaced in its folder (the folder must be writable).
+- **Windows:** installed with the setup, the new setup is downloaded and run (Windows asks for
+  administrator rights) and starts the new version. The portable `FadeWerk DJ.exe` from the zip is
+  replaced in its folder (the folder must be writable).
 - **Linux:** when installed with `./install.sh`, the new archive is unpacked and its `install.sh` run.
 
 Otherwise the bar links to the download page.

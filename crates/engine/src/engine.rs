@@ -9,6 +9,7 @@ use crate::headlink::HeadSink;
 use crate::mixer::{Curve, HeadMode};
 use crate::motor::Motor;
 use crate::sampler::Sampler;
+use crate::testtone::TestTone;
 use crate::spectrum::{BANDS, Spectrum};
 use crate::track::TrackAudio;
 
@@ -63,6 +64,8 @@ pub enum Command {
     TriggerFx { slot: usize, to_master: bool },
     StopFx { slot: usize },
     SetFxVolume(f32),
+    /// Kurzer Testton über Master oder (`to_master` = false) auf dem Kopfhörer, zum Prüfen der Geräteauswahl.
+    TestTone { to_master: bool },
 }
 
 impl Command {
@@ -212,6 +215,7 @@ pub struct Engine {
     head_sink: Option<HeadSink>,
     spectrum: Spectrum,
     sampler: Sampler,
+    test_tone: TestTone,
     /// Effekte dieses Blocks: über Master und nur auf dem Kopfhörer.
     fx_bufs: [Vec<[f32; 2]>; 2],
 }
@@ -253,6 +257,7 @@ impl Engine {
             master_volume: 0.9,
             head_sink: None,
             sampler: Sampler::default(),
+            test_tone: TestTone::default(),
             fx_bufs: std::array::from_fn(|_| vec![[0.0; 2]; CHUNK]),
         };
         (engine, Controller { tx, garbage: grx, shared })
@@ -334,6 +339,7 @@ impl Engine {
             TriggerFx { slot, to_master } => self.sampler.trigger(slot, to_master),
             StopFx { slot } => self.sampler.stop(slot),
             SetFxVolume(v) => self.sampler.set_volume(v),
+            TestTone { to_master } => self.test_tone.start(to_master),
             _ => {}
         }
     }
@@ -389,8 +395,9 @@ impl Engine {
                 let (fxm, fxc) = (self.fx_bufs[0][i], self.fx_bufs[1][i]);
                 let mut master = [0.0f32; 2];
                 let mut cue = [p[0] + fxc[0], p[1] + fxc[1]];
+                let (tone_master, tone_head) = self.test_tone.next(rate);
                 for c in 0..2 {
-                    master[c] = (ca[c] * ga + cb[c] * gb + fxm[c]) * self.master_volume;
+                    master[c] = (ca[c] * ga + cb[c] * gb + fxm[c]) * self.master_volume + tone_master;
                     // Vorhören greift vor Kanalfader und Crossfader ab
                     if self.pfl[0] { cue[c] += a[c]; }
                     if self.pfl[1] { cue[c] += b[c]; }
@@ -402,8 +409,8 @@ impl Engine {
                     self.spectrum.push(0.5 * (master[0] + master[1]));
                 }
                 let head = [
-                    (cue[0] * (1.0 - self.head_mix) + master[0] * self.head_mix) * self.head_volume,
-                    (cue[1] * (1.0 - self.head_mix) + master[1] * self.head_mix) * self.head_volume,
+                    (cue[0] * (1.0 - self.head_mix) + master[0] * self.head_mix) * self.head_volume + tone_head,
+                    (cue[1] * (1.0 - self.head_mix) + master[1] * self.head_mix) * self.head_volume + tone_head,
                 ];
                 write_frame(&mut block[i * channels..(i + 1) * channels], self.head_mode, master, head);
                 if self.head_mode == HeadMode::Device

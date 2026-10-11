@@ -5,7 +5,9 @@
 //! Gatekeeper-Rückfrage), geprüft, ob sie mit demselben Zertifikat signiert ist wie diese App, und an
 //! deren Stelle gelegt; eine kleine Shell wartet, bis dieser Prozess endet, und öffnet die neue App.
 //! Ist der Ordner nicht beschreibbar, fragt macOS nach einem Administrator-Passwort.
-//! Windows: Aus der ZIP kommt die neue `FadeWerk DJ.exe` an die Stelle der laufenden (die laufende
+//! Windows: Mit dem Setup installiert (unter „Programme“), wird das neue Setup geholt und still
+//! gestartet; es fragt selbst nach Administratorrechten und startet danach die neue Version.
+//! Portabel aus der ZIP kommt die neue `FadeWerk DJ.exe` an die Stelle der laufenden (die laufende
 //! lässt sich umbenennen, aber nicht überschreiben; der Rest wird beim nächsten Start gelöscht).
 //! Linux: Mit dem `install.sh` des Archivs installiert (Programm in `~/.local/bin`), wird das neue
 //! Archiv entpackt und sein `install.sh` ausgeführt. Kein Passwort nötig.
@@ -35,7 +37,11 @@ pub fn asset_suffix() -> Option<&'static str> {
     if cfg!(target_os = "macos") {
         bundle().map(|_| "-macOS.zip")
     } else if cfg!(windows) {
-        portable_exe().map(|_| "-Windows.zip")
+        if installed_with_setup() {
+            Some("-Windows-Setup.exe")
+        } else {
+            portable_exe().map(|_| "-Windows.zip")
+        }
     } else if cfg!(target_os = "linux") {
         let arch = if cfg!(target_arch = "aarch64") { "-Linux-arm64.tar.gz" } else { "-Linux-x86_64.tar.gz" };
         installed_for_user().map(|_| arch)
@@ -111,13 +117,20 @@ pub fn bundle() -> Option<PathBuf> {
     (bundle.extension()? == "app").then(|| bundle.to_path_buf())
 }
 
-/// Die laufende `FadeWerk DJ.exe` aus der Windows-ZIP (nicht die nackte `fadewerk-dj.exe` aus dem Build).
+/// Die laufende `FadeWerk DJ.exe` aus der Windows-ZIP (nicht die nackte `fadewerk-dj.exe` aus dem Build
+/// und nicht die vom Setup installierte).
 pub fn portable_exe() -> Option<PathBuf> {
-    if !cfg!(windows) {
+    if !cfg!(windows) || installed_with_setup() {
         return None;
     }
     let exe = std::env::current_exe().ok()?;
     (exe.file_name()? == "FadeWerk DJ.exe").then_some(exe)
+}
+
+/// Vom Windows-Setup installiert: neben dem Programm liegt das Deinstallationsprogramm von Inno Setup.
+pub fn installed_with_setup() -> bool {
+    cfg!(windows)
+        && std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join("unins000.exe").is_file())).unwrap_or(false)
 }
 
 fn old_exe(exe: &Path) -> PathBuf {
@@ -238,6 +251,9 @@ fn replace(bundle: &Path, new: &Path) -> Result<(), String> {
 
 #[cfg(windows)]
 fn run(url: &str, report: &impl Fn(Progress)) -> Result<(), String> {
+    if installed_with_setup() {
+        return run_setup(url, report);
+    }
     let exe = portable_exe().ok_or("läuft nicht als FadeWerk DJ.exe")?;
     let dir = work_dir()?;
     report(Progress::Downloading);
@@ -263,6 +279,23 @@ fn run(url: &str, report: &impl Fn(Progress)) -> Result<(), String> {
     let _ = std::fs::remove_dir_all(&dir);
     // Neue Version starten, sobald diese beendet ist
     relaunch_windows(&exe, AFTER_UPDATE_FLAG)
+}
+
+/// Update einer Setup-Installation: Das Setup fragt selbst nach Administratorrechten, schließt diese App
+/// (falls sie noch läuft) und startet danach die neue Version mit `--after-update` (siehe fadewerk-dj.iss).
+#[cfg(windows)]
+fn run_setup(url: &str, report: &impl Fn(Progress)) -> Result<(), String> {
+    let dir = work_dir()?;
+    report(Progress::Downloading);
+    let setup = dir.join("FadeWerk-DJ-Setup.exe");
+    download(url, &setup)?;
+    report(Progress::Installing);
+    // Kein `command()`: Das Setup soll sein Fenster mit dem Fortschritt zeigen
+    Command::new(&setup)
+        .args(["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS"])
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Setup: {e}"))
 }
 
 #[cfg(target_os = "linux")]

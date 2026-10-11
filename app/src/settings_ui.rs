@@ -33,6 +33,8 @@ const SETTINGS_W: f32 = 557.0;
 pub enum SettingsAction {
     Device(Option<String>),
     HeadDevice(Option<String>),
+    /// Kurzen Testton über Master oder (`false`) auf dem Kopfhörer spielen.
+    TestTone(bool),
     Buffer(Option<u32>),
     Language(Lang),
     Skin(SkinId),
@@ -414,6 +416,9 @@ impl SettingsUi {
                     }
                 }
             });
+            if ui.button(tr("Testton")).on_hover_text(tr("Spielt einen kurzen Ton über die Lautsprecher (Master)")).clicked() {
+                out.push(SettingsAction::TestTone(true));
+            }
             if ui.button(tr("Liste aktualisieren")).clicked() {
                 self.devices = None;
             }
@@ -429,20 +434,26 @@ impl SettingsUi {
             .as_ref()
             .and_then(|id| devices.iter().find(|d| &d.id == id).map(|d| d.name.clone()))
             .unwrap_or_else(|| tr("Kein eigenes Gerät").to_owned());
-        egui::ComboBox::from_id_salt("head-device").selected_text(head_current).width(360.0).show_ui(ui, |ui| {
-            if ui.selectable_label(s.head_device.is_none(), tr("Kein eigenes Gerät")).clicked() {
-                out.push(SettingsAction::HeadDevice(None));
-            }
-            // Das Master-Gerät taucht hier nicht auf: dafür gibt es Split L/R und Ausgang 3/4
-            for d in devices.iter().filter(|d| Some(d.id.as_str()) != c.active_device_id) {
-                let label = format!("{}  ({} ch)", d.name, d.max_channels);
-                if ui.selectable_label(s.head_device.as_deref() == Some(d.id.as_str()), label).clicked() {
-                    out.push(SettingsAction::HeadDevice(Some(d.id.clone())));
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt("head-device").selected_text(head_current).width(360.0).show_ui(ui, |ui| {
+                if ui.selectable_label(s.head_device.is_none(), tr("Kein eigenes Gerät")).clicked() {
+                    out.push(SettingsAction::HeadDevice(None));
                 }
+                // Das Master-Gerät taucht hier nicht auf: dafür gibt es Split L/R und Ausgang 3/4
+                for d in devices.iter().filter(|d| Some(d.id.as_str()) != c.active_device_id) {
+                    let label = format!("{}  ({} ch)", d.name, d.max_channels);
+                    if ui.selectable_label(s.head_device.as_deref() == Some(d.id.as_str()), label).clicked() {
+                        out.push(SettingsAction::HeadDevice(Some(d.id.clone())));
+                    }
+                }
+            });
+            if ui.button(tr("Testton")).on_hover_text(tr("Spielt einen kurzen Ton auf dem Kopfhörer")).clicked() {
+                out.push(SettingsAction::TestTone(false));
             }
         });
         let note = match c.active_head {
             Some(name) => trf("Kopfhörer: {}", &[&name]),
+            None if s.head_device.is_some() => tr("Das gewählte Gerät ist nicht aktiv (beim Start nicht verbunden). Zum Einschalten in der Liste erneut wählen.").to_owned(),
             None => tr("Ohne eigenes Gerät läuft der Kopfhörer über „Split L/R“ oder „Ausg. 3/4“ im Mixer.").to_owned(),
         };
         ui.label(RichText::new(note).size(12.0).color(theme::dim()));

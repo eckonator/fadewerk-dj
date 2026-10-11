@@ -16,6 +16,7 @@ pub mod mixer;
 pub mod motor;
 pub mod sampler;
 pub mod spectrum;
+pub mod testtone;
 pub mod track;
 
 pub use automix::AutoFade;

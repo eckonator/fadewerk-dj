@@ -41,9 +41,9 @@ pub enum BrowserAction {
     FolderColumns(bool),
     /// Anteil der Spalten an der Breite, wenn der Browser unten steht (0 = Standard).
     ColumnsShare(f32),
-    /// Erweiterte Suche zum Speichern: „Suchfilter merken“ an/aus, „Doppelte Titel ausblenden“
-    /// und die Suche (leer, wenn nicht gemerkt).
-    SearchMemory(bool, bool, AdvancedSearch),
+    /// Erweiterte Suche zum Speichern: „Suchfilter merken“ an/aus, „Doppelte Titel ausblenden“,
+    /// „Nur ganze Wörter“ und die Suche (leer, wenn nicht gemerkt).
+    SearchMemory(bool, bool, bool, AdvancedSearch),
     /// Sichtbare Spalten der Titelliste oder ihre Breiten haben sich geändert (Schlüssel, Breiten je Schlüssel).
     TrackColumns(Vec<String>, Vec<(String, f32)>),
     /// Sortierung der Titelliste (Spaltenschlüssel, absteigend) oder `None` = Reihenfolge der Ordner bzw. Historie.
@@ -381,8 +381,10 @@ pub struct Browser {
     remember: bool,
     /// Beim Suchen jeden Titel nur einmal zeigen (Kopien in anderen Ordnern ausblenden).
     hide_duplicates: bool,
-    /// Zuletzt gemeldeter Stand (`remember`, `hide_duplicates`, Suche), um Änderungen zum Speichern zu erkennen.
-    reported: (bool, bool, AdvancedSearch),
+    /// Textfelder der erweiterten Suche treffen nur ganze Wörter („Cro“ nicht in „Crosby“).
+    whole_words: bool,
+    /// Zuletzt gemeldeter Stand (`remember`, `hide_duplicates`, `whole_words`, Suche), um Änderungen zum Speichern zu erkennen.
+    reported: (bool, bool, bool, AdvancedSearch),
 }
 
 impl Browser {
@@ -452,7 +454,8 @@ impl Browser {
             players_bottom: 0.0,
             remember: true,
             hide_duplicates: true,
-            reported: (true, true, AdvancedSearch::default()),
+            whole_words: false,
+            reported: (true, true, false, AdvancedSearch::default()),
         };
         match start_dir {
             Some(dir) => {
@@ -553,11 +556,12 @@ impl Browser {
     }
 
     /// Gespeicherte erweiterte Suche übernehmen.
-    pub fn set_search_memory(&mut self, remember: bool, hide_duplicates: bool, search: &AdvancedSearch) {
+    pub fn set_search_memory(&mut self, remember: bool, hide_duplicates: bool, whole_words: bool, search: &AdvancedSearch) {
         self.remember = remember;
         self.hide_duplicates = hide_duplicates;
+        self.whole_words = whole_words;
         self.adv = if remember { search.clone() } else { AdvancedSearch::default() };
-        self.reported = (self.remember, self.hide_duplicates, self.adv.clone());
+        self.reported = (self.remember, self.hide_duplicates, self.whole_words, self.adv.clone());
     }
 
     /// Entwicklerschalter `FW_SEARCH`: erweiterte Suche vorbelegt und offen.
@@ -637,6 +641,8 @@ impl Browser {
                         .color(theme::faint()),
                 );
                 ui.add_space(4.0);
+                ui.checkbox(&mut self.whole_words, tr("Nur ganze Wörter"))
+                    .on_hover_text(tr("„Cro“ findet dann „Cro“ und „Cro & Bausa“, aber nicht „Crosby“ oder „Macro“. Gilt für alle Textfelder dieses Fensters."));
                 ui.checkbox(&mut self.hide_duplicates, tr("Doppelte Titel ausblenden"))
                     .on_hover_text(tr("Liegt derselbe Titel mehrfach in den Ordnern (gleicher Interpret und Titel, fast gleich lang), zeigt die Suche nur das erste Exemplar."));
                 ui.add_space(6.0);
@@ -919,10 +925,10 @@ impl Browser {
         // Vor der Liste, damit Eingaben noch in diesem Bild filtern
         self.search_window(&ui.ctx().clone());
         // Geänderte Suche oder „Suchfilter merken“ zum Speichern melden (ohne Merken wird eine leere Suche gespeichert)
-        let now = (self.remember, self.hide_duplicates, if self.remember { self.adv.clone() } else { AdvancedSearch::default() });
+        let now = (self.remember, self.hide_duplicates, self.whole_words, if self.remember { self.adv.clone() } else { AdvancedSearch::default() });
         if now != self.reported {
             self.reported = now.clone();
-            out.push(BrowserAction::SearchMemory(now.0, now.1, now.2));
+            out.push(BrowserAction::SearchMemory(now.0, now.1, now.2, now.3));
         }
         if refresh_key {
             self.refresh();
@@ -1420,7 +1426,7 @@ impl Browser {
         let searching = !f.is_empty() || !self.adv.is_empty();
         // Alle Suchwörter müssen vorkommen, in beliebiger Reihenfolge
         let words: Vec<&str> = f.split_whitespace().collect();
-        let adv = (!self.adv.is_empty()).then(|| self.adv.prepare());
+        let adv = (!self.adv.is_empty()).then(|| self.adv.prepare(self.whole_words));
         let all: Box<dyn Iterator<Item = Row>> = match hist_day {
             Some(day) => Box::new(day.entries.iter().enumerate().map(|(slot, e)| Row { path: e.path.clone(), slot })),
             None => Box::new(self.tracks.iter().map(|p| Row { path: p.clone(), slot: 0 })),
@@ -1528,7 +1534,7 @@ impl Browser {
         let key = {
             use std::hash::{Hash, Hasher};
             let mut h = std::hash::DefaultHasher::new();
-            (&dirs, &f, &self.adv, self.hide_duplicates, self.sort, self.tracks_gen, self.tracks.len()).hash(&mut h);
+            (&dirs, &f, &self.adv, self.hide_duplicates, self.whole_words, self.sort, self.tracks_gen, self.tracks.len()).hash(&mut h);
             hist_day.map(|d| (&d.date, d.entries.len(), missing.len())).hash(&mut h);
             h.finish()
         };

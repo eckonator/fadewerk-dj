@@ -25,9 +25,14 @@ fn visible_rows_jump_the_queue() {
     for p in &queued {
         lib.request_meta(p.clone());
     }
+    // Was die Tag-Threads schon beim Einreihen erledigt haben, zählt nicht mit (auf langsamen CI-Rechnern
+    // sind das Hunderte); gemessen wird ab dem Vorrang-Aufruf
+    for _ in lib.poll() {}
     lib.request_meta_now(visible.clone());
 
-    // Die Tag-Threads haben höchstens ein paar Anfragen schon in Arbeit; danach kommt die sichtbare Zeile
+    // Die Tag-Threads haben höchstens ein paar Anfragen schon in Arbeit; danach kommt die sichtbare Zeile.
+    // Die Grenze lässt Luft für einen ausgelasteten Rechner (der Test-Thread kann vor dem Aufruf verdrängt
+    // werden, während die Threads weiterlesen); ohne Vorrang käme sie erst nach Tausenden Antworten.
     let mut position = None;
     let mut n = 0;
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
@@ -44,5 +49,5 @@ fn visible_rows_jump_the_queue() {
     }
     std::fs::remove_dir_all(&dir).unwrap();
     let position = position.expect("sichtbare Zeile nie gelesen");
-    assert!(position < 50, "sichtbare Zeile erst als {position}. Antwort");
+    assert!(position < 500, "sichtbare Zeile erst als {position}. Antwort");
 }

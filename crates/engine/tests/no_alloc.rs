@@ -118,6 +118,8 @@ fn audio_thread_never_allocates() {
         Command::LoadFx { slot: 7, sound: tone(48_000, 0.5) },
         Command::TriggerFx { slot: 0, to_master: true },
         Command::TriggerFx { slot: 7, to_master: false },
+        Command::TestTone { to_master: true },
+        Command::TestTone { to_master: false },
     ]);
     check(&mut engine, &mut ctl, "Neuer Titel ersetzt den alten", vec![
         Command::Load { deck: 1, id: 4, track: tone(44_100, 0.2), keep_playing: true, start_secs: 0.0 },

@@ -510,6 +510,12 @@ fn en(de: &str) -> Option<&'static str> {
         "Kleiner Puffer: weniger Verzögerung beim Scratchen, aber mehr Rechenlast. Bei Knacksern größer wählen."
             => "Smaller buffer: less delay when scratching, but more CPU load. Choose larger if you hear clicks.",
         "Liste aktualisieren" => "Refresh list",
+        "Nur ganze Wörter" => "Whole words only",
+        "„Cro“ findet dann „Cro“ und „Cro & Bausa“, aber nicht „Crosby“ oder „Macro“. Gilt für alle Textfelder dieses Fensters." => "“Cro” then finds “Cro” and “Cro & Bausa”, but not “Crosby” or “Macro”. Applies to all text fields in this window.",
+        "Testton" => "Test tone",
+        "Das gewählte Gerät ist nicht aktiv (beim Start nicht verbunden). Zum Einschalten in der Liste erneut wählen." => "The chosen device is not active (it was not connected at start). Choose it again in the list to switch it on.",
+        "Spielt einen kurzen Ton über die Lautsprecher (Master)" => "Plays a short tone on the speakers (master)",
+        "Spielt einen kurzen Ton auf dem Kopfhörer" => "Plays a short tone on the headphones",
         "Aktiv: {} · {} Hz · {} Kanäle" => "Active: {} · {} Hz · {} channels",
         "Lautsprecher (Master)" => "Speakers (master)",
         "Kopfhörer" => "Headphones",

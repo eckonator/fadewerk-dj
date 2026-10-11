@@ -114,12 +114,18 @@ jobs:
           DMG_PYTHON="$RUNNER_TEMP/dmgbuild/bin/python3" scripts/make-dmg.sh \
             "pkg/FadeWerk-DJ-${{ steps.version.outputs.version }}-macOS.dmg"
 
-      # Icon und Versionsangaben bettet app/build.rs ein (assets/icon.ico)
+      # Icon und Versionsangaben bettet app/build.rs ein (assets/icon.ico).
+      # Setup (nach „Programme“, mit Desktop-Verknüpfung) über Inno Setup 6, auf dem Runner vorhanden;
+      # die ZIP bleibt für die portable Nutzung und für das Update älterer, portabler Installationen.
       - name: Windows bauen
         if: matrix.name == 'Windows'
         shell: bash
         run: |
           cargo build --release -p fadewerk-dj
+          V="${{ steps.version.outputs.version }}"
+          cp THIRD-PARTY-LICENSES.yml target/release/
+          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" -Q "-DVersion=$V" "-DSource=$PWD/target/release" \
+            "-O$PWD/pkg" packaging/windows/fadewerk-dj.iss
           DIR="FadeWerk-DJ-${{ steps.version.outputs.version }}-Windows"
           mkdir -p "pkg/$DIR"
           cp target/release/fadewerk-dj.exe "pkg/$DIR/FadeWerk DJ.exe"
@@ -178,7 +184,9 @@ jobs:
             ```
             Or open the `.dmg` and drag FadeWerk DJ to Applications.
 
-            **Already installed?** Use **Update now** in the app (macOS, the Windows `.exe` from the zip, Linux installed with `install.sh`).
+            **Windows:** run `FadeWerk-DJ-${{ steps.version.outputs.version }}-Windows-Setup.exe` (installs to Program Files with a desktop shortcut; on a SmartScreen warning: More info → Run anyway). The `-Windows.zip` is the portable version.
+
+            **Already installed?** Use **Update now** in the app (macOS, Windows installed with the setup or the `.exe` from the zip, Linux installed with `install.sh`).
 
             Built from commit ${{ github.sha }}. Installation notes are in the README.
           files: pkg/*

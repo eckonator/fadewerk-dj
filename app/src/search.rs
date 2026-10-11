@@ -148,10 +148,12 @@ impl AdvancedSearch {
     }
 
     /// Für viele Titel vorbereitete Suche: Suchwörter einmal klein geschrieben, Bereiche einmal gelesen.
-    pub fn prepare(&self) -> PreparedSearch {
+    /// Mit `whole_words` treffen Textfelder nur ganze Wörter.
+    pub fn prepare(&self, whole_words: bool) -> PreparedSearch {
         let words = |s: &str| s.to_lowercase().split_whitespace().map(str::to_owned).collect::<Vec<_>>();
         let parse = |s: &str| s.trim().replace(',', ".").parse::<f32>().ok();
         PreparedSearch {
+            whole_words,
             title: words(&self.title),
             artist: words(&self.artist),
             album: words(&self.album),
@@ -166,12 +168,13 @@ impl AdvancedSearch {
     /// Passt der Titel? Für einzelne Prüfungen; bei vielen Titeln [`Self::prepare`] benutzen.
     #[cfg(test)]
     pub fn matches(&self, meta: &TrackMeta, path: &str, bpm: Option<f32>) -> bool {
-        self.prepare().matches(meta, Path::new(path), bpm)
+        self.prepare(false).matches(meta, Path::new(path), bpm)
     }
 }
 
 /// Vorbereitete erweiterte Suche, siehe [`AdvancedSearch::prepare`].
 pub struct PreparedSearch {
+    whole_words: bool,
     title: Vec<String>,
     artist: Vec<String>,
     album: Vec<String>,
@@ -192,7 +195,11 @@ impl PreparedSearch {
                 return true;
             }
             let hay = hay.to_lowercase();
-            words.iter().all(|w| hay.contains(w.as_str()))
+            if self.whole_words {
+                words.iter().all(|w| contains_word(&hay, w))
+            } else {
+                words.iter().all(|w| hay.contains(w.as_str()))
+            }
         };
         text_ok(&self.title, &meta.title)
             && text_ok(&self.artist, &meta.artist)
@@ -203,6 +210,20 @@ impl PreparedSearch {
             && (self.file_name.is_empty() || text_ok(&self.file_name, &path.file_name().unwrap_or_default().to_string_lossy()))
             && (self.folder.is_empty() || text_ok(&self.folder, &path.parent().map(|d| d.to_string_lossy()).unwrap_or_default()))
     }
+}
+
+/// Kommt `word` in `hay` als ganzes Wort vor, also nicht zwischen Buchstaben oder Ziffern?
+/// „cro“ trifft „cro & bausa“ und „cro-feat“, nicht „crosby“ oder „macro“.
+fn contains_word(hay: &str, word: &str) -> bool {
+    let joins = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
+    hay.match_indices(word).any(|(i, _)| {
+        let before = hay[..i].chars().next_back();
+        let after = hay[i + word.len()..].chars().next();
+        // Ein Satzzeichen am Rand des Suchworts (etwa „ac/dc“) begrenzt selbst
+        let starts = word.chars().next().is_some_and(|c| !c.is_alphanumeric());
+        let ends = word.chars().next_back().is_some_and(|c| !c.is_alphanumeric());
+        (starts || !joins(before)) && (ends || !joins(after))
+    })
 }
 
 /// Liegt der Wert im Bereich? Leere oder unlesbare Grenzen gelten nicht.
@@ -244,6 +265,26 @@ mod tests {
         assert!(s.matches(&m, "/Musik/Sunday.mp3", None));
         let s = AdvancedSearch { file_name: "musik".into(), ..Default::default() };
         assert!(!s.matches(&m, "/Musik/Sunday.mp3", None));
+    }
+
+    #[test]
+    fn whole_words_skip_longer_words() {
+        let s = AdvancedSearch { artist: "Cro".into(), ..Default::default() }.prepare(true);
+        let hit = |artist: &str| s.matches(&meta("Easy", artist, "", ""), Path::new("/x.mp3"), None);
+        assert!(hit("Cro"));
+        assert!(hit("Cro & Bausa"));
+        assert!(hit("Teesy feat. Cro"));
+        assert!(hit("CRO-Remix"));
+        assert!(!hit("Crosby, Stills & Nash"));
+        assert!(!hit("Macro Blue"));
+        assert!(!hit("Cro2"));
+        // Umlaute zählen als Buchstaben, Satzzeichen im Suchwort gehören dazu
+        let s = AdvancedSearch { artist: "bär ac/dc".into(), ..Default::default() }.prepare(true);
+        assert!(s.matches(&meta("", "Bär, AC/DC", "", ""), Path::new("/x.mp3"), None));
+        assert!(!s.matches(&meta("", "Bären, AC/DC", "", ""), Path::new("/x.mp3"), None));
+        // Ohne Häkchen wie bisher
+        let s = AdvancedSearch { artist: "Cro".into(), ..Default::default() }.prepare(false);
+        assert!(s.matches(&meta("", "Crosby", "", ""), Path::new("/x.mp3"), None));
     }
 
     #[test]
