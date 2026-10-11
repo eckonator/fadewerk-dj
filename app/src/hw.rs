@@ -211,6 +211,18 @@ pub fn steel_face(panel: Color32, dark: bool) -> Color32 {
     if dark { mix(panel, Color32::from_rgb(0x50, 0x55, 0x5d), 0.4) } else { mix(panel, Color32::from_rgb(0xc9, 0xcd, 0xd3), 0.45) }
 }
 
+/// Ruhige Fläche unter Listen: Auf Stahl dämpft sie Schleifspuren und Reflexe, damit die Schrift
+/// darüber gut lesbar bleibt (wie ein satiniertes Feld im gebürsteten Blech). Ohne Stahl nichts.
+pub fn calm_plate(p: &Painter, rect: Rect) {
+    if !theme::brushed() {
+        return;
+    }
+    let s = theme::skin();
+    let face = steel_face(s.panel, s.dark);
+    p.rect_filled(rect, 4.0, face.gamma_multiply(if s.dark { 0.72 } else { 0.68 }));
+    p.rect_stroke(rect, 4.0, Stroke::new(1.0, Color32::from_black_alpha(if s.dark { 70 } else { 30 })), egui::StrokeKind::Inside);
+}
+
 /// Grundfläche mit Verlauf; bei gebürstetem Stahl zusätzlich Schleifspuren und Lichtreflexe.
 pub fn surface(p: &Painter, rect: Rect, radius: f32, top: Color32, bottom: Color32) {
     gradient_rrect(p, rect, radius, top, bottom);
@@ -277,6 +289,12 @@ pub enum Look {
 /// Zeichnet eine Hardware-Taste in `rect`.
 #[allow(clippy::too_many_arguments)]
 pub fn paint_button(p: &Painter, rect: Rect, label: &str, font: FontId, look: Look, lit: bool, pressed: bool, hovered: bool, enabled: bool) {
+    let (c, text) = paint_button_face(p, rect, look, lit, pressed, hovered, enabled);
+    p.text(c, Align2::CENTER_CENTER, label, font, text);
+}
+
+/// Zeichnet die Taste ohne Beschriftung. Liefert Mitte und Farbe für Beschriftung oder Symbol.
+fn paint_button_face(p: &Painter, rect: Rect, look: Look, lit: bool, pressed: bool, hovered: bool, enabled: bool) -> (Pos2, Color32) {
     let s = theme::skin();
     let r = 5.0;
     let base = match look {
@@ -328,7 +346,34 @@ pub fn paint_button(p: &Painter, rect: Rect, label: &str, font: FontId, look: Lo
         );
     }
     let c = rect.center() + if pressed { vec2(0.0, 1.0) } else { vec2(0.0, 0.0) };
-    p.text(c, Align2::CENTER_CENTER, label, font, text);
+    (c, text)
+}
+
+/// Play/Pause-Taste. Die Symbole werden gezeichnet statt aus der Schrift genommen: ▶ und ⏸ stammen
+/// aus verschiedenen Schriften und säßen sonst unterschiedlich hoch. `icon` = Höhe der Symbole.
+pub fn play_pause_button(ui: &mut egui::Ui, size: egui::Vec2, icon: f32, look: Look, lit: bool, enabled: bool) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(size, if enabled { Sense::click() } else { Sense::hover() });
+    let pressed = enabled && resp.is_pointer_button_down_on();
+    let p = ui.painter();
+    let (c, color) = paint_button_face(p, rect, look, lit, pressed, resp.hovered(), enabled);
+    let h = icon;
+    let gap = h * 0.55;
+    // Dreieck links, optisch etwas breiter als hoch geteilt, damit es neben den Balken gleich schwer wirkt
+    let tri_w = h * 0.85;
+    let bar_w = h * 0.3;
+    let total = tri_w + gap + 2.0 * bar_w + h * 0.22;
+    let left = c.x - total / 2.0;
+    let (top, bottom) = (c.y - h / 2.0, c.y + h / 2.0);
+    p.add(egui::Shape::convex_polygon(
+        vec![pos2(left, top), pos2(left + tri_w, c.y), pos2(left, bottom)],
+        color,
+        Stroke::NONE,
+    ));
+    let bx = left + tri_w + gap;
+    for x in [bx, bx + bar_w + h * 0.22] {
+        p.rect_filled(Rect::from_min_max(pos2(x, top), pos2(x + bar_w, bottom)), 1.0, color);
+    }
+    if enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp }
 }
 
 /// Hardware-Taste als Widget.
@@ -422,6 +467,51 @@ pub fn mini_fader(ui: &mut egui::Ui, id: impl std::hash::Hash + std::fmt::Debug,
     let (resp, new) = horizontal_fader(ui, rect, id, to_x(value), to_x(default));
     (resp, new.map(|n| min + (n + 1.0) / 2.0 * (max - min)))
 }
+
+/// Drehregler, Wert 0 bis 1, Grundwert `default`. Ziehen nach oben dreht auf, mit ⇧ fein;
+/// Rechts- oder Doppelklick setzt auf den Grundwert. Der Bogen zeigt die Abweichung vom Grundwert.
+pub fn knob(ui: &mut egui::Ui, rect: Rect, id: impl std::hash::Hash + std::fmt::Debug, value: f32, default: f32, color: Color32) -> (Response, Option<f32>) {
+    let resp = ui.interact(rect, ui.id().with(id), Sense::click_and_drag());
+    let mut out = None;
+    if resp.dragged() {
+        let fine = if ui.input(|i| i.modifiers.shift) { 0.2 } else { 1.0 };
+        out = Some((value - resp.drag_delta().y / KNOB_TRAVEL_PX * fine).clamp(0.0, 1.0));
+    }
+    if reset_requested(&resp) {
+        out = Some(default);
+    }
+    let v = out.unwrap_or(value);
+    let s = theme::skin();
+    let p = ui.painter();
+    let c = rect.center();
+    let r = rect.width().min(rect.height()) / 2.0;
+    // Winkel: 0 = oben, von −135° (Wert 0) bis +135° (Wert 1)
+    let angle = |t: f32| (-0.75 + 1.5 * t) * std::f32::consts::PI;
+    let at = |a: f32, rr: f32| c + vec2(a.sin(), -a.cos()) * rr;
+    let arc = |from: f32, to: f32, rr: f32, stroke: Stroke| {
+        let n = 32;
+        let pts: Vec<Pos2> = (0..=n).map(|i| at(angle(from + (to - from) * i as f32 / n as f32), rr)).collect();
+        p.add(egui::Shape::line(pts, stroke));
+    };
+    let ring = r - 1.5;
+    arc(0.0, 1.0, ring, Stroke::new(2.5, if s.dark { Color32::from_black_alpha(160) } else { Color32::from_black_alpha(40) }));
+    arc(default, v, ring, Stroke::new(2.5, color));
+    // Markierung am Grundwert
+    p.line_segment([at(angle(default), ring - 2.5), at(angle(default), ring + 1.5)], Stroke::new(1.0, theme::faint()));
+
+    let body = r * 0.68;
+    p.circle_filled(c + vec2(0.0, 1.5), body, Color32::from_black_alpha(if s.dark { 150 } else { 60 }));
+    let (top, bottom) = if s.dark { (Color32::from_rgb(0x5a, 0x61, 0x6d), Color32::from_rgb(0x2a, 0x2f, 0x38)) } else { (Color32::from_rgb(0xfd, 0xfd, 0xfe), Color32::from_rgb(0xc9, 0xce, 0xd6)) };
+    p.circle_filled(c, body, bottom);
+    p.circle_filled(c - vec2(0.0, body * 0.12), body * 0.86, top);
+    p.circle_stroke(c, body, Stroke::new(1.0, darken(bottom, 0.4)));
+    let pointer = if s.dark { theme::ink() } else { Color32::from_rgb(0x1a, 0x1f, 0x29) };
+    p.line_segment([at(angle(v), body * 0.25), at(angle(v), body * 0.92)], Stroke::new(2.0, pointer));
+    (resp.on_hover_cursor(egui::CursorIcon::ResizeVertical), out)
+}
+
+/// So viele Punkte Mausweg drehen einen Regler von ganz zu bis ganz auf.
+const KNOB_TRAVEL_PX: f32 = 160.0;
 
 /// Waagerechter Fader (Crossfader), Wert -1 (links) bis +1 (rechts), Grundwert `default`.
 pub fn horizontal_fader(ui: &mut egui::Ui, rect: Rect, id: impl std::hash::Hash + std::fmt::Debug, value: f32, default: f32) -> (Response, Option<f32>) {

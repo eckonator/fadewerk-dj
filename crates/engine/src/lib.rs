@@ -10,6 +10,7 @@ mod atomic;
 pub mod automix;
 pub mod deck;
 pub mod engine;
+pub mod eq;
 pub mod headlink;
 pub mod mixer;
 pub mod motor;
@@ -17,6 +18,7 @@ pub mod track;
 
 pub use automix::AutoFade;
 pub use deck::Deck;
+pub use eq::{Eq, db_to_gain};
 pub use engine::{Command, Controller, DeckStatus, Engine, Shared, DECKS, PREVIEW, VOICES};
 pub use headlink::{HeadReceiver, HeadSink, head_link};
 pub use mixer::{CURVE_KNOTS, Curve, HeadMode};

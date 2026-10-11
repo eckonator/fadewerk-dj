@@ -395,7 +395,7 @@ fn controls(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, out: &mut Vec<
         let spinning_down = !m.playing && m.speed > 0.0;
         // Beim Auslaufen blinkt die Play-Taste
         let blink = spinning_down && (ui.input(|i| i.time) * 4.0) as i64 % 2 == 0;
-        if hw::button(ui, vec2(w - gap - cue_w, 52.0 * k()), "▶ ⏸", FontId::proportional(21.0 * k()), hw::Look::Color(theme::play()), m.playing || blink, enabled).clicked() {
+        if hw::play_pause_button(ui, vec2(w - gap - cue_w, 52.0 * k()), 17.0 * k(), hw::Look::Color(theme::play()), m.playing || blink, enabled).clicked() {
             out.push(DeckAction::TogglePlay);
         }
     });

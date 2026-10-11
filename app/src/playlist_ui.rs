@@ -60,6 +60,7 @@ pub fn show(
     let current = if deck_has_track { pl.current } else { None };
     let next = pl.current.map_or(0, |c| c + 1);
 
+    crate::hw::calm_plate(ui.painter(), ui.available_rect_before_wrap());
     egui::ScrollArea::vertical().id_salt(("pl", list)).auto_shrink([false, false]).show(ui, |ui| {
         let width = ui.available_width();
         let mut insert_line: Option<f32> = None;
@@ -90,7 +91,7 @@ pub fn show(
             let clip = Rect::from_min_max(pos2(text_left, rect.top()), pos2(text_right, rect.bottom()));
             let pc = p.with_clip_rect(clip);
             pc.text(pos2(text_left, rect.top() + 7.0), Align2::LEFT_TOP, &m.title, fonts::bold(14.0), theme::ink().gamma_multiply(alpha));
-            pc.text(pos2(text_left, rect.bottom() - 7.0), Align2::LEFT_BOTTOM, &m.artist, FontId::proportional(12.0), theme::dim().gamma_multiply(alpha));
+            pc.text(pos2(text_left, rect.bottom() - 7.0), Align2::LEFT_BOTTOM, &m.artist, fonts::list(12.0), theme::dim().gamma_multiply(alpha));
             let bpm = bpms.get(path).copied().or(m.bpm).map(|b| format!("{b:.0}")).unwrap_or_default();
             p.text(pos2(rect.right() - 60.0, rect.center().y), Align2::RIGHT_CENTER, bpm, FontId::monospace(12.0), theme::dim().gamma_multiply(alpha));
             let dur = if m.duration_secs > 0.0 { fmt_time(m.duration_secs) } else { String::new() };

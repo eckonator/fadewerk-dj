@@ -17,6 +17,9 @@ impl Default for Motor {
 }
 
 impl Motor {
+    /// Ohne An- und Auslauf: der Titel startet und hält sofort (Kopfhörer, Vorhören).
+    pub const INSTANT: Motor = Motor { spin_up_secs: 0.0, spin_down_secs: 0.0 };
+
     /// Drehzahl nach `dt` Sekunden. 1.0 ist die Nenndrehzahl.
     pub fn step(&self, current: f32, target: f32, dt: f32) -> f32 {
         if current < target {

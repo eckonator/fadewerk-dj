@@ -46,7 +46,7 @@ struct LoadJob {
 /// Getrennt, damit ein Ordner voller Tag-Anfragen das Laden in einen Player nicht aufhält.
 pub struct Library {
     meta_tx: Sender<PathBuf>,
-    scan_tx: Sender<(u64, PathBuf)>,
+    scan_tx: Sender<(u64, Vec<PathBuf>)>,
     /// Kennung der aktuellen Ordnersuche; ältere Suchen brechen ab.
     scan_current: Arc<AtomicU64>,
     load_tx: Sender<LoadJob>,
@@ -59,7 +59,7 @@ impl Library {
         let (meta_tx, meta_rx) = unbounded::<PathBuf>();
         let (load_tx, load_rx) = unbounded::<LoadJob>();
         let (tx, rx) = unbounded::<Response>();
-        let (scan_tx, scan_rx) = unbounded::<(u64, PathBuf)>();
+        let (scan_tx, scan_rx) = unbounded::<(u64, Vec<PathBuf>)>();
         let scan_current = Arc::new(AtomicU64::new(0));
 
         {
@@ -69,20 +69,22 @@ impl Library {
             thread::Builder::new()
                 .name("fw-scan".into())
                 .spawn(move || {
-                    for (token, path) in scan_rx {
+                    for (token, paths) in scan_rx {
                         if current.load(Ordering::Relaxed) != token {
                             continue;
                         }
                         let total = std::cell::Cell::new(0usize);
-                        walk_audio(
-                            &path,
-                            || current.load(Ordering::Relaxed) == token && total.get() < SCAN_LIMIT,
-                            |tracks| {
-                                total.set(total.get() + tracks.len());
-                                let _ = tx.send(Response::Scan { token, tracks, done: false, limited: false });
-                                wake();
-                            },
-                        );
+                        for path in &paths {
+                            walk_audio(
+                                path,
+                                || current.load(Ordering::Relaxed) == token && total.get() < SCAN_LIMIT,
+                                |tracks| {
+                                    total.set(total.get() + tracks.len());
+                                    let _ = tx.send(Response::Scan { token, tracks, done: false, limited: false });
+                                    wake();
+                                },
+                            );
+                        }
                         if current.load(Ordering::Relaxed) == token {
                             let _ = tx.send(Response::Scan { token, tracks: Vec::new(), done: true, limited: total.get() >= SCAN_LIMIT });
                             wake();
@@ -134,10 +136,11 @@ impl Library {
         Self { meta_tx, scan_tx, scan_current, load_tx, rx }
     }
 
-    /// Startet eine Suche nach Titeln in `path` samt Unterordnern. Eine laufende Suche bricht ab.
-    pub fn scan(&self, token: u64, path: PathBuf) {
+    /// Startet eine Suche nach Titeln in `paths` samt Unterordnern, Ordner für Ordner in dieser
+    /// Reihenfolge. Eine laufende Suche bricht ab.
+    pub fn scan(&self, token: u64, paths: Vec<PathBuf>) {
         self.scan_current.store(token, Ordering::Relaxed);
-        let _ = self.scan_tx.send((token, path));
+        let _ = self.scan_tx.send((token, paths));
     }
 
     pub fn request_meta(&self, path: PathBuf) {

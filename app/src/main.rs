@@ -16,6 +16,7 @@ mod meter;
 mod mixer_ui;
 mod playlist;
 mod playlist_ui;
+mod selection;
 mod session;
 mod settings;
 mod settings_ui;

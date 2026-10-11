@@ -37,6 +37,12 @@ pub fn bold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(BOLD.into()))
 }
 
+/// Schrift für Listen (Ordnerbrowser, Playlists). Auf hellen Skins und auf Stahl wirkt Medium
+/// zu dünn, dort wird SemiBold genommen.
+pub fn list(size: f32) -> FontId {
+    if crate::theme::skin().dark && !crate::theme::brushed() { FontId::proportional(size) } else { bold(size) }
+}
+
 /// 7-Segment-Schrift für Zeiten, BPM und Werte.
 pub fn lcd(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(LCD.into()))

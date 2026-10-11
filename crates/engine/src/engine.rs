@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::atomic::{AtomicF32, AtomicF64};
 use crate::deck::Deck;
+use crate::eq::Eq;
 use crate::headlink::HeadSink;
 use crate::mixer::{Curve, HeadMode};
 use crate::motor::Motor;
@@ -40,6 +41,8 @@ pub enum Command {
     SetCurve(Curve),
     SetChannelVolume { deck: usize, volume: f32 },
     SetPfl { deck: usize, on: bool },
+    /// Pegel eines EQ-Bandes (0 = Bässe, 1 = Mitten, 2 = Höhen) als Faktor, 0 = Kill.
+    SetEq { deck: usize, band: usize, gain: f32 },
     SetHeadMode(HeadMode),
     SetHeadMix(f32),
     SetHeadVolume(f32),
@@ -136,6 +139,7 @@ pub struct Engine {
     curve: Curve,
     volume: [f32; DECKS],
     pfl: [bool; DECKS],
+    eq: [Eq; DECKS],
     head_mode: HeadMode,
     head_mix: f32,
     head_volume: f32,
@@ -167,6 +171,7 @@ impl Engine {
             curve: Curve::Soft,
             volume: [0.85; DECKS],
             pfl: [false; DECKS],
+            eq: std::array::from_fn(|_| Eq::new(sample_rate)),
             head_mode: HeadMode::Off,
             head_mix: 0.0,
             head_volume: 0.8,
@@ -214,6 +219,7 @@ impl Engine {
             SetCurve(c) => self.curve = c,
             SetChannelVolume { deck, volume } if deck < DECKS => self.volume[deck] = volume.clamp(0.0, 1.0),
             SetPfl { deck, on } if deck < DECKS => self.pfl[deck] = on,
+            SetEq { deck, band, gain } if deck < DECKS => self.eq[deck].set_gain(band, gain),
             SetHeadMode(m) => self.head_mode = m,
             SetHeadMix(m) => self.head_mix = m.clamp(0.0, 1.0),
             SetHeadVolume(v) => self.head_volume = v.clamp(0.0, 1.0),
@@ -237,8 +243,15 @@ impl Engine {
 
         for block in out.chunks_mut(CHUNK * channels) {
             let n = block.len() / channels;
-            for (deck, buf) in self.decks.iter_mut().zip(self.bufs.iter_mut()) {
-                deck.render(&self.motor, rate, &mut buf[..n]);
+            for (v, (deck, buf)) in self.decks.iter_mut().zip(self.bufs.iter_mut()).enumerate() {
+                // Im Kopfhörer (PFL oder Vorhören) spielt der Titel normal, ohne Plattenspieler-Rampen
+                let headphones = v == PREVIEW || (v < DECKS && self.pfl[v]);
+                let motor = if headphones { &Motor::INSTANT } else { &self.motor };
+                deck.render(motor, rate, &mut buf[..n]);
+            }
+            // EQ vor Kanalfader und Vorhören, wie am Mischpult
+            for (eq, buf) in self.eq.iter_mut().zip(self.bufs.iter_mut()) {
+                eq.process(&mut buf[..n]);
             }
 
             // Crossfader gegen Knacksen glätten: höchstens ein voller Weg in 20 ms
@@ -389,6 +402,29 @@ mod tests {
         let right = out.iter().skip(1).step_by(2).fold(0.0f32, |m, s| m.max(s.abs()));
         assert!(left < 1e-6, "Master ist still, weil der Crossfader auf A steht");
         assert!(right > 0.2, "Kopfhörer hört B vor");
+    }
+
+    #[test]
+    fn pfl_and_preview_skip_motor_ramps() {
+        let (mut e, mut c) = Engine::new(8000, 2);
+        c.send(Command::SetMotor(Motor { spin_up_secs: 2.0, spin_down_secs: 2.0 }));
+        for v in [0, 1, PREVIEW] {
+            c.send(Command::Load { deck: v, id: 1, track: tone(5.0, 8000), keep_playing: false, start_secs: 0.0 });
+            c.send(Command::Play { deck: v });
+        }
+        c.send(Command::SetPfl { deck: 1, on: true });
+        run(&mut e, 0.1);
+        let shared = c.shared.clone();
+        let speed = |v: usize| shared.decks[v].speed();
+        assert!(speed(0) < 0.1, "A ohne Kopfhörer läuft langsam an");
+        assert_eq!(speed(1), 1.0, "B im Kopfhörer läuft sofort");
+        assert_eq!(speed(PREVIEW), 1.0, "Vorhören läuft sofort");
+        for v in [1, PREVIEW] {
+            c.send(Command::Pause { deck: v });
+        }
+        run(&mut e, 0.05);
+        assert_eq!(speed(1), 0.0);
+        assert_eq!(speed(PREVIEW), 0.0);
     }
 
     #[test]

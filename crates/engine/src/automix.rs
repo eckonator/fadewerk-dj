@@ -20,6 +20,11 @@ impl Fade {
     pub fn remaining_secs(&self) -> f32 {
         (self.duration - self.elapsed).max(0.0)
     }
+
+    /// Fortschritt der Überblendung, 0.0 bis 1.0.
+    pub fn progress(&self) -> f32 {
+        (self.elapsed / self.duration).clamp(0.0, 1.0)
+    }
 }
 
 /// Ergebnis eines Schritts während einer Überblendung.
