@@ -39,6 +39,16 @@ fn main() -> eframe::Result {
     let start_dir = std::env::args_os().nth(1).map(std::path::PathBuf::from).filter(|p| p.is_dir());
 
     // Grafik: wgpu (Standard) oder OpenGL. FW_RENDERER=glow|wgpu überschreibt die Einstellung.
+    // Kam der letzte Start mit wgpu nicht bis zum ersten Bild, ist vermutlich der Grafiktreiber
+    // abgestürzt (das kann Rust nicht abfangen): ab jetzt OpenGL
+    if !settings.opengl
+        && std::env::var_os("FW_RENDERER").is_none()
+        && diagnose::unfinished_graphics_start().is_some_and(|r| r == "wgpu")
+    {
+        log::warn!("Der letzte Start mit wgpu kam nicht bis zum ersten Bild, nehme ab jetzt OpenGL");
+        settings.opengl = true;
+        settings.save();
+    }
     let renderer = match std::env::var("FW_RENDERER").as_deref() {
         Ok("glow" | "opengl") => eframe::Renderer::Glow,
         Ok("wgpu") => eframe::Renderer::Wgpu,
@@ -71,6 +81,7 @@ fn main() -> eframe::Result {
 
 fn run(renderer: eframe::Renderer, settings: settings::Settings, start_dir: Option<PathBuf>, app_created: &Rc<Cell<bool>>) -> eframe::Result {
     log::info!("Grafik: {renderer}");
+    diagnose::graphics_starting(&renderer.to_string());
     // Entwicklerhilfe (nur Debug): FW_SIZE=2400x1350 setzt die Fenstergröße
     let size = std::env::var("FW_SIZE")
         .ok()
@@ -84,6 +95,7 @@ fn run(renderer: eframe::Renderer, settings: settings::Settings, start_dir: Opti
             .with_min_inner_size([1100.0, 720.0])
             .with_icon(eframe::icon_data::from_png_bytes(include_bytes!("../../assets/icon-256.png")).unwrap_or_default()),
         renderer,
+        wgpu_options: wgpu_options(),
         ..Default::default()
     };
     let created = Rc::clone(app_created);
@@ -95,4 +107,17 @@ fn run(renderer: eframe::Renderer, settings: settings::Settings, start_dir: Opti
             Ok(Box::new(app::FadeWerkDjApp::new(cc, settings, start_dir)))
         }),
     )
+}
+
+/// wgpu-Einstellungen. Unter Windows nur DirectX 12: Vulkan-Treiber (etwa Intel UHD 620) stürzten
+/// beim Start sporadisch ab, ohne dass sich das abfangen ließ. `WGPU_BACKEND` überschreibt das.
+fn wgpu_options() -> eframe::egui_wgpu::WgpuConfiguration {
+    use eframe::egui_wgpu::{WgpuConfiguration, WgpuSetup, WgpuSetupCreateNew, wgpu};
+    let mut options = WgpuConfiguration::default().with_surface_config(eframe::SurfaceConfig::LOW_LATENCY);
+    if cfg!(windows) {
+        let mut setup = WgpuSetupCreateNew::without_display_handle();
+        setup.instance_descriptor.backends = wgpu::Backends::from_env().unwrap_or(wgpu::Backends::DX12);
+        options.wgpu_setup = WgpuSetup::CreateNew(setup);
+    }
+    options
 }

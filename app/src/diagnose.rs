@@ -5,10 +5,15 @@
 //! beim Start spurlos. Alle Meldungen gehen deshalb zusätzlich in `fadewerk-dj.log` im
 //! Einstellungsordner. Ein Absturz (Panic) wird dort mit Ort und Aufrufliste festgehalten und
 //! unter Windows zusätzlich als Fenster gemeldet.
+//!
+//! Abstürze im Grafiktreiber selbst kann Rust nicht abfangen. Dafür liegt während des Grafikstarts
+//! eine Markierungsdatei im Einstellungsordner, die nach den ersten Bildern wieder verschwindet.
+//! Findet der nächste Start sie noch vor, kam der letzte nicht bis zum Bild.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Ist die Logdatei beim Start größer, wird sie zu `fadewerk-dj.old.log` und neu begonnen.
 /// Sonst wird angehängt, damit ein fehlgeschlagener Start beim nächsten nicht überschrieben wird.
@@ -44,12 +49,43 @@ fn open_log() -> Option<File> {
     OpenOptions::new().create(true).append(true).open(&path).ok()
 }
 
+/// Markierung für den Grafikstart nur, wenn auch ins Log geschrieben wird (nicht bei Entwicklerläufen).
+static MARK_STARTS: AtomicBool = AtomicBool::new(false);
+static GRAPHICS_OK: AtomicBool = AtomicBool::new(false);
+
+fn start_marker() -> Option<PathBuf> {
+    MARK_STARTS.load(Ordering::Relaxed).then(|| crate::settings::config_dir().map(|d| d.join("grafikstart")))?
+}
+
+/// Renderer des letzten Starts, wenn dieser nicht bis zum ersten Bild kam.
+pub fn unfinished_graphics_start() -> Option<String> {
+    std::fs::read_to_string(start_marker()?).ok().map(|s| s.trim().to_owned())
+}
+
+/// Vor dem Öffnen des Fensters: Markierung mit dem Namen des Renderers anlegen.
+pub fn graphics_starting(renderer: &str) {
+    if let Some(path) = start_marker() {
+        let _ = std::fs::write(path, renderer);
+    }
+}
+
+/// Nach den ersten Bildern: Grafik läuft, Markierung entfernen.
+pub fn graphics_running() {
+    if !GRAPHICS_OK.swap(true, Ordering::Relaxed) {
+        log::info!("Grafik läuft");
+        if let Some(path) = start_marker() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 /// Richtet das Log ein (mit Datei nur, wenn `to_file`) und meldet Abstürze.
 pub fn init(to_file: bool) {
     // Vor dem Anlegen des Einstellungsordners, sonst werden alte Einstellungen nicht mehr übernommen
     crate::settings::migrate_old_dir();
     let filter = env_logger::Env::default().default_filter_or("info,wgpu_core=warn,wgpu_hal=warn,naga=warn");
     let mut builder = env_logger::Builder::from_env(filter);
+    MARK_STARTS.store(to_file, Ordering::Relaxed);
     if let Some(file) = to_file.then(open_log).flatten() {
         builder.target(env_logger::Target::Pipe(Box::new(Tee(file)))).write_style(env_logger::WriteStyle::Never);
     }
