@@ -92,7 +92,7 @@ fn run(renderer: eframe::Renderer, settings: settings::Settings, start_dir: Opti
         viewport: egui::ViewportBuilder::default()
             .with_title("FadeWerk DJ")
             .with_inner_size(size)
-            .with_min_inner_size([1100.0, 720.0])
+            .with_min_inner_size([1100.0, 620.0])
             .with_icon(eframe::icon_data::from_png_bytes(include_bytes!("../../assets/icon-256.png")).unwrap_or_default()),
         renderer,
         wgpu_options: wgpu_options(),

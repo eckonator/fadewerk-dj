@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use eframe::egui::{self, Align2, CornerRadius, Frame, Margin, RichText, Stroke, vec2};
+use eframe::egui::{self, Align2, CornerRadius, Frame, Margin, Rect, RichText, Sense, Stroke, pos2, vec2};
 use egui_extras::{Size, StripBuilder};
 use fw_engine::{AutoFade, Command, Controller, Curve, HeadMode, Motor, PREVIEW, TrackAudio, db_to_gain, eq};
 use fw_library::{Library, Response, TrackMeta, Waveform};
@@ -24,7 +24,16 @@ use crate::playlist::{DragItem, Playlist};
 use crate::playlist_ui::{self, PlaylistAction};
 use crate::theme;
 
+/// Höhe der Player-Zeile bei Vergrößerung 1,0.
 const DECK_ROW_HEIGHT: f32 = 420.0;
+/// Kleinste Höhe der Player-Zeile (auf kleinen Bildschirmen schrumpfen die Player bis hierhin).
+const DECK_ROW_MIN: f32 = 325.0;
+/// So viel Höhe behält eine Playlist mindestens (Kopfzeile und gut vier Titel).
+const PLAYLIST_MIN: f32 = 150.0;
+/// Bereich des Zooms (Strg +/−) und Schrittweite.
+const ZOOM_MIN: f32 = 0.7;
+const ZOOM_MAX: f32 = 1.5;
+const ZOOM_STEP: f32 = 0.1;
 /// So viele Sekunden vor Titelende beginnt der Rahmen eines laufenden Players zu blinken.
 const END_WARNING_SECS: f64 = 15.0;
 /// In den letzten Sekunden blinkt er doppelt so schnell.
@@ -155,6 +164,9 @@ impl FadeWerkDjApp {
         }
         crate::fonts::install(&cc.egui_ctx);
         theme::apply(&cc.egui_ctx);
+        // Zoom selbst behandeln: begrenzt und gespeichert
+        cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
+        cc.egui_ctx.set_zoom_factor(settings.ui_zoom.clamp(ZOOM_MIN, ZOOM_MAX));
         let (audio, ctl, audio_error) = audio::start(settings.output_device.as_deref(), settings.buffer_frames);
         let ctx = cc.egui_ctx.clone();
         let lib = Library::start(Arc::new(move || ctx.request_repaint()));
@@ -430,6 +442,7 @@ impl FadeWerkDjApp {
                 theme::set_brushed(on);
                 theme::apply(ctx);
             }
+            SettingsAction::Zoom(z) => self.set_zoom(ctx, z),
             // Wirkt erst beim nächsten Start
             SettingsAction::OpenGl(on) => self.settings.opengl = on,
             SettingsAction::RevealLog => {
@@ -472,6 +485,14 @@ impl FadeWerkDjApp {
             self.save_settings();
             self.save_due = None;
         }
+    }
+
+    /// Zoom der ganzen Oberfläche setzen (begrenzt, auf 5 % gerundet) und merken.
+    fn set_zoom(&mut self, ctx: &egui::Context, z: f32) {
+        let z = ((z * 20.0).round() / 20.0).clamp(ZOOM_MIN, ZOOM_MAX);
+        ctx.set_zoom_factor(z);
+        self.settings.ui_zoom = z;
+        self.save_due = Some(ctx.input(|i| i.time) + 1.0);
     }
 
     fn save_settings(&self) {
@@ -1086,17 +1107,21 @@ impl eframe::App for FadeWerkDjApp {
             deck_playing: [self.ctl.shared.decks[0].is_playing(), self.ctl.shared.decks[1].is_playing()],
             fullscreen: ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)),
         };
-        // Höhe merken; ohne gespeicherten Wert 240 pt, auf hohen Monitoren mehr (bei 1400 pt Höhe etwa 450)
+        // Höhe merken; ohne gespeicherten Wert 240 pt, auf hohen Monitoren mehr (bei 1400 pt Höhe etwa 450),
+        // auf niedrigen weniger (ein gutes Viertel der Höhe)
+        let total_h = ui.available_height();
         let browser_h = if self.settings.browser_height > 0.0 {
             self.settings.browser_height
+        } else if total_h >= 920.0 {
+            240.0 + (total_h - 920.0) * 0.44
         } else {
-            240.0 + (ui.available_height() - 920.0).max(0.0) * 0.44
+            (total_h * 0.26).max(160.0)
         };
         let browser_resp = egui::Panel::bottom("browser")
             .resizable(true)
             .default_size(browser_h)
             .min_size(160.0)
-            .max_size((ui.available_height() - 420.0).max(200.0))
+            .max_size((total_h - DECK_ROW_MIN - PLAYLIST_MIN - 30.0).max(160.0))
             .frame(Frame::new().fill(theme::panel()).stroke(Stroke::new(1.0, theme::line())).inner_margin(Margin::same(10)))
             .show(ui, |ui| {
                 if theme::brushed() {
@@ -1170,6 +1195,10 @@ impl eframe::App for FadeWerkDjApp {
         let has = [self.decks[0].loaded_id != 0, self.decks[1].loaded_id != 0];
         let playing = [self.ctl.shared.decks[0].is_playing(), self.ctl.shared.decks[1].is_playing()];
         let preview_path = self.preview.as_ref().map(|p| p.path.as_path());
+        let deck_height_setting = self.settings.deck_height;
+        // Je Seite: Zelle des Players und Oberkante der Playlist, für den Griff dazwischen
+        let mut split_bounds = [(Rect::NOTHING, 0.0f32); 2];
+        let mut split_change: Option<f32> = None;
 
         egui::CentralPanel::default().frame(Frame::new().fill(theme::ground()).inner_margin(Margin::same(8))).show(ui, |ui| {
             if theme::brushed() {
@@ -1180,8 +1209,12 @@ impl eframe::App for FadeWerkDjApp {
             let center_w = center_width(ui.available_width());
             // Player wachsen mit ihrer Breite auch in der Höhe, damit sie nicht zu flachen Streifen werden
             let deck_inner = (ui.available_width() - center_w) / 2.0 - 36.0;
-            // Höchstens gut die Hälfte der Höhe, damit die Playlist darunter Platz behält
-            let deck_h = (DECK_ROW_HEIGHT * deck_ui::deck_scale(deck_inner)).min(ui.available_height() * 0.58).max(DECK_ROW_HEIGHT);
+            // Höchstens gut die Hälfte der Höhe, damit die Playlist darunter Platz behält; auf kleinen
+            // Bildschirmen schrumpfen die Player. Hat der Nutzer die Kante gezogen, gilt seine Höhe.
+            let avail_h = ui.available_height();
+            let deck_max = DECK_ROW_HEIGHT * deck_ui::deck_scale(deck_inner);
+            let wanted = if deck_height_setting > 0.0 { deck_height_setting } else { deck_max.min(avail_h * 0.58) };
+            let deck_h = wanted.min(deck_max).min(avail_h - PLAYLIST_MIN).max(DECK_ROW_MIN);
             StripBuilder::new(ui).size(Size::remainder()).size(Size::exact(center_w)).size(Size::remainder()).horizontal(|mut cols| {
                 for side in [0usize, 2] {
                     let d = side / 2;
@@ -1201,6 +1234,7 @@ impl eframe::App for FadeWerkDjApp {
                         b.size(Size::exact(deck_h)).size(Size::remainder().at_least(120.0)).vertical(|mut rows| {
                             rows.cell(|ui| {
                                 let cell = ui.max_rect();
+                                split_bounds[d].0 = cell;
                                 panel_frame(ui).show(ui, |ui| {
                                     ui.set_min_size(ui.available_size());
                                     deck_ui::show(ui, &decks_models[d], &mut deck_actions[d]);
@@ -1211,6 +1245,7 @@ impl eframe::App for FadeWerkDjApp {
                                 }
                             });
                             rows.cell(|ui| {
+                                split_bounds[d].1 = ui.max_rect().top();
                                 panel_frame(ui).show(ui, |ui| {
                                     ui.set_min_size(ui.available_size());
                                     playlist_ui::show(ui, d, &playlists[d], has[d], playing[d], preview_path, metas, bpms, &mut pl_actions[d]);
@@ -1220,8 +1255,28 @@ impl eframe::App for FadeWerkDjApp {
                     });
                 }
             });
+            // Griff zwischen Player und Playlist: ziehen ändert die Höhe der Player, Doppelklick = automatisch
+            for (d, (cell, list_top)) in split_bounds.iter().enumerate() {
+                let y = (cell.bottom() + list_top) / 2.0;
+                let rect = Rect::from_min_max(pos2(cell.left() + 6.0, y - 4.0), pos2(cell.right() - 6.0, y + 4.0));
+                let resp = ui.interact(rect, egui::Id::new(("deck_split", d)), Sense::click_and_drag()).on_hover_cursor(egui::CursorIcon::ResizeRow);
+                if resp.hovered() || resp.dragged() {
+                    let line = Rect::from_center_size(rect.center(), vec2(rect.width() * 0.3, 3.0));
+                    ui.painter().rect_filled(line, 1.5, theme::dim());
+                }
+                if resp.double_clicked() {
+                    split_change = Some(0.0);
+                } else if resp.dragged() && resp.drag_delta().y != 0.0 {
+                    split_change = Some((deck_h + resp.drag_delta().y).max(DECK_ROW_MIN));
+                }
+                resp.on_hover_text(tr("Ziehen ändert die Höhe der Player, Doppelklick stellt sie wieder automatisch ein"));
+            }
         });
         drop(decks_models);
+        if let Some(h) = split_change {
+            self.settings.deck_height = h;
+            self.save_due = Some(now + 1.0);
+        }
 
         for (d, acts) in deck_actions.into_iter().enumerate() {
             for a in acts {
@@ -1277,6 +1332,24 @@ impl eframe::App for FadeWerkDjApp {
         {
             self.settings.fullscreen = fs;
             self.save_due = Some(now + 1.0);
+        }
+
+        // Zoom wie im Browser: ⌘/Strg + Plus, Minus, 0
+        let zoom_key = ctx.input_mut(|i| {
+            let mut key = |k| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, k));
+            if key(egui::Key::Plus) || key(egui::Key::Equals) {
+                Some(ZOOM_STEP)
+            } else if key(egui::Key::Minus) {
+                Some(-ZOOM_STEP)
+            } else if key(egui::Key::Num0) {
+                Some(0.0)
+            } else {
+                None
+            }
+        });
+        if let Some(step) = zoom_key {
+            let z = if step == 0.0 { 1.0 } else { ctx.zoom_factor() + step };
+            self.set_zoom(&ctx, z);
         }
 
         // Einstellungen: ⌘, (macOS) bzw. Strg+,

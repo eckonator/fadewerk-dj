@@ -112,9 +112,12 @@ pub fn deck_scale(content_width: f32) -> f32 {
 /// Größte Breite des Bedienfelds zwischen Teller und Pitch; überschüssiger Platz bleibt links und rechts frei.
 const CONTROLS_MAX_W: f32 = 330.0;
 
+/// Kleinste Vergrößerung: so weit schrumpft ein Player auf niedrigen Bildschirmen.
+const MIN_SCALE: f32 = 0.75;
+
 pub fn show(ui: &mut egui::Ui, m: &DeckModel<'_>, out: &mut Vec<DeckAction>) {
     // Nicht größer, als die Höhe erlaubt: bei 1,0 braucht der Inhalt etwa 390 Punkte
-    let scale = deck_scale(ui.available_width()).min((ui.available_height() / 390.0).max(1.0));
+    let scale = deck_scale(ui.available_width()).min((ui.available_height() / 390.0).max(MIN_SCALE));
     SCALE.with(|s| s.set(scale));
     let color = theme::deck_color(m.deck);
     let mirrored = m.deck == 1;
