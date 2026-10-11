@@ -110,7 +110,14 @@ mod tests {
         }
         let mut found = Vec::new();
         walk_audio(&dir, || true, |batch| found.extend(batch));
-        let rel: Vec<String> = found.iter().map(|p| p.strip_prefix(&dir).unwrap().to_string_lossy().into_owned()).collect();
+        // Mit „/“ zusammensetzen, damit der Vergleich auch unter Windows („\“) passt
+        let rel: Vec<String> = found
+            .iter()
+            .map(|p| {
+                let parts: Vec<_> = p.strip_prefix(&dir).unwrap().components().map(|c| c.as_os_str().to_string_lossy()).collect();
+                parts.join("/")
+            })
+            .collect();
         assert_eq!(rel, ["intro.mp3", "CD 1/01.mp3", "CD 1/Bonus/x.flac", "CD 2/01.mp3"]);
 
         let mut first_only = Vec::new();
