@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=FadeWerk DJ
+GenericName=DJ Player
+Comment=DJ player with two decks, two playlists and auto-fade
+Comment[de]=DJ-Player mit zwei Decks, zwei Playlists und Auto-Fade
+Exec=fadewerk-dj
+Icon=fadewerk-dj
+Terminal=false
+Categories=AudioVideo;Audio;Player;Music;

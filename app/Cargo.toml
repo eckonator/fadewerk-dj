@@ -1,0 +1,24 @@
+[package]
+name = "fadewerk-dj"
+description = "DJ-Player mit zwei Decks, zwei Playlists und Auto-Fade"
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+fw-engine.workspace = true
+fw-library.workspace = true
+rtrb.workspace = true
+anyhow.workspace = true
+log.workspace = true
+crossbeam-channel.workspace = true
+eframe = "0.36"
+egui_extras = "0.36"
+cpal = "0.18"
+rfd = "0.17"
+dirs = "7"
+env_logger = "0.11"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

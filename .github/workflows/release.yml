@@ -1,0 +1,128 @@
+# Baut FadeWerk DJ für macOS, Windows und Linux und legt einen Release-Entwurf auf GitHub an.
+#
+# Auslösen: Tag pushen, z. B.
+#   git tag v0.1.0 && git push origin v0.1.0
+# oder von Hand unter „Actions → Release → Run workflow“ (dann ohne Release, nur Artefakte).
+#
+# Der Release wird als Entwurf angelegt; nach dem Prüfen auf GitHub „Publish release“ klicken.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            name: macOS
+          - os: windows-latest
+            name: Windows
+          # Älteres Ubuntu, damit das Programm auch auf älteren Distributionen läuft (glibc)
+          - os: ubuntu-22.04
+            name: Linux
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust installieren
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.name == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Linux-Pakete
+        if: matrix.name == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libxkbcommon-dev libwayland-dev libx11-dev \
+            libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libdbus-1-dev pkg-config
+
+      - name: Tests
+        run: cargo test --workspace --release
+
+      - name: Lizenzhinweise der Bibliotheken sammeln
+        shell: bash
+        run: |
+          cargo install cargo-bundle-licenses --locked
+          cargo bundle-licenses --format yaml --output THIRD-PARTY-LICENSES.yml
+
+      - name: Version bestimmen
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)-dev" >> "$GITHUB_OUTPUT"
+          fi
+
+      # macOS: Universal-Binary (Apple Silicon + Intel), als .app gebündelt und ad-hoc signiert
+      - name: macOS bauen
+        if: matrix.name == 'macOS'
+        run: |
+          cargo build --release -p fadewerk-dj --target aarch64-apple-darwin
+          cargo build --release -p fadewerk-dj --target x86_64-apple-darwin
+          mkdir -p target/release
+          lipo -create -output target/release/fadewerk-dj \
+            target/aarch64-apple-darwin/release/fadewerk-dj target/x86_64-apple-darwin/release/fadewerk-dj
+          FW_SKIP_BUILD=1 scripts/bundle-macos.sh
+          mkdir -p pkg
+          cp README.md LICENSE THIRD-PARTY-LICENSES.yml assets/fonts/OFL-*.txt dist/
+          ditto -c -k --keepParent "dist/FadeWerk DJ.app" "pkg/FadeWerk-DJ-${{ steps.version.outputs.version }}-macOS.zip"
+          cd dist && zip -q "../pkg/FadeWerk-DJ-${{ steps.version.outputs.version }}-macOS.zip" README.md LICENSE THIRD-PARTY-LICENSES.yml OFL-*.txt
+
+      - name: Windows bauen
+        if: matrix.name == 'Windows'
+        shell: bash
+        run: |
+          cargo build --release -p fadewerk-dj
+          DIR="FadeWerk-DJ-${{ steps.version.outputs.version }}-Windows"
+          mkdir -p "pkg/$DIR"
+          cp target/release/fadewerk-dj.exe "pkg/$DIR/FadeWerk DJ.exe"
+          cp README.md LICENSE THIRD-PARTY-LICENSES.yml assets/fonts/OFL-*.txt "pkg/$DIR/"
+          cd pkg && 7z a -tzip "$DIR.zip" "$DIR" > /dev/null && rm -r "$DIR"
+
+      - name: Linux bauen
+        if: matrix.name == 'Linux'
+        run: |
+          cargo build --release -p fadewerk-dj
+          DIR="FadeWerk-DJ-${{ steps.version.outputs.version }}-Linux-x86_64"
+          mkdir -p "pkg/$DIR"
+          cp target/release/fadewerk-dj assets/fadewerk-dj.desktop README.md LICENSE \
+            THIRD-PARTY-LICENSES.yml assets/fonts/OFL-*.txt "pkg/$DIR/"
+          cp assets/icon-256.png "pkg/$DIR/fadewerk-dj.png"
+          cd pkg && tar czf "$DIR.tar.gz" "$DIR" && rm -r "$DIR"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FadeWerk-DJ-${{ matrix.name }}
+          path: pkg/*
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: pkg
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: pkg/*

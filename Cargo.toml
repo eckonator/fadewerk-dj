@@ -1,0 +1,28 @@
+[workspace]
+resolver = "3"
+members = ["crates/engine", "crates/library", "app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["Markus Eckert"]
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eckonator/fadewerk-dj"
+
+[workspace.dependencies]
+fw-engine = { path = "crates/engine" }
+fw-library = { path = "crates/library" }
+rtrb = "0.4"
+anyhow = "1"
+log = "0.4"
+crossbeam-channel = "0.5"
+
+# Audio-Code muss auch im Debug-Build flott laufen, sonst knackt es
+[profile.dev.package."*"]
+opt-level = 2
+[profile.dev.package.fw-engine]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
