@@ -455,7 +455,7 @@ fn headphones(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerAction>)
         ui.label(small("CUE"));
         let (resp, new) = hw::mini_fader(ui, "headmix", m.head_mix, settings::DEFAULT_HEAD_MIX, 0.0, 1.0, ui.available_width() - 34.0);
         let new = hw::nudge(ui, &resp, m.head_mix, VOLUME_STEP, 0.0, 1.0).or(new);
-        resp.on_hover_text(tr("Mischung Vorhören ↔ Master"));
+        resp.on_hover_text(tr("Links (CUE): nur was du vorhörst · rechts (MST): die Musik der Lautsprecher"));
         if let Some(v) = new {
             out.push(MixerAction::HeadMix(v));
         }

@@ -113,7 +113,7 @@ fn en(de: &str) -> Option<&'static str> {
         "Kein Kopfhörersignal" => "No headphone signal",
         "Eine Soundkarte: links Master, rechts Kopfhörer" => "One sound card: master left, headphones right",
         "Mehrkanal-Interface: Kopfhörer auf Ausgang 3/4" => "Multi-channel interface: headphones on outputs 3/4",
-        "Mischung Vorhören ↔ Master" => "Mix cue ↔ master",
+        "Links (CUE): nur was du vorhörst · rechts (MST): die Musik der Lautsprecher" => "Left (CUE): only what you pre-listen to · right (MST): the music on the speakers",
         "PEGEL" => "LEVEL",
         "Keine Audio-Ausgabe gefunden" => "No audio output found",
         // Auto-Fade
@@ -513,6 +513,9 @@ fn en(de: &str) -> Option<&'static str> {
         "Nur ganze Wörter" => "Whole words only",
         "„Cro“ findet dann „Cro“ und „Cro & Bausa“, aber nicht „Crosby“ oder „Macro“. Gilt für alle Textfelder dieses Fensters." => "“Cro” then finds “Cro” and “Cro & Bausa”, but not “Crosby” or “Macro”. Applies to all text fields in this window.",
         "Testton" => "Test tone",
+        "Kopfhörer zum Vorhören (zweiter Ausgang)" => "Headphones for pre-listening (second output)",
+        "{} spielt zusätzlich zu den Lautsprechern. Dort hörst du, was du vorhörst (VORHÖREN, 🎧)." => "{} plays in addition to the speakers. There you hear what you pre-listen to (PRE-LISTEN, 🎧).",
+        "CUE/MST im Mixer steht auf {} % Master: Der Kopfhörer spielt auch die Musik der Lautsprecher. Nur Vorhören: unter HÖRER ganz nach links auf CUE." => "CUE/MST in the mixer is at {} % master: the headphones also play the music from the speakers. Pre-listening only: under PHONES, all the way left to CUE.",
         "Das gewählte Gerät ist nicht aktiv (beim Start nicht verbunden). Zum Einschalten in der Liste erneut wählen." => "The chosen device is not active (it was not connected at start). Choose it again in the list to switch it on.",
         "Spielt einen kurzen Ton über die Lautsprecher (Master)" => "Plays a short tone on the speakers (master)",
         "Spielt einen kurzen Ton auf dem Kopfhörer" => "Plays a short tone on the headphones",

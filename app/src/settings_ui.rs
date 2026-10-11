@@ -428,7 +428,7 @@ impl SettingsUi {
         }
 
         ui.add_space(10.0);
-        ui.label(RichText::new(tr("Kopfhörer")).strong());
+        ui.label(RichText::new(tr("Kopfhörer zum Vorhören (zweiter Ausgang)")).strong());
         let head_current = s
             .head_device
             .as_ref()
@@ -452,11 +452,19 @@ impl SettingsUi {
             }
         });
         let note = match c.active_head {
-            Some(name) => trf("Kopfhörer: {}", &[&name]),
+            Some(name) => trf("{} spielt zusätzlich zu den Lautsprechern. Dort hörst du, was du vorhörst (VORHÖREN, 🎧).", &[&name]),
             None if s.head_device.is_some() => tr("Das gewählte Gerät ist nicht aktiv (beim Start nicht verbunden). Zum Einschalten in der Liste erneut wählen.").to_owned(),
             None => tr("Ohne eigenes Gerät läuft der Kopfhörer über „Split L/R“ oder „Ausg. 3/4“ im Mixer.").to_owned(),
         };
         ui.label(RichText::new(note).size(12.0).color(theme::dim()));
+        // Häufigste Überraschung: CUE/MST nicht auf CUE, dann läuft die Master-Musik auch im Kopfhörer
+        if c.active_head.is_some() && s.head_mix > 0.01 {
+            ui.label(
+                RichText::new(trf("CUE/MST im Mixer steht auf {} % Master: Der Kopfhörer spielt auch die Musik der Lautsprecher. Nur Vorhören: unter HÖRER ganz nach links auf CUE.", &[&format!("{:.0}", s.head_mix * 100.0)]))
+                    .size(12.0)
+                    .color(theme::yellow()),
+            );
+        }
         if c.active_head.is_some() {
             ui.label(
                 RichText::new(tr("Zwei Geräte laufen nie exakt gleich schnell. FadeWerk DJ gleicht das automatisch aus; der Kopfhörer liegt dabei etwa 20 ms hinter den Lautsprechern."))
