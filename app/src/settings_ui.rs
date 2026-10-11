@@ -29,6 +29,8 @@ const LICENSE_TEXTS: [(&str, &str); 3] = [
 /// Innere Breite des Einstellungsfensters, für alle Seiten gleich. Die breiteste Seite (Effekte: Nummer,
 /// Symbol, Name, Datei, Tasten) gibt sie vor; sonst drückt sie das Fenster breiter.
 const SETTINGS_W: f32 = 557.0;
+/// Abstand des Fensters vom oberen Rand beim Öffnen.
+const SETTINGS_TOP: f32 = 48.0;
 
 pub enum SettingsAction {
     Device(Option<String>),
@@ -86,6 +88,8 @@ pub struct SettingsCtx<'a> {
 #[derive(Default)]
 pub struct SettingsUi {
     pub open: bool,
+    /// Im nächsten Bild oben mittig hinstellen (beim Öffnen), danach frei verschiebbar.
+    place: bool,
     tab: Tab,
     devices: Option<Vec<DeviceInfo>>,
     /// Im Tab „Über“ aufgeklappter Lizenztext (Index in `LICENSE_TEXTS`).
@@ -107,6 +111,7 @@ impl SettingsUi {
     /// Öffnet das Fenster auf einer Seite (Entwicklerhilfen, Klick auf die Versionsnummer).
     pub fn open_at(&mut self, page: &str) {
         self.open = true;
+        self.place = true;
         self.tab = match page {
             "sprache" => Tab::Language,
             "aussehen" => Tab::Look,
@@ -119,6 +124,7 @@ impl SettingsUi {
 
     pub fn toggle(&mut self) {
         self.open = !self.open;
+        self.place = self.open;
         if self.open {
             // Beim Öffnen frisch einlesen, damit neu angesteckte Geräte auftauchen
             self.devices = None;
@@ -130,12 +136,19 @@ impl SettingsUi {
             return;
         }
         let mut open = self.open;
-        egui::Window::new(tr("Einstellungen"))
+        // Oben mittig statt zentriert: Die Seiten sind verschieden hoch, die Reiter bleiben so beim
+        // Durchklicken an ihrem Platz. Nur beim Öffnen gesetzt, danach lässt sich das Fenster ziehen.
+        let mut window = egui::Window::new(tr("Einstellungen"))
             .id(egui::Id::new("einstellungen"))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
-            .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .pivot(Align2::CENTER_TOP);
+        if std::mem::take(&mut self.place) {
+            let screen = ctx.content_rect();
+            window = window.current_pos(egui::pos2(screen.center().x, screen.top() + SETTINGS_TOP));
+        }
+        window
             .default_width(SETTINGS_W)
             .frame(Frame::window(&ctx.global_style()).fill(theme::panel()).inner_margin(Margin::same(16)))
             .show(ctx, |ui| {
