@@ -291,6 +291,13 @@ fn en(de: &str) -> Option<&'static str> {
             => "Fonts Chakra Petch and DSEG (SIL Open Font License 1.1), egui and eframe (MIT/Apache-2.0), cpal (Apache-2.0), Symphonia (MPL-2.0), lofty (MIT/Apache-2.0) and other Rust libraries. The full list ships with every release as THIRD-PARTY-LICENSES.yml.",
         "Lizenztexte" => "License texts",
         "Gehäuseflächen wirken wie gebürstetes Metall in den Farben des Skins." => "Panels look like brushed metal in the skin's colours.",
+        "Grafik über OpenGL" => "Graphics via OpenGL",
+        "Für Rechner, auf denen das Fenster nicht zuverlässig startet (etwa virtuelle Maschinen). Wirkt nach einem Neustart." => "For computers where the window does not start reliably (such as virtual machines). Takes effect after a restart.",
+        "Logdatei:" => "Log file:",
+        "Logdatei nicht gefunden: {}" => "Log file not found: {}",
+        "Einzelheiten stehen in der Logdatei:\n{}" => "Details are in the log file:\n{}",
+        "FadeWerk DJ wurde wegen eines Fehlers beendet:\n\n{}\n({})" => "FadeWerk DJ was closed because of an error:\n\n{}\n({})",
+        "Das Fenster ließ sich nicht öffnen:\n{}" => "The window could not be opened:\n{}",
         "Einstellungen werden automatisch gespeichert." => "Settings are saved automatically.",
         _ => return None,
     })

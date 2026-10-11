@@ -138,11 +138,21 @@ pub struct FadeWerkDjApp {
 }
 
 impl FadeWerkDjApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, start_dir: Option<PathBuf>) -> Self {
-        let settings = Settings::load();
+    pub fn new(cc: &eframe::CreationContext<'_>, settings: Settings, start_dir: Option<PathBuf>) -> Self {
         i18n::set_lang(settings.language);
         theme::set_skin(settings.skin);
         theme::set_brushed(settings.brushed_steel);
+        // Für die Fehlersuche: welche Grafikkarte und welcher Treiber tatsächlich zeichnen
+        if let Some(rs) = &cc.wgpu_render_state {
+            let a = rs.adapter.get_info();
+            log::info!("wgpu: {} ({:?}, {:?}, Treiber {} {})", a.name, a.backend, a.device_type, a.driver, a.driver_info);
+        }
+        if let Some(gl) = &cc.gl {
+            use eframe::glow::HasContext as _;
+            // SAFETY: nur Abfragen, der Kontext ist während des Erzeugens der App aktiv
+            let (renderer, version) = unsafe { (gl.get_parameter_string(eframe::glow::RENDERER), gl.get_parameter_string(eframe::glow::VERSION)) };
+            log::info!("OpenGL: {renderer} ({version})");
+        }
         crate::fonts::install(&cc.egui_ctx);
         theme::apply(&cc.egui_ctx);
         let (audio, ctl, audio_error) = audio::start(settings.output_device.as_deref(), settings.buffer_frames);
@@ -419,6 +429,15 @@ impl FadeWerkDjApp {
                 self.settings.brushed_steel = on;
                 theme::set_brushed(on);
                 theme::apply(ctx);
+            }
+            // Wirkt erst beim nächsten Start
+            SettingsAction::OpenGl(on) => self.settings.opengl = on,
+            SettingsAction::RevealLog => {
+                if let Some(path) = crate::diagnose::log_path()
+                    && let Err(e) = reveal(&path)
+                {
+                    self.notify(trf("Logdatei nicht gefunden: {}", &[&e]), now);
+                }
             }
         }
         self.save_settings();
