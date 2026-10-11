@@ -247,6 +247,10 @@ fn en(de: &str) -> Option<&'static str> {
         // Einstellungen
         "Einstellungen" => "Settings",
         "Einstellungen (⌘,)" => "Settings (⌘,)",
+        "Vollbild (⌃⌘F)" => "Full screen (⌃⌘F)",
+        "Vollbild (F11)" => "Full screen (F11)",
+        "Vollbild beenden (⌃⌘F)" => "Exit full screen (⌃⌘F)",
+        "Vollbild beenden (F11)" => "Exit full screen (F11)",
         "Audio" => "Audio",
         "Sprache" => "Language",
         "Aussehen" => "Appearance",

@@ -127,6 +127,8 @@ pub struct FadeWerkDjApp {
     settings_ui: SettingsUi,
     tag_editor: Option<TagEditor>,
     save_due: Option<f64>,
+    /// Vollbild beim nächsten Bild umschalten (Taste im Browser).
+    toggle_fullscreen: bool,
     /// Einstellungen und Playlists speichern? Bei Entwicklerläufen nicht.
     persist: bool,
     session_saved: u64,
@@ -180,12 +182,16 @@ impl FadeWerkDjApp {
             settings_ui: SettingsUi::default(),
             tag_editor: None,
             save_due: None,
+            toggle_fullscreen: false,
             persist: true,
             session_saved: 0,
             session_checked: 0.0,
             last_heights: (0.0, 0.0),
         };
         app.persist = !app.dev.isolated();
+        if app.persist && app.settings.fullscreen {
+            cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+        }
         if app.persist {
             // Playlists vom letzten Mal wiederherstellen und die geladenen Titel wieder in die Player legen
             let (lists, missing) = crate::session::load();
@@ -990,6 +996,7 @@ impl FadeWerkDjApp {
                 self.save_settings();
             }
             BrowserAction::OpenSettings => self.settings_ui.toggle(),
+            BrowserAction::ToggleFullscreen => self.toggle_fullscreen = true,
         }
     }
 }
@@ -1054,6 +1061,7 @@ impl eframe::App for FadeWerkDjApp {
             preview_pos: preview_st.position_secs(),
             preview_dur: preview_st.duration_secs(),
             deck_playing: [self.ctl.shared.decks[0].is_playing(), self.ctl.shared.decks[1].is_playing()],
+            fullscreen: ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)),
         };
         // Höhe merken; ohne gespeicherten Wert 240 pt, auf hohen Monitoren mehr (bei 1400 pt Höhe etwa 450)
         let browser_h = if self.settings.browser_height > 0.0 {
@@ -1229,6 +1237,23 @@ impl eframe::App for FadeWerkDjApp {
                     });
                 });
             }
+        }
+
+        // Vollbild: F11 überall, auf macOS zusätzlich ⌃⌘F (wie die grüne Fenstertaste)
+        let fs_key = ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::NONE, egui::Key::F11)
+                || (cfg!(target_os = "macos") && i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::MAC_CMD, egui::Key::F))
+        });
+        let fullscreen = ctx.input(|i| i.viewport().fullscreen);
+        if fs_key || std::mem::take(&mut self.toggle_fullscreen) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fullscreen.unwrap_or(false)));
+        }
+        // Zustand merken, auch wenn er über die Fenstertaste des Systems wechselt
+        if let Some(fs) = fullscreen
+            && fs != self.settings.fullscreen
+        {
+            self.settings.fullscreen = fs;
+            self.save_due = Some(now + 1.0);
         }
 
         // Einstellungen: ⌘, (macOS) bzw. Strg+,
