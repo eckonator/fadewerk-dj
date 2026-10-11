@@ -17,6 +17,7 @@ use crate::devtools::DevTools;
 use crate::i18n::{self, tr, trf};
 use crate::settings::Settings;
 use crate::settings_ui::{SettingsAction, SettingsCtx, SettingsUi};
+use crate::tag_editor::{TagEditor, TagEditorEvent};
 use crate::meter::Meter;
 use crate::mixer_ui::{self, FadeAction, FadeModel, MixerAction, MixerModel};
 use crate::playlist::{DragItem, Playlist};
@@ -124,6 +125,7 @@ pub struct FadeWerkDjApp {
     dev: DevTools,
     settings: Settings,
     settings_ui: SettingsUi,
+    tag_editor: Option<TagEditor>,
     save_due: Option<f64>,
     /// Einstellungen und Playlists speichern? Bei Entwicklerläufen nicht.
     persist: bool,
@@ -176,6 +178,7 @@ impl FadeWerkDjApp {
             dev: DevTools::from_env(),
             settings,
             settings_ui: SettingsUi::default(),
+            tag_editor: None,
             save_due: None,
             persist: true,
             session_saved: 0,
@@ -234,6 +237,12 @@ impl FadeWerkDjApp {
             }
             // FW_SELECT=1: im Browser den 2. bis 4. Titel auswählen, um die Auswahl zu prüfen
             app.browser.demo_select = std::env::var_os("FW_SELECT").is_some();
+            // FW_TAGS=1: Fenster „Titelinfo & Tags“ für den ersten Titel öffnen
+            if std::env::var_os("FW_TAGS").is_some()
+                && let Some(t) = tracks.first()
+            {
+                app.tag_editor = Some(TagEditor::open(t.clone()));
+            }
             // FW_PREVIEW=1: den zweiten Titel vorhören, um die Vorhör-Anzeige zu prüfen
             if std::env::var_os("FW_PREVIEW").is_some()
                 && let Some(t) = tracks.get(1)
@@ -525,6 +534,10 @@ impl FadeWerkDjApp {
         for resp in responses {
             match resp {
                 Response::Meta(path, meta) => {
+                    // Geladene Titel zeigen geänderte Tags sofort
+                    for v in self.decks.iter_mut().filter(|v| v.path.as_ref() == Some(&path)) {
+                        v.meta = Some(meta.clone());
+                    }
                     self.metas.insert(path, meta);
                 }
                 Response::Scan { token, tracks, done, limited } => self.browser.receive_scan(token, tracks, done, limited),
@@ -841,6 +854,7 @@ impl FadeWerkDjApp {
             PlaylistAction::NeedMeta(p) => self.request_meta(p),
             PlaylistAction::Preview(p) => self.browser_action(BrowserAction::Preview(p), now),
             PlaylistAction::StopPreview => self.browser_action(BrowserAction::StopPreview, now),
+            PlaylistAction::EditTags(p) => self.browser_action(BrowserAction::EditTags(p), now),
             PlaylistAction::Drop { item, before } => match item {
                 DragItem::Files(paths) => {
                     let at = before.min(self.playlists[d].entries.len());
@@ -935,6 +949,7 @@ impl FadeWerkDjApp {
                     self.notify(trf("Lässt sich nicht anzeigen: {}", &[&e]), now);
                 }
             }
+            BrowserAction::EditTags(path) => self.tag_editor = Some(TagEditor::open(path)),
             BrowserAction::TreeWidth(w) => {
                 self.settings.tree_width = w;
                 self.save_settings();
@@ -1219,6 +1234,19 @@ impl eframe::App for FadeWerkDjApp {
             channels: self.ctl.shared.channels,
         };
         self.settings_ui.show(&ctx, &sctx, &mut settings_actions);
+        if let Some(event) = self.tag_editor.as_mut().and_then(|ed| ed.show(&ctx)) {
+            match event {
+                TagEditorEvent::Close => self.tag_editor = None,
+                TagEditorEvent::Saved(path) => {
+                    // Tags neu einlesen, damit Browser, Playlists und Player die neuen Angaben zeigen
+                    self.metas.remove(&path);
+                    self.meta_requested.remove(&path);
+                    self.request_meta(path);
+                    self.notify(tr("Tags gespeichert"), now);
+                }
+                TagEditorEvent::Reveal(path) => self.browser_action(BrowserAction::Reveal(path), now),
+            }
+        }
         for a in settings_actions {
             self.settings_action(a, &ctx, now);
         }

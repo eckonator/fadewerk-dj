@@ -27,6 +27,8 @@ pub enum BrowserAction {
     LoadDeck { deck: usize, path: PathBuf },
     /// Im Finder (Explorer, Dateimanager) zeigen.
     Reveal(PathBuf),
+    /// Fenster „Titelinfo & Tags“ öffnen.
+    EditTags(PathBuf),
     /// Der Nutzer hat die Breite des Ordnerbaums geändert.
     TreeWidth(f32),
     Preview(PathBuf),
@@ -191,6 +193,15 @@ impl Browser {
         self.rescan();
     }
 
+    /// Liest Ordnerbaum und Titelliste neu ein (Taste „Aktualisieren“, ⌘R, F5).
+    /// Die Auswahl in der Liste bleibt, soweit die Titel noch da sind.
+    pub fn refresh(&mut self) {
+        self.subdirs.clear();
+        let keep = std::mem::take(&mut self.picked);
+        self.rescan();
+        self.picked = keep;
+    }
+
     fn rescan(&mut self) {
         self.tracks.clear();
         self.limited = false;
@@ -252,6 +263,21 @@ impl Browser {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, ctx: &BrowserCtx<'_>, out: &mut Vec<BrowserAction>) {
+        // Nicht innerhalb von `ui.input` abfragen: egui hielte sonst dieselbe Sperre zweimal
+        let typing = ui.ctx().egui_wants_keyboard_input();
+        let (refocused, refresh_key) = ui.input(|i| {
+            (
+                i.events.iter().any(|e| matches!(e, egui::Event::WindowFocused(true))),
+                !typing && ((i.modifiers.command && i.key_pressed(Key::R)) || i.key_pressed(Key::F5)),
+            )
+        });
+        if refresh_key {
+            self.refresh();
+        } else if refocused {
+            // Zurück im Fenster, etwa nach dem Anlegen eines Ordners im Finder: Baum neu lesen.
+            // Die Titelliste bleibt, damit Auswahl und Scrollstand nicht springen.
+            self.subdirs.clear();
+        }
         // Vorgemerkte Ordner-Aktion ausführen, sobald alle Titel gefunden sind
         if !self.scanning
             && let Some(op) = self.queued.take()
@@ -271,6 +297,10 @@ impl Browser {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button(RichText::new("⚙").size(15.0)).on_hover_text(tr("Einstellungen (⌘,)")).clicked() {
                     out.push(BrowserAction::OpenSettings);
+                }
+                let tip = if cfg!(target_os = "macos") { tr("Ordner neu einlesen (⌘R)") } else { tr("Ordner neu einlesen (F5)") };
+                if ui.button(RichText::new("🔄").size(14.0)).on_hover_text(tip).clicked() {
+                    self.refresh();
                 }
                 if ui.button(tr("Ordner hinzufügen …")).clicked() {
                     out.push(BrowserAction::AddRoot);
@@ -373,7 +403,11 @@ impl Browser {
             .show_header(ui, |ui| {
                 let icon = if depth == 0 { "🗀" } else { "📁" };
                 let text = RichText::new(format!("{icon} {name}")).font(fonts::list(12.5)).color(if selected { theme::ink() } else { theme::dim() });
+                ui.visuals_mut().selection.bg_fill = theme::row_selected();
                 let resp = ui.add(Button::selectable(selected, text).frame_when_inactive(false));
+                if selected {
+                    ui.painter().rect_stroke(resp.rect, 4.0, egui::Stroke::new(1.5, theme::select_accent()), egui::StrokeKind::Inside);
+                }
                 if resp.clicked() {
                     if ui.input(|i| i.modifiers.command) { toggle_this = true } else { open_this = true }
                 }
@@ -510,6 +544,10 @@ impl Browser {
         }
 
         let picked = &mut self.picked;
+        // Rahmen der Auswahl erst nach der Tabelle zeichnen, sonst überdeckt die nächste Zeile ihn im Zwischenraum
+        let mut frames: Vec<(egui::Rect, bool, bool)> = Vec::new();
+        // Sichtbarer Bereich der Tabellenzeilen (ohne Kopf), zusammengesetzt aus den Zellen
+        let mut body_clip = egui::Rect::NOTHING;
         ui.visuals_mut().selection.bg_fill = theme::row_selected();
         // Text ausgewählter Zeilen behält seine Farbe (egui färbt ihn sonst einheitlich ein)
         ui.visuals_mut().selection.stroke.color = theme::ink();
@@ -553,11 +591,7 @@ impl Browser {
                     let targets = || if in_sel { sel_rows.clone() } else { vec![path.clone()] };
                     row.set_selected(in_sel);
                     row.col(|ui| {
-                        if in_sel {
-                            // Markierung am linken Rand, damit die Auswahl auch neben Zebra-Streifen auffällt
-                            let r = ui.max_rect().expand2(vec2(0.0, 3.0));
-                            ui.painter().rect_filled(egui::Rect::from_min_size(r.left_top(), vec2(3.0, r.height())), 1.0, theme::ink());
-                        }
+                        body_clip = body_clip.union(ui.clip_rect());
                         if crate::hw::preview_button(ui, vec2(28.0, 20.0), previewing).clicked() {
                             out.push(if previewing { BrowserAction::StopPreview } else { BrowserAction::Preview(path.clone()) });
                         }
@@ -584,7 +618,9 @@ impl Browser {
                         let t = if m.duration_secs > 0.0 { fmt_time(m.duration_secs) } else { "…".into() };
                         ui.label(RichText::new(t).monospace().size(12.0).color(theme::dim()));
                     });
+                    let mut right_edge = f32::INFINITY;
                     row.col(|ui| {
+                        right_edge = ui.max_rect().right() + ui.spacing().item_spacing.x / 2.0;
                         // Feste Größe, damit die Tasten in die Zeilenhöhe passen und mittig sitzen
                         for list in [0usize, 1] {
                             let letter = theme::deck_letter(list);
@@ -600,6 +636,17 @@ impl Browser {
                         }
                     });
                     let resp = row.response();
+                    if in_sel {
+                        // Rahmen um die Auswahl; zusammenhängende Zeilen bekommen einen gemeinsamen Rahmen
+                        let above = i > 0 && picked.contains(&rows[i - 1]);
+                        let below = rows.get(i + 1).is_some_and(|p| picked.contains(p));
+                        // Die Zeilenfläche reicht über die letzte Spalte hinaus; der Rahmen endet an der Spalte
+                        // Wie die Hinterlegung über den halben Zeilenabstand hinweg, damit die Kanten durchlaufen
+                        let gap = resp.ctx.global_style().spacing.item_spacing.y / 2.0;
+                        let mut r = resp.rect.expand2(vec2(-1.0, gap)).shrink(0.75);
+                        r.max.x = r.max.x.min(right_edge - 1.5);
+                        frames.push((r, above, below));
+                    }
                     if resp.clicked() {
                         let m = resp.ctx.input(|i| i.modifiers);
                         picked.click(&rows, path, m.command, m.shift);
@@ -613,6 +660,19 @@ impl Browser {
                     resp.context_menu(|ui| track_menu(ui, &targets(), ctx, out));
                 });
             });
+        let stroke = egui::Stroke::new(1.5, theme::select_accent());
+        for (r, above, below) in frames {
+            let clip = egui::Rect::from_x_y_ranges(r.expand(2.0).x_range(), body_clip.y_range());
+            let p = egui::Painter::new(ui.ctx().clone(), ui.layer_id(), clip);
+            p.vline(r.left(), r.y_range(), stroke);
+            p.vline(r.right(), r.y_range(), stroke);
+            if !above {
+                p.hline(r.x_range(), r.top(), stroke);
+            }
+            if !below {
+                p.hline(r.x_range(), r.bottom(), stroke);
+            }
+        }
     }
 }
 
@@ -693,6 +753,9 @@ fn track_menu(ui: &mut egui::Ui, paths: &[PathBuf], ctx: &BrowserCtx<'_>, out: &
             act = Some(BrowserAction::Preview(path.clone()));
         }
         ui.separator();
+        if ui.button(tr("Titelinfo & Tags …")).clicked() {
+            act = Some(BrowserAction::EditTags(path.clone()));
+        }
         if ui.button(reveal_label()).clicked() {
             act = Some(BrowserAction::Reveal(path.clone()));
         }
@@ -703,7 +766,7 @@ fn track_menu(ui: &mut egui::Ui, paths: &[PathBuf], ctx: &BrowserCtx<'_>, out: &
     }
 }
 
-fn reveal_label() -> &'static str {
+pub fn reveal_label() -> &'static str {
     if cfg!(target_os = "macos") {
         tr("Im Finder zeigen")
     } else if cfg!(windows) {

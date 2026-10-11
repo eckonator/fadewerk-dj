@@ -5,6 +5,7 @@
 //! - `FW_DEMO=1` verteilt die Titel des Startordners auf beide Playlists und startet Player A.
 //! - `FW_SKIN=nacht|classic|tag|neon` und `FW_LANG=de|en` überschreiben Skin und Sprache (ohne zu speichern).
 //! - `FW_PREVIEW=1` hört in der Demo den zweiten Titel vor.
+//! - `FW_TAGS=1` öffnet in der Demo das Fenster „Titelinfo & Tags“ für den ersten Titel.
 //! - `FW_SELECT=1` wählt in der Demo im Ordnerbrowser den 2. bis 4. Titel aus.
 //! - `FW_STEEL=1` schaltet gebürsteten Stahl ein (ohne zu speichern).
 //! - `FW_SETTINGS=audio|sprache|aussehen|ueber` öffnet das Einstellungsfenster auf dieser Seite.
