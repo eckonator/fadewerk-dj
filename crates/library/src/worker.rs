@@ -99,6 +99,10 @@ struct LoadJob {
 /// Getrennt, damit ein Ordner voller Tag-Anfragen das Laden in einen Player nicht aufhält.
 pub struct Library {
     meta_tx: Sender<PathBuf>,
+    /// Vorrang für Tags gerade sichtbarer Zeilen ([`Library::request_meta_now`]): Pfade auf einem Stapel
+    /// (die neuesten zuerst), je Pfad ein Signal im Kanal, damit die Tag-Threads ihn mit `select_biased!` vorziehen.
+    urgent: Arc<Mutex<Vec<PathBuf>>>,
+    urgent_tx: Sender<()>,
     check_tx: Sender<(PathBuf, Stamp)>,
     scan_tx: Sender<(u64, Vec<(PathBuf, bool)>)>,
     /// Kennung der aktuellen Ordnersuche; ältere Suchen brechen ab.
@@ -118,6 +122,8 @@ impl Library {
     pub fn start(wake: Arc<dyn Fn() + Send + Sync>) -> Self {
         let (meta_tx, meta_rx) = unbounded::<PathBuf>();
         let (check_tx, check_rx) = unbounded::<(PathBuf, Stamp)>();
+        let (urgent_tx, urgent_rx) = unbounded::<()>();
+        let urgent = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
         let (load_tx, load_rx) = unbounded::<LoadJob>();
         let (tx, rx) = unbounded::<Response>();
         let (scan_tx, scan_rx) = unbounded::<(u64, Vec<(PathBuf, bool)>)>();
@@ -193,12 +199,20 @@ impl Library {
 
         for i in 0..TAG_THREADS {
             let (tx, wake, meta_rx, check_rx) = (tx.clone(), wake.clone(), meta_rx.clone(), check_rx.clone());
+            let (urgent_rx, urgent) = (urgent_rx.clone(), urgent.clone());
             thread::Builder::new()
                 .name(format!("fw-tags-{i}"))
                 .spawn(move || {
                     loop {
-                        // Tags, die noch niemand kennt, gehen vor dem Prüfen gemerkter Tags
+                        // Sichtbare Zeilen zuerst, dann Tags, die noch niemand kennt, zuletzt das Prüfen gemerkter Tags
                         let resp = crossbeam_channel::select_biased! {
+                            recv(urgent_rx) -> job => match job {
+                                Ok(()) => match urgent.lock().unwrap_or_else(|e| e.into_inner()).pop() {
+                                    Some(path) => read_tags_response(path),
+                                    None => continue,
+                                },
+                                Err(_) => break,
+                            },
                             recv(meta_rx) -> job => match job {
                                 Ok(path) => read_tags_response(path),
                                 Err(_) => break,
@@ -264,7 +278,7 @@ impl Library {
             })
             .expect("Lade-Thread startet nicht");
 
-        Self { meta_tx, check_tx, scan_tx, scan_current, load_tx, bpm_tx, bpm_generation, sketches, sketch_cache, rx }
+        Self { meta_tx, urgent, urgent_tx, check_tx, scan_tx, scan_current, load_tx, bpm_tx, bpm_generation, sketches, sketch_cache, rx }
     }
 
     /// Startet eine Suche nach Titeln in `paths`, Ordner für Ordner in dieser Reihenfolge; `true` heißt
@@ -281,6 +295,13 @@ impl Library {
 
     pub fn request_meta(&self, path: PathBuf) {
         let _ = self.meta_tx.send(path);
+    }
+
+    /// Wie [`Self::request_meta`], aber vor allen wartenden Anfragen, die zuletzt angeforderten zuerst
+    /// (für sichtbare Zeilen: sonst warten sie hinter Zehntausenden Titeln einer Suche).
+    pub fn request_meta_now(&self, path: PathBuf) {
+        self.urgent.lock().unwrap_or_else(|e| e.into_inner()).push(path);
+        let _ = self.urgent_tx.send(());
     }
 
     /// Prüft im Hintergrund, ob gemerkte Tags noch gelten (Datei mit derselben Größe und Änderungszeit).

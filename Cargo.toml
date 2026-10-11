@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/engine", "crates/library", "app"]
 
 [workspace.package]
-version = "0.1.33"
+version = "0.1.34"
 edition = "2024"
 authors = ["Markus Eckert"]
 license = "GPL-3.0-or-later"

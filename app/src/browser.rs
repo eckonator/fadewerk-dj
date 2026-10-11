@@ -68,6 +68,8 @@ pub enum BrowserAction {
     StopPreview,
     PreviewSeek(f64),
     NeedMeta(PathBuf),
+    /// Tags einer sichtbaren Zeile, vor allen anderen.
+    ShowMeta(PathBuf),
     AddRoot,
     RemoveRoot(PathBuf),
     OpenSettings,
@@ -1773,7 +1775,7 @@ impl Browser {
                         let entry = entry_of(r);
                         let gone = hist_cols && missing.contains(&r.slot);
                         if !gone && !ctx.metas.contains_key(path) {
-                            out.push(BrowserAction::NeedMeta(path.clone()));
+                            out.push(BrowserAction::ShowMeta(path.clone()));
                         }
                         let m = meta_for(ctx.metas, path, entry);
                         let previewing = ctx.preview == Some(path.as_path());

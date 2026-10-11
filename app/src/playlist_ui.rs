@@ -26,6 +26,8 @@ pub enum PlaylistAction {
     Shuffle,
     Drop { item: DragItem, before: usize },
     NeedMeta(PathBuf),
+    /// Tags einer sichtbaren Zeile, vor allen anderen.
+    ShowMeta(PathBuf),
     /// Titel auf dem Kopfhörer vorhören (läuft über den Vorhör-Player des Ordnerbrowsers).
     Preview(PathBuf),
     StopPreview,
@@ -251,6 +253,7 @@ pub fn show(
             let m = match metas.get(path) {
                 Some(m) => m,
                 None => {
+                    out.push(PlaylistAction::ShowMeta(path.clone()));
                     fallback = TrackMeta::from_filename(path);
                     &fallback
                 }

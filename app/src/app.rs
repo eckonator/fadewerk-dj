@@ -196,6 +196,8 @@ pub struct FadeWerkDjApp {
     /// Zählt Änderungen an `metas` und `bpms` (die Titelliste filtert dann neu).
     data_gen: u64,
     meta_requested: HashSet<PathBuf>,
+    /// Davon mit Vorrang angefordert (sichtbare Zeilen), damit jeder Pfad nur einmal vorgezogen wird.
+    meta_urgent: HashSet<PathBuf>,
     bpms: HashMap<PathBuf, f32>,
     /// Gemerkte BPM aus der Tempo-Erkennung (`bpm.json`).
     bpm_cache: crate::bpm_cache::BpmCache,
@@ -344,6 +346,7 @@ impl FadeWerkDjApp {
             metas: HashMap::new(),
             data_gen: 0,
             meta_requested: HashSet::new(),
+            meta_urgent: HashSet::new(),
             bpms: HashMap::new(),
             bpm_cache: Default::default(),
             tag_cache: Default::default(),
@@ -1089,6 +1092,19 @@ impl FadeWerkDjApp {
                 self.lib.check_meta(path, stamp);
             }
             None => self.lib.request_meta(path),
+        }
+    }
+
+    /// Tags einer gerade sichtbaren Zeile: vor allen anderen wartenden Anfragen lesen.
+    fn request_meta_now(&mut self, path: PathBuf) {
+        if self.metas.contains_key(&path) || !self.meta_urgent.insert(path.clone()) {
+            return;
+        }
+        if self.tag_cache.get(&path).is_some() {
+            self.request_meta(path);
+        } else {
+            self.meta_requested.insert(path.clone());
+            self.lib.request_meta_now(path);
         }
     }
 
@@ -2035,6 +2051,7 @@ impl FadeWerkDjApp {
                 self.playlists[d].clear_keep(keep);
             }
             PlaylistAction::NeedMeta(p) => self.request_meta(p),
+            PlaylistAction::ShowMeta(p) => self.request_meta_now(p),
             PlaylistAction::NeedSketch(p) => {
                 if self.sketch_requested.insert(p.clone()) {
                     self.sketch_batch[d].push(p);
@@ -2228,6 +2245,7 @@ impl FadeWerkDjApp {
             }
             BrowserAction::PreviewSeek(s) => self.ctl.send(Command::Seek { deck: PREVIEW, secs: s }),
             BrowserAction::NeedMeta(p) => self.request_meta(p),
+            BrowserAction::ShowMeta(p) => self.request_meta_now(p),
             BrowserAction::AnalyzeBpm { paths, force } => {
                 for p in paths {
                     // Vielleicht nur umgezogen (Ordner umbenannt): dann ist die BPM schon bekannt
@@ -2780,7 +2798,8 @@ impl eframe::App for FadeWerkDjApp {
                     // Tags neu einlesen, damit Browser, Playlists und Player die neuen Angaben zeigen
                     self.metas.remove(&path);
                     self.meta_requested.remove(&path);
-                    self.request_meta(path);
+                    self.meta_urgent.remove(&path);
+                    self.request_meta_now(path);
                     self.notify(tr("Tags gespeichert"), now);
                 }
                 TagEditorEvent::Reveal(path) => self.browser_action(BrowserAction::Reveal(path), now),
