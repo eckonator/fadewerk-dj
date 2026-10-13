@@ -8,6 +8,7 @@
       @font-face { font-family: "Chakra Petch"; font-weight: 500; src: url("fonts/ChakraPetch-Medium.ttf"); }
       @font-face { font-family: "Chakra Petch"; font-weight: 600; src: url("fonts/ChakraPetch-SemiBold.ttf"); }
       text { font-family: "Chakra Petch", sans-serif; }
+      text.mono { font-family: Menlo, Monaco, monospace; }
     </style>
     <linearGradient id="steel" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#aab3be"/>
@@ -49,14 +50,17 @@
 
   <!-- Pfeil von der App (links) zu Programme (rechts) -->
   <g filter="url(#drop)">
-    <rect x="248" y="183" width="122" height="14" rx="7" fill="url(#arrow)"/>
-    <path d="M366 168 L398 190 L366 212 Z" fill="#58c4ee" stroke="#58c4ee" stroke-width="4" stroke-linejoin="round"/>
+    <rect x="248" y="171" width="122" height="14" rx="7" fill="url(#arrow)"/>
+    <path d="M366 156 L398 178 L366 200 Z" fill="#58c4ee" stroke="#58c4ee" stroke-width="4" stroke-linejoin="round"/>
   </g>
-  <text x="320" y="238" text-anchor="middle" font-size="14" font-weight="600" fill="#1b222d" letter-spacing="0.5">DRAG TO APPLICATIONS</text>
+  <text x="320" y="226" text-anchor="middle" font-size="14" font-weight="600" fill="#1b222d" letter-spacing="0.5">DRAG TO APPLICATIONS</text>
 
-  <!-- Hinweis zum ersten Start (App ist nicht von Apple notarisiert) -->
-  <rect x="40" y="306" width="560" height="68" rx="8" fill="#1b222d" opacity="0.82"/>
-  <text x="320" y="331" text-anchor="middle" font-size="13" font-weight="600" fill="#f2a33a">macOS blocks the first launch?</text>
-  <text x="320" y="352" text-anchor="middle" font-size="12" font-weight="500" fill="#dfe5ee">System Settings → Privacy &amp; Security → scroll down → “Open Anyway”</text>
-  <text x="320" y="367" text-anchor="middle" font-size="11" font-weight="500" fill="#9aa6b6">or install with the one-line Terminal command from the README</text>
+  <!-- Hinweis zum ersten Start (App ist nicht von Apple notarisiert). „Dennoch öffnen“ in den Systemeinstellungen
+       hilft ab Sequoia oft nicht, darum der Terminal-Befehl. -->
+  <rect x="40" y="282" width="560" height="110" rx="8" fill="#1b222d" opacity="0.85"/>
+  <text x="320" y="306" text-anchor="middle" font-size="13" font-weight="600" fill="#f2a33a">macOS says the app “cannot be verified”?</text>
+  <text x="320" y="327" text-anchor="middle" font-size="12" font-weight="500" fill="#dfe5ee">After dragging it to Applications, run this once in Terminal:</text>
+  <rect x="58" y="336" width="524" height="24" rx="4" fill="#0b0f15"/>
+  <text x="320" y="352.5" text-anchor="middle" class="mono" font-size="11.5" fill="#58c4ee" xml:space="preserve">xattr -dr com.apple.quarantine "/Applications/FadeWerk DJ.app"</text>
+  <text x="320" y="380" text-anchor="middle" font-size="11" font-weight="500" fill="#9aa6b6">or install with the one-line Terminal command from the README</text>
 </svg>

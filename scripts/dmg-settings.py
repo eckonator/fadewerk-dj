@@ -25,6 +25,6 @@ show_sidebar = False
 icon_size = 112
 text_size = 13
 icon_locations = {
-    os.path.basename(app): (150, 190),
-    "Applications": (490, 190),
+    os.path.basename(app): (150, 178),
+    "Applications": (490, 178),
 }
