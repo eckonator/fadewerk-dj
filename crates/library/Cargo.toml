@@ -13,4 +13,5 @@ log.workspace = true
 crossbeam-channel.workspace = true
 symphonia = { version = "0.6", features = ["all"] }
 lofty = "0.25"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "bmp", "webp"] }
 dirs = "7"

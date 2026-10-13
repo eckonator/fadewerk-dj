@@ -57,6 +57,8 @@ struct DeckView {
     meta: Option<TrackMeta>,
     waveform: Option<Arc<Waveform>>,
     bpm: Option<f32>,
+    /// Eingebettetes Cover als Textur für den Plattenteller.
+    cover: Option<egui::TextureHandle>,
     /// Kennung des Titels in der Engine, 0 = leer.
     loaded_id: u64,
     pending: Option<Pending>,
@@ -79,6 +81,7 @@ impl Default for DeckView {
             meta: None,
             waveform: None,
             bpm: None,
+            cover: None,
             loaded_id: 0,
             pending: None,
             pitch_pct: 0.0,
@@ -575,7 +578,7 @@ impl FadeWerkDjApp {
         }
     }
 
-    fn poll_library(&mut self, now: f64) {
+    fn poll_library(&mut self, ctx: &egui::Context, now: f64) {
         let responses: Vec<Response> = self.lib.poll().collect();
         for resp in responses {
             match resp {
@@ -613,6 +616,10 @@ impl FadeWerkDjApp {
                     v.meta = Some(l.meta);
                     v.waveform = Some(Arc::new(l.waveform));
                     v.bpm = l.bpm;
+                    v.cover = l.cover.map(|c| {
+                        let img = egui::ColorImage::from_rgba_unmultiplied([c.size as usize; 2], &c.rgba);
+                        ctx.load_texture(format!("cover-{d}"), img, egui::TextureOptions::LINEAR)
+                    });
                     v.loaded_id = l.token;
                     v.audio = Some(audio);
                     v.loop_beats = None;
@@ -754,6 +761,7 @@ impl FadeWerkDjApp {
                 v.waveform = None;
                 v.audio = None;
                 v.bpm = None;
+                v.cover = None;
                 v.loaded_id = 0;
                 v.pending = None;
                 v.loop_beats = None;
@@ -1073,7 +1081,7 @@ impl eframe::App for FadeWerkDjApp {
         let dt = (now - self.last_time).clamp(0.0, 0.1) as f32;
         self.last_time = now;
 
-        self.poll_library(now);
+        self.poll_library(&ctx, now);
         self.handle_track_ends();
         self.step_autofade(dt);
         self.push_eq();
@@ -1158,6 +1166,7 @@ impl eframe::App for FadeWerkDjApp {
                     has_track: v.loaded_id != 0,
                     loading: v.pending.is_some(),
                     waveform: v.waveform.as_deref(),
+                    cover: v.cover.as_ref().map(|t| t.id()),
                     pfl: v.pfl,
                     repeat: v.repeat,
                     loop_beats: v.loop_beats,
