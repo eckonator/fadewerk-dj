@@ -86,7 +86,17 @@ jobs:
           mkdir -p pkg
           cp README.md LICENSE THIRD-PARTY-LICENSES.yml assets/fonts/OFL-*.txt dist/
           ditto -c -k --keepParent "dist/FadeWerk DJ.app" "pkg/FadeWerk-DJ-${{ steps.version.outputs.version }}-macOS.zip"
-          cd dist && zip -q "../pkg/FadeWerk-DJ-${{ steps.version.outputs.version }}-macOS.zip" README.md LICENSE THIRD-PARTY-LICENSES.yml OFL-*.txt
+          (cd dist && zip -q "../pkg/FadeWerk-DJ-${{ steps.version.outputs.version }}-macOS.zip" README.md LICENSE THIRD-PARTY-LICENSES.yml OFL-*.txt)
+
+      # Zusätzlich ein DMG mit Installationsfenster (App nach „Programme“ ziehen).
+      # Die ZIP bleibt, weil scripts/install-macos.sh sie herunterlädt.
+      - name: macOS-DMG
+        if: matrix.name == 'macOS'
+        run: |
+          python3 -m venv "$RUNNER_TEMP/dmgbuild"
+          "$RUNNER_TEMP/dmgbuild/bin/pip" install --quiet dmgbuild==1.6.5
+          DMG_PYTHON="$RUNNER_TEMP/dmgbuild/bin/python3" scripts/make-dmg.sh \
+            "pkg/FadeWerk-DJ-${{ steps.version.outputs.version }}-macOS.dmg"
 
       - name: Windows bauen
         if: matrix.name == 'Windows'
@@ -143,5 +153,12 @@ jobs:
           name: FadeWerk DJ ${{ steps.version.outputs.version }}
           body: |
             Builds for macOS (Apple Silicon and Intel, one universal app), Windows (64-bit) and Linux (x86_64).
+
+            **macOS, easiest way** (no Gatekeeper prompt): paste into Terminal
+            ```
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install-macos.sh | bash
+            ```
+            Or open the `.dmg` and drag FadeWerk DJ to Applications.
+
             Built from commit ${{ github.sha }}. Installation notes are in the README.
           files: pkg/*
