@@ -49,29 +49,33 @@ Ready-to-run builds are on the [Releases](../../releases) page, one release per 
 
 | System | File | Notes |
 |---|---|---|
-| macOS 11 or later (Apple Silicon and Intel) | `…-macOS.dmg` or `…-macOS.zip` | Open the DMG and drag FadeWerk DJ to Applications (or unzip and move it there). See below for the first launch. |
+| macOS 11 or later (Apple Silicon and Intel) | `…-macOS.dmg` or `…-macOS.zip` | Easiest: the [one-line Terminal install](#macos-cannot-be-verified) below. Or open the DMG and drag FadeWerk DJ to Applications (or unzip and move it there). The app is not notarized by Apple, so see below for the first launch. |
 | Windows 10/11 (64-bit) | `…-Windows.zip` | Unzip and run `FadeWerk DJ.exe`. SmartScreen warns about unknown apps: **More info → Run anyway**. |
 | Linux (x86_64) | `…-Linux-x86_64.tar.gz` | Unpack and run `./fadewerk-dj`. Needs ALSA (or PipeWire/PulseAudio with the ALSA layer). |
 
-### macOS: installing without the Gatekeeper prompt
+### macOS: "cannot be verified"
 
-FadeWerk DJ is not notarized by Apple, so macOS blocks apps downloaded in the browser on first launch.
-The easiest way around this is to install from Terminal. This downloads the latest release,
-copies it to Applications and starts it, without any security prompt:
+The app is signed ad hoc but not notarized (that needs a paid Apple Developer account).
+Files downloaded in the browser get a quarantine flag, and Gatekeeper then refuses to
+open the app.
+
+**Easiest: install from Terminal.** This downloads the latest release, copies it to Applications
+and starts it. Downloads made this way carry no quarantine flag, so there is no security prompt.
+Running the same command again updates to the newest version.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/eckonator/fadewerk-dj/main/scripts/install-macos.sh | bash
 ```
 
-Running the same command again updates to the newest version.
+**Installed from the DMG or ZIP?** On recent macOS versions (Sequoia and later) *System Settings →
+Privacy & Security → Open Anyway* often does not help. Remove the flag in Terminal instead:
 
-If you installed from the DMG or ZIP and macOS refuses to open the app:
+```sh
+xattr -dr com.apple.quarantine "/Applications/FadeWerk DJ.app"
+```
 
-- **macOS 15 or later**: open FadeWerk DJ once, click *Done*, then go to
-  **System Settings → Privacy & Security**, scroll down and click **Open Anyway**.
-- **macOS 14 or earlier**: **right-click** the app → **Open** → **Open**.
-- Or remove the download mark in Terminal:
-  `xattr -dr com.apple.quarantine "/Applications/FadeWerk DJ.app"`
+Then open the app as usual. You need to do this once per downloaded version. The app is
+open source; you can also build it yourself (see below), which needs no workaround.
 
 ## Building
 
