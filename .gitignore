@@ -3,7 +3,3 @@
 .DS_Store
 .idea/
 /dist
-# Claude Code: Projektnotizen und Einstellungen nur lokal
-CLAUDE.md
-CLAUDE.local.md
-.claude/

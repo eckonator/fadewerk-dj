@@ -147,6 +147,11 @@ pub struct FadeWerkDjApp {
     session_checked: f64,
     /// Fensterhöhe und Browserhöhe im letzten Bild: ändert sich nur der Browser, hat der Nutzer ihn gezogen.
     last_heights: (f32, f32),
+    update_rx: Option<std::sync::mpsc::Receiver<Option<crate::update::NewVersion>>>,
+    /// Gefundene neue Version (Hinweisleiste), bis der Nutzer sie wegklickt.
+    new_version: Option<crate::update::NewVersion>,
+    /// Frage „nach Updates suchen?“ beim ersten Start.
+    ask_update: bool,
 }
 
 impl FadeWerkDjApp {
@@ -212,8 +217,22 @@ impl FadeWerkDjApp {
             session_saved: 0,
             session_checked: 0.0,
             last_heights: (0.0, 0.0),
+            update_rx: None,
+            new_version: None,
+            ask_update: false,
         };
         app.persist = !app.dev.isolated();
+        // Update-Prüfung: beim ersten Start fragen, danach nur wenn erlaubt (nicht bei Entwicklerläufen,
+        // außer mit FW_UPDATE_URL; FW_UPDATE_ASK=1 zeigt die Frage)
+        let dev_update = cfg!(debug_assertions) && std::env::var_os("FW_UPDATE_URL").is_some();
+        let dev_ask = cfg!(debug_assertions) && std::env::var_os("FW_UPDATE_ASK").is_some();
+        match app.settings.update_check {
+            _ if dev_ask => app.ask_update = true,
+            _ if dev_update => app.update_rx = Some(crate::update::check_in_background(cc.egui_ctx.clone())),
+            None if app.persist => app.ask_update = true,
+            Some(true) if app.persist => app.update_rx = Some(crate::update::check_in_background(cc.egui_ctx.clone())),
+            _ => {}
+        }
         if app.persist && app.settings.fullscreen {
             cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
         }
@@ -448,6 +467,10 @@ impl FadeWerkDjApp {
             SettingsAction::Zoom(z) => self.set_zoom(ctx, z),
             // Wirkt erst beim nächsten Start
             SettingsAction::OpenGl(on) => self.settings.opengl = on,
+            SettingsAction::UpdateCheck(on) => {
+                self.settings.update_check = Some(on);
+                self.ask_update = false;
+            }
             SettingsAction::RevealLog => {
                 if let Some(path) = crate::diagnose::log_path()
                     && let Err(e) = reveal(&path)
@@ -496,6 +519,68 @@ impl FadeWerkDjApp {
         ctx.set_zoom_factor(z);
         self.settings.ui_zoom = z;
         self.save_due = Some(ctx.input(|i| i.time) + 1.0);
+    }
+
+    /// Schwebende Leiste oben in der Mitte: einmalige Frage, ob nach Updates gesucht werden darf,
+    /// bzw. Hinweis auf eine neue Version. Schwebt über der Oberfläche, damit sich nichts verschiebt.
+    fn update_ui(&mut self, ctx: &egui::Context) {
+        if let Some(rx) = &self.update_rx
+            && let Ok(result) = rx.try_recv()
+        {
+            self.new_version = result;
+            self.update_rx = None;
+        }
+        if !self.ask_update && self.new_version.is_none() {
+            return;
+        }
+        let font = crate::fonts::bold(13.0);
+        let mut answer = None;
+        let mut close = false;
+        egui::Area::new(egui::Id::new("update")).anchor(Align2::CENTER_TOP, vec2(0.0, 12.0)).show(ctx, |ui| {
+            Frame::new()
+                .fill(theme::panel2())
+                .stroke(Stroke::new(1.0, theme::line()))
+                .corner_radius(CornerRadius::same(6))
+                .inner_margin(Margin::symmetric(14, 10))
+                .show(ui, |ui| {
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        if self.ask_update {
+                            ui.vertical(|ui| {
+                                ui.label(RichText::new(tr("Beim Start nach neuen Versionen suchen?")).strong().color(theme::ink()));
+                                ui.label(RichText::new(tr("Dabei fragt FadeWerk DJ nur bei GitHub nach der neuesten Version – ohne Daten über deine Musik.")).size(11.5).color(theme::dim()));
+                            });
+                            ui.add_space(10.0);
+                            if crate::hw::button(ui, vec2(100.0, 28.0), tr("Ja, prüfen"), font.clone(), crate::hw::Look::Color(theme::play()), false, true).clicked() {
+                                answer = Some(true);
+                            }
+                            if crate::hw::button(ui, vec2(70.0, 28.0), tr("Nein"), font.clone(), crate::hw::Look::Plain, false, true).clicked() {
+                                answer = Some(false);
+                            }
+                        } else if let Some(v) = &self.new_version {
+                            ui.label(RichText::new(trf("FadeWerk DJ {} ist verfügbar (installiert: {}).", &[&v.version, &env!("CARGO_PKG_VERSION")])).strong().color(theme::ink()));
+                            ui.add_space(10.0);
+                            if crate::hw::button(ui, vec2(190.0, 28.0), tr("Download-Seite öffnen"), font.clone(), crate::hw::Look::Color(theme::play()), false, true).clicked() {
+                                ctx.open_url(egui::OpenUrl::new_tab(&v.url));
+                                close = true;
+                            }
+                            if crate::hw::button(ui, vec2(80.0, 28.0), tr("Später"), font.clone(), crate::hw::Look::Plain, false, true).clicked() {
+                                close = true;
+                            }
+                        }
+                    });
+                });
+        });
+        if let Some(on) = answer {
+            self.settings.update_check = Some(on);
+            self.ask_update = false;
+            self.save_settings();
+            if on {
+                self.update_rx = Some(crate::update::check_in_background(ctx.clone()));
+            }
+        }
+        if close {
+            self.new_version = None;
+        }
     }
 
     fn save_settings(&self) {
@@ -1309,6 +1394,8 @@ impl eframe::App for FadeWerkDjApp {
         for a in browser_actions {
             self.browser_action(a, now);
         }
+
+        self.update_ui(&ctx);
 
         // Hinweis unten in der Mitte
         if let Some((text, until)) = self.notice.clone() {

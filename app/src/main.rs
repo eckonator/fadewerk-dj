@@ -23,6 +23,7 @@ mod session;
 mod settings;
 mod settings_ui;
 mod theme;
+mod update;
 
 use std::cell::Cell;
 use std::path::PathBuf;

@@ -10,6 +10,8 @@
 //! - `FW_STEEL=1` schaltet gebürsteten Stahl ein (ohne zu speichern).
 //! - `FW_SETTINGS=audio|sprache|aussehen|ueber` öffnet das Einstellungsfenster auf dieser Seite.
 //! - `FW_SIZE=2400x1350` setzt die Fenstergröße (in `main.rs`).
+//! - `FW_UPDATE_ASK=1` zeigt die Frage nach der Update-Prüfung; `FW_UPDATE_URL=file:///…json` prüft gegen eine
+//!   eigene Release-Antwort (in `app.rs` bzw. `update.rs`).
 //! - Bei diesen Schaltern wird nichts gespeichert; `FW_PERSIST=1` erzwingt Speichern (Test mit anderem `HOME`).
 
 use std::io::Write;
