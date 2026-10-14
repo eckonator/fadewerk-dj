@@ -6,7 +6,7 @@ written in Rust. Click a folder and start playing: no database, no library impor
 ![FadeWerk DJ with the “Night” skin](docs/screenshot.png)
 
 <details>
-<summary>“Classic” skin with brushed steel, track playing in the headphones</summary>
+<summary>“Classic” skin with brushed steel, a day of the history and a track playing in the headphones</summary>
 
 ![FadeWerk DJ with the “Classic” skin and brushed steel](docs/screenshot-steel.png)
 </details>
@@ -36,7 +36,9 @@ written in Rust. Click a folder and start playing: no database, no library impor
   Recording can be switched off in the settings.
 - **A turntable per deck**: drag the platter or the waveform to scratch forwards and backwards,
   hold it to stop the record, tap the waveform to play or pause. Embedded cover art turns the record
-  into a spinning picture disc.
+  into a spinning picture disc. A tonearm swings onto the record on play, follows the track from the
+  outer groove inwards, lifts on pause and returns to its rest on stop; drag it to drop the needle
+  anywhere in the track.
 - **Motor**: start, pause and stop spin up and down like a real turntable
   (adjustable start and stop time). CUE jumps instantly.
 - **Transport per deck**: CUE, play/pause, stop, previous, next, repeat (off, track, list;

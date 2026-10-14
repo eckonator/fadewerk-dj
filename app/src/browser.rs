@@ -1333,7 +1333,9 @@ impl Browser {
                                         number_cell(&bpm.map(|b| format!("{b:.0}")).unwrap_or_else(|| "–".into()))
                                     }
                                     TrackColumn::Time => {
-                                        number_cell(&if m.duration_secs > 0.0 { fmt_time(m.duration_secs) } else { "…".into() })
+                                        // „…“ = Tags werden noch gelesen; fehlende Dateien ohne bekannte Länge zeigen „–“
+                                        let t = if m.duration_secs > 0.0 { fmt_time(m.duration_secs) } else if gone { "–".into() } else { "…".into() };
+                                        number_cell(&t)
                                     }
                                 };
                                 elided_cell(ui, text, &mut tip);
