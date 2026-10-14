@@ -7,6 +7,7 @@
 //! - `FW_PREVIEW=1` hört in der Demo den zweiten Titel vor.
 //! - `FW_TAGS=1` öffnet in der Demo das Fenster „Titelinfo & Tags“ für den ersten Titel.
 //! - `FW_SELECT=1` wählt in der Demo im Ordnerbrowser den 2. bis 4. Titel aus.
+//! - `FW_BPM=1` ermittelt in der Demo die fehlenden BPM des Startordners (Ergebnis in `bpm.json`, mit `FW_PERSIST=1`).
 //! - `FW_SEARCH="genre=Rock,year=1980-1989"` öffnet die erweiterte Suche mit diesen Feldern.
 //! - `FW_COLUMNS=artist,album,genre,year,…` zeigt diese Spalten in der Titelliste des Browsers.
 //! - `FW_STEEL=1` schaltet gebürsteten Stahl ein (ohne zu speichern).

@@ -115,6 +115,11 @@ pub struct FadeWerkDjApp {
     metas: HashMap<PathBuf, TrackMeta>,
     meta_requested: HashSet<PathBuf>,
     bpms: HashMap<PathBuf, f32>,
+    /// Gemerkte BPM aus der Tempo-Erkennung (`bpm.json`).
+    bpm_cache: crate::bpm_cache::BpmCache,
+    /// Titel, deren BPM-Analyse noch läuft, und Gesamtzahl seit dem letzten Leerlauf (für die Fortschrittsanzeige).
+    bpm_pending: HashSet<PathBuf>,
+    bpm_total: usize,
     autofade: AutoFade,
     crossfader: f32,
     curve: Curve,
@@ -195,6 +200,9 @@ impl FadeWerkDjApp {
             metas: HashMap::new(),
             meta_requested: HashSet::new(),
             bpms: HashMap::new(),
+            bpm_cache: Default::default(),
+            bpm_pending: HashSet::new(),
+            bpm_total: 0,
             autofade: { let mut a = AutoFade::default(); a.enabled = settings.auto_fade; a.fade_secs = settings.fade_secs; a },
             crossfader: -1.0,
             curve: curve_from(settings.curve, settings.curve_points),
@@ -240,6 +248,10 @@ impl FadeWerkDjApp {
         }
         if app.persist && app.settings.fullscreen {
             cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+        }
+        if app.persist {
+            app.bpm_cache = crate::bpm_cache::BpmCache::load();
+            app.bpms.extend(app.bpm_cache.all().map(|(p, b)| (p.clone(), b)));
         }
         if app.persist {
             // Playlists vom letzten Mal wiederherstellen und die geladenen Titel wieder in die Player legen
@@ -292,6 +304,8 @@ impl FadeWerkDjApp {
             }
             // FW_SELECT=1: im Browser den 2. bis 4. Titel auswählen, um die Auswahl zu prüfen
             app.browser.demo_select = std::env::var_os("FW_SELECT").is_some();
+            // FW_BPM=1: fehlende BPM des Startordners ermitteln
+            app.browser.demo_bpm = std::env::var_os("FW_BPM").is_some();
             // FW_SEARCH="genre=Rock,year=1980-1989": erweiterte Suche vorbelegt öffnen
             if let Ok(spec) = std::env::var("FW_SEARCH") {
                 app.browser.demo_search(&spec);
@@ -688,7 +702,23 @@ impl FadeWerkDjApp {
                     for v in self.decks.iter_mut().filter(|v| v.path.as_ref() == Some(&path)) {
                         v.meta = Some(meta.clone());
                     }
+                    // Datei geändert (etwa neue Tags): gemerkte BPM gilt nicht mehr
+                    if !self.bpm_cache.validate(&path) {
+                        self.bpms.remove(&path);
+                    }
                     self.metas.insert(path, meta);
+                }
+                Response::Bpm { path, bpm, analyzed } => {
+                    self.bpm_pending.remove(&path);
+                    if self.bpm_pending.is_empty() {
+                        self.bpm_total = 0;
+                    }
+                    if let Some(bpm) = bpm {
+                        if analyzed {
+                            self.bpm_cache.insert(&path, bpm);
+                        }
+                        self.bpms.insert(path, bpm);
+                    }
                 }
                 Response::Scan { token, tracks, done, limited } => self.browser.receive_scan(token, tracks, done, limited),
                 Response::Loaded(l) => {
@@ -696,6 +726,9 @@ impl FadeWerkDjApp {
                     self.metas.insert(l.path.clone(), l.meta.clone());
                     if let Some(bpm) = l.bpm {
                         self.bpms.insert(l.path.clone(), bpm);
+                        if l.bpm_analyzed {
+                            self.bpm_cache.insert(&l.path, bpm);
+                        }
                     }
                     if l.deck == PREVIEW {
                         if self.preview.as_ref().is_some_and(|p| p.token == l.token) {
@@ -1149,6 +1182,20 @@ impl FadeWerkDjApp {
             }
             BrowserAction::PreviewSeek(s) => self.ctl.send(Command::Seek { deck: PREVIEW, secs: s }),
             BrowserAction::NeedMeta(p) => self.request_meta(p),
+            BrowserAction::AnalyzeBpm { paths, force } => {
+                for p in paths {
+                    // Ohne `force` nur Titel ohne bekannte BPM
+                    if (force || !self.bpms.contains_key(&p)) && self.bpm_pending.insert(p.clone()) {
+                        self.bpm_total += 1;
+                        self.lib.analyze_bpm(p, force);
+                    }
+                }
+            }
+            BrowserAction::StopBpm => {
+                self.lib.cancel_bpm();
+                self.bpm_pending.clear();
+                self.bpm_total = 0;
+            }
             BrowserAction::AddRoot => {
                 if let Some(dir) = rfd::FileDialog::new().set_title(tr("Musikordner hinzufügen")).pick_folder()
                     && self.browser.add_root(dir.clone())
@@ -1232,6 +1279,7 @@ impl eframe::App for FadeWerkDjApp {
         let bctx = BrowserCtx {
             metas: &self.metas,
             bpms: &self.bpms,
+            bpm_progress: (self.bpm_total > 0).then(|| (self.bpm_total - self.bpm_pending.len(), self.bpm_total)),
             preview: self.preview.as_ref().map(|p| p.path.as_path()),
             preview_pos: preview_st.position_secs(),
             preview_dur: preview_st.duration_secs(),
@@ -1521,6 +1569,9 @@ impl eframe::App for FadeWerkDjApp {
         if now - self.session_checked > 2.0 {
             self.session_checked = now;
             self.save_session_if_changed();
+            if self.persist {
+                self.bpm_cache.save_if_dirty();
+            }
         }
 
         self.dev.on_frame(&ctx);
@@ -1570,6 +1621,9 @@ impl Drop for FadeWerkDjApp {
     fn drop(&mut self) {
         self.save_settings();
         self.save_session_if_changed();
+        if self.persist {
+            self.bpm_cache.save_if_dirty();
+        }
     }
 }
 

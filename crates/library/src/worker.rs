@@ -23,6 +23,8 @@ pub struct Loaded {
     pub audio: Arc<TrackAudio>,
     pub waveform: Waveform,
     pub bpm: Option<f32>,
+    /// `bpm` stammt aus der Tempo-Erkennung, nicht aus dem Tag (dann lohnt es sich, ihn zu merken).
+    pub bpm_analyzed: bool,
     /// Eingebettetes Cover für den Plattenteller.
     pub cover: Option<Cover>,
 }
@@ -36,6 +38,20 @@ pub enum Response {
     Scan { token: u64, tracks: Vec<PathBuf>, done: bool, limited: bool },
     Loaded(Box<Loaded>),
     Failed { path: PathBuf, deck: Option<usize>, error: String },
+    /// Ergebnis von [`Library::analyze_bpm`]. `analyzed` = aus der Tempo-Erkennung, sonst aus dem Tag.
+    /// `bpm` ist `None`, wenn die Datei nicht lesbar ist oder kein Beat erkennbar war.
+    Bpm { path: PathBuf, bpm: Option<f32>, analyzed: bool },
+}
+
+/// Threads für die BPM-Analyse. Zwei reichen: Dekodieren ist schwer, und während des Auflegens soll
+/// genug Rechenzeit für Oberfläche und Laden bleiben.
+const BPM_THREADS: usize = 2;
+
+struct BpmJob {
+    generation: u64,
+    path: PathBuf,
+    /// Auch analysieren, wenn der Tag schon eine BPM-Angabe hat.
+    force: bool,
 }
 
 struct LoadJob {
@@ -52,6 +68,9 @@ pub struct Library {
     /// Kennung der aktuellen Ordnersuche; ältere Suchen brechen ab.
     scan_current: Arc<AtomicU64>,
     load_tx: Sender<LoadJob>,
+    bpm_tx: Sender<BpmJob>,
+    /// Aufträge älterer Generationen werden übersprungen ([`Library::cancel_bpm`]).
+    bpm_generation: Arc<AtomicU64>,
     rx: Receiver<Response>,
 }
 
@@ -63,6 +82,27 @@ impl Library {
         let (tx, rx) = unbounded::<Response>();
         let (scan_tx, scan_rx) = unbounded::<(u64, Vec<(PathBuf, bool)>)>();
         let scan_current = Arc::new(AtomicU64::new(0));
+        let (bpm_tx, bpm_rx) = unbounded::<BpmJob>();
+        let bpm_generation = Arc::new(AtomicU64::new(0));
+
+        for i in 0..BPM_THREADS {
+            let (tx, wake, rx, generation) = (tx.clone(), wake.clone(), bpm_rx.clone(), bpm_generation.clone());
+            thread::Builder::new()
+                .name(format!("fw-bpm-{i}"))
+                .spawn(move || {
+                    for job in rx {
+                        if generation.load(Ordering::Relaxed) != job.generation {
+                            continue;
+                        }
+                        let (bpm, analyzed) = analyze(&job);
+                        if tx.send(Response::Bpm { path: job.path, bpm, analyzed }).is_err() {
+                            break;
+                        }
+                        wake();
+                    }
+                })
+                .expect("BPM-Thread startet nicht");
+        }
 
         {
             let tx = tx.clone();
@@ -137,7 +177,7 @@ impl Library {
             })
             .expect("Lade-Thread startet nicht");
 
-        Self { meta_tx, scan_tx, scan_current, load_tx, rx }
+        Self { meta_tx, scan_tx, scan_current, load_tx, bpm_tx, bpm_generation, rx }
     }
 
     /// Startet eine Suche nach Titeln in `paths`, Ordner für Ordner in dieser Reihenfolge; `true` heißt
@@ -160,6 +200,18 @@ impl Library {
         let _ = self.load_tx.send(LoadJob { deck, token, path });
     }
 
+    /// Ermittelt die BPM im Hintergrund, Ergebnis als [`Response::Bpm`]. Ohne `force` gilt eine
+    /// BPM-Angabe im Tag, und es wird nur analysiert, wo keine steht.
+    pub fn analyze_bpm(&self, path: PathBuf, force: bool) {
+        let generation = self.bpm_generation.load(Ordering::Relaxed);
+        let _ = self.bpm_tx.send(BpmJob { generation, path, force });
+    }
+
+    /// Verwirft alle wartenden BPM-Aufträge. Gerade laufende Analysen liefern noch ihr Ergebnis.
+    pub fn cancel_bpm(&self) {
+        self.bpm_generation.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Alle bis jetzt fertigen Ergebnisse.
     pub fn poll(&self) -> impl Iterator<Item = Response> + '_ {
         self.rx.try_iter()
@@ -170,10 +222,27 @@ fn load(job: &LoadJob) -> anyhow::Result<Loaded> {
     let meta = read_meta(&job.path).unwrap_or_else(|_| TrackMeta::from_filename(&job.path));
     let audio = decode_file(&job.path)?;
     let waveform = Waveform::from_audio(&audio);
+    let bpm_analyzed = meta.bpm.is_none();
     let bpm = meta.bpm.or_else(|| estimate_bpm(&audio));
     let mut meta = meta;
     meta.duration_secs = audio.duration_secs();
     // Beim Vorhören dreht keine Platte
     let cover = if job.deck != fw_engine::PREVIEW { read_cover(&job.path) } else { None };
-    Ok(Loaded { deck: job.deck, token: job.token, path: job.path.clone(), meta, audio: Arc::new(audio), waveform, bpm, cover })
+    Ok(Loaded { deck: job.deck, token: job.token, path: job.path.clone(), meta, audio: Arc::new(audio), waveform, bpm, bpm_analyzed, cover })
+}
+
+/// BPM eines Titels: aus dem Tag (ohne `force`) oder aus der Tempo-Erkennung. Liefert (BPM, analysiert).
+fn analyze(job: &BpmJob) -> (Option<f32>, bool) {
+    if !job.force
+        && let Some(bpm) = read_meta(&job.path).ok().and_then(|m| m.bpm)
+    {
+        return (Some(bpm), false);
+    }
+    match decode_file(&job.path) {
+        Ok(audio) => (estimate_bpm(&audio), true),
+        Err(e) => {
+            log::debug!("BPM-Analyse von {}: {e:#}", job.path.display());
+            (None, true)
+        }
+    }
 }

@@ -207,6 +207,24 @@ fn en(de: &str) -> Option<&'static str> {
         "Alle entfernen" => "Remove all",
         "Keine Titel passen zur Suche." => "No tracks match the search.",
         "Suchfilter merken" => "Remember search filters",
+        "Wartende BPM-Analysen verwerfen" => "Discard pending BPM analyses",
+        "Im Hintergrund für alle Titel ohne BPM-Angabe im Tag. Die Werte werden gemerkt." => {
+            "In the background for all tracks without a BPM tag. The values are remembered."
+        }
+        "Fehlende BPM ermitteln" => "Detect missing BPM",
+        "Tempo im Hintergrund neu ermitteln, auch wenn eine BPM-Angabe im Tag steht. Der Wert wird gemerkt." => {
+            "Detect the tempo again in the background, even if the tag has a BPM value. The value is remembered."
+        }
+        "BPM analysieren" => "Analyse BPM",
+        "BPM ermitteln" => "Detect BPM",
+        "Alle BPM sind bekannt" => "All BPM values are known",
+        "Fehlende BPM der Titel in der Liste im Hintergrund ermitteln (BPM aus den Tags werden übernommen)" => {
+            "Detect missing BPM of the tracks in the list in the background (BPM from tags is used as is)"
+        }
+        "Fehlende BPM der ausgewählten Titel im Hintergrund ermitteln (BPM aus den Tags werden übernommen)" => {
+            "Detect missing BPM of the selected tracks in the background (BPM from tags is used as is)"
+        }
+        "BPM-Analyse {} von {}" => "BPM analysis {} of {}",
         "Die Suchfilter bleiben nach dem Schließen des Fensters und nach einem Neustart erhalten." => {
             "The search filters stay after closing the window and after a restart."
         }

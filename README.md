@@ -21,6 +21,8 @@ written in Rust. Click a folder and start playing: no database, no library impor
   the incoming track starts without bass and the basses swap halfway through the fade.
   Starting a deck while the other one is stopped glides the crossfader over to it.
 - **No import**: click a folder and all tracks, including subfolders, are there instantly.
+  BPM detected by the tempo analysis is remembered; “Analyse BPM” (tracks) and “Detect missing BPM”
+  (folders) run it in the background.
   Quick search across title, artist, album and path; the advanced search (magnifier, ⇧⌘F) filters
   by title, artist, album, folder, genre, year range and BPM range, shown as removable filter chips. Tags, BPM and waveform are analysed in the background.
   Select several tracks or folders (⌘/Ctrl-click, Shift-click) and drag them into a playlist, or use

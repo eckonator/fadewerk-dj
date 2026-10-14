@@ -6,6 +6,7 @@
 
 mod app;
 mod audio;
+mod bpm_cache;
 mod browser;
 mod deck_ui;
 mod fonts;

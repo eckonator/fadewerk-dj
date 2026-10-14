@@ -38,6 +38,10 @@ pub enum BrowserAction {
     TrackColumns(Vec<String>, Vec<(String, f32)>),
     /// Laufende Suche abbrechen.
     StopScan,
+    /// BPM im Hintergrund ermitteln. Ohne `force` nur für Titel ohne bekannte BPM (Tag oder gemerkt).
+    AnalyzeBpm { paths: Vec<PathBuf>, force: bool },
+    /// Wartende BPM-Analysen verwerfen.
+    StopBpm,
     /// Gemerkte Einstellungen „Mit Unterordnern“ je Ordner (nur Abweichungen vom Standard).
     FolderRecursion(Vec<(PathBuf, bool)>),
     Preview(PathBuf),
@@ -143,6 +147,8 @@ impl TrackColumn {
 pub struct BrowserCtx<'a> {
     pub metas: &'a HashMap<PathBuf, TrackMeta>,
     pub bpms: &'a HashMap<PathBuf, f32>,
+    /// Laufende BPM-Analyse: (fertig, gesamt).
+    pub bpm_progress: Option<(usize, usize)>,
     pub preview: Option<&'a Path>,
     pub preview_pos: f64,
     pub preview_dur: f64,
@@ -159,6 +165,8 @@ enum FolderOp {
     Add(usize),
     Shuffled(usize),
     Distribute,
+    /// BPM aller Titel ohne bekannte BPM ermitteln.
+    AnalyzeBpm,
 }
 
 /// Breite des Ordnerbaums ohne gespeicherten Wert und Grenzen beim Ziehen.
@@ -205,6 +213,8 @@ pub struct Browser {
     table_gen: u32,
     /// Entwicklerschalter `FW_SELECT`: wählt zum Prüfen einige Titel aus.
     pub demo_select: bool,
+    /// Entwicklerschalter `FW_BPM`: ermittelt einmal die fehlenden BPM des geöffneten Ordners.
+    pub demo_bpm: bool,
     scanning: bool,
     limited: bool,
     scan_token: u64,
@@ -221,6 +231,8 @@ pub struct Browser {
     /// Erweiterte Suche (Lupe neben dem Suchfeld, ⇧⌘F); filtert die Titelliste zusätzlich zur Schnellsuche.
     adv: AdvancedSearch,
     adv_open: bool,
+    /// Breiten von Angaben und Tasten über der Titelliste im letzten Bild (für den Umbruch).
+    head_widths: (f32, f32),
     /// Beim Öffnen das erste Feld fokussieren.
     adv_focus: bool,
     /// Oberkante des Browsers: das Suchfenster geht mittig über den Playern darüber auf.
@@ -262,6 +274,7 @@ impl Browser {
             widths: HashMap::new(),
             table_gen: 0,
             demo_select: false,
+            demo_bpm: false,
             scanning: false,
             limited: false,
             scan_token: 0,
@@ -274,6 +287,7 @@ impl Browser {
             stopped: false,
             adv: AdvancedSearch::default(),
             adv_open: false,
+            head_widths: (0.0, 0.0),
             adv_focus: false,
             players_bottom: 0.0,
             remember: true,
@@ -623,6 +637,10 @@ impl Browser {
             // Die Titelliste bleibt, damit Auswahl und Scrollstand nicht springen.
             self.subdirs.clear();
         }
+        if self.demo_bpm && !self.scanning && !self.tracks.is_empty() {
+            self.demo_bpm = false;
+            self.queued = Some(FolderOp::AnalyzeBpm);
+        }
         // Vorgemerkte Ordner-Aktion ausführen, sobald alle Titel gefunden sind
         if !self.scanning
             && let Some(op) = self.queued.take()
@@ -633,6 +651,7 @@ impl Browser {
                 FolderOp::Add(list) => BrowserAction::Add { list, paths },
                 FolderOp::Shuffled(list) => BrowserAction::AddShuffled { list, paths },
                 FolderOp::Distribute => BrowserAction::Distribute(paths),
+                FolderOp::AnalyzeBpm => BrowserAction::AnalyzeBpm { paths, force: false },
             });
         }
 
@@ -659,6 +678,13 @@ impl Browser {
                 }
                 ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(tr("Suchen")).desired_width(200.0));
                 ui.label(RichText::new(tr("⏺ Live gelesen, keine Datenbank")).size(12.0).color(theme::play()));
+                if let Some((done, total)) = ctx.bpm_progress {
+                    if ui.small_button(tr("Stopp")).on_hover_text(tr("Wartende BPM-Analysen verwerfen")).clicked() {
+                        out.push(BrowserAction::StopBpm);
+                    }
+                    ui.label(RichText::new(trf("BPM-Analyse {} von {}", &[&done, &total])).size(12.0).color(theme::dim()));
+                    ui.add(egui::Spinner::new().size(14.0));
+                }
                 if !self.selected.is_empty() {
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                         // Pfade im Home-Ordner kurz als „~/…“; mehrere Ordner nur mit Namen
@@ -868,58 +894,59 @@ impl Browser {
         }
         let sel_rows = self.picked.ordered(&rows);
 
+        // Reicht die Breite nicht für Angaben und Tasten nebeneinander, kommen die Tasten in eine eigene Zeile
+        // (gemessen im letzten Bild, sonst überdecken sie „Mit Unterordnern“)
+        let wrap_tools = self.head_widths.0 + self.head_widths.1 + 24.0 > ui.available_width();
+        let mut tools_w = self.head_widths.1;
         ui.horizontal(|ui| {
-            let folder = match dirs.as_slice() {
-                [one] => dir_name(one),
-                many => trf("{} Ordner", &[&many.len()]),
-            };
-            ui.label(RichText::new(folder).font(fonts::bold(17.0)));
-            let total: f64 = rows.iter().filter_map(|p| ctx.metas.get(p)).map(|m| m.duration_secs).sum();
-            let count = if words.is_empty() && self.adv.is_empty() {
-                count_tracks(rows.len(), &fmt_time(total))
-            } else {
-                trf("{} von {} Titeln", &[&rows.len(), &self.tracks.len()])
-            };
-            ui.label(RichText::new(count).color(theme::dim()));
-            if !sel_rows.is_empty() {
-                ui.label(RichText::new(trf("· {} ausgewählt", &[&sel_rows.len()])).font(fonts::list(12.5)).color(theme::ink()));
-            }
-            let all_recursive = dirs.iter().all(|d| self.recursive(d));
-            let mut rec = all_recursive;
-            let tip = tr("Auch alle Unterordner durchsuchen. Bei Laufwerken und dem Benutzerordner ist das anfangs aus, damit nicht die ganze Platte durchsucht wird. Systemordner werden immer ausgelassen.");
-            if ui.checkbox(&mut rec, tr("Mit Unterordnern")).on_hover_text(tip).changed() {
-                self.set_recursive(rec, out);
-            }
-            if self.scanning {
-                ui.add(egui::Spinner::new().size(14.0));
-                ui.label(RichText::new(tr("Durchsucht Unterordner …")).size(12.0).color(theme::dim()));
-                if ui.small_button(tr("Stopp")).on_hover_text(tr("Suche anhalten, gefundene Titel bleiben")).clicked() {
-                    self.scanning = false;
-                    self.stopped = true;
-                    out.push(BrowserAction::StopScan);
+            let left = ui.horizontal(|ui| {
+                let folder = match dirs.as_slice() {
+                    [one] => dir_name(one),
+                    many => trf("{} Ordner", &[&many.len()]),
+                };
+                ui.label(RichText::new(folder).font(fonts::bold(17.0)));
+                let total: f64 = rows.iter().filter_map(|p| ctx.metas.get(p)).map(|m| m.duration_secs).sum();
+                let count = if words.is_empty() && self.adv.is_empty() {
+                    count_tracks(rows.len(), &fmt_time(total))
+                } else {
+                    trf("{} von {} Titeln", &[&rows.len(), &self.tracks.len()])
+                };
+                ui.label(RichText::new(count).color(theme::dim()));
+                if !sel_rows.is_empty() {
+                    ui.label(RichText::new(trf("· {} ausgewählt", &[&sel_rows.len()])).font(fonts::list(12.5)).color(theme::ink()));
                 }
-            } else if self.stopped {
-                ui.label(RichText::new(tr("Suche angehalten")).size(12.0).color(theme::yellow()));
-            } else if self.limited {
-                ui.label(RichText::new(trf("Nur die ersten {} Titel. Für mehr einen Unterordner wählen.", &[&SCAN_LIMIT])).size(12.0).color(theme::yellow()));
-            }
-            if let Some(e) = &self.error {
-                ui.label(RichText::new(e).size(12.0).color(theme::cue()));
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Mit Auswahl gelten die Tasten nur für die ausgewählten Titel
-                let (paths, label) = if sel_rows.is_empty() { (&rows, "Ordner in Playlist {}") } else { (&sel_rows, "Auswahl in Playlist {}") };
-                for list in [1usize, 0] {
-                    let c = theme::deck_color(list);
-                    let b = Button::new(RichText::new(trf(label, &[&theme::deck_letter(list)])).color(c).strong())
-                        .fill(c.gamma_multiply(0.12))
-                        .stroke(egui::Stroke::new(1.0, c.gamma_multiply(0.6)));
-                    if ui.add_enabled(!paths.is_empty(), b).clicked() {
-                        out.push(BrowserAction::Add { list, paths: paths.clone() });
+                let all_recursive = dirs.iter().all(|d| self.recursive(d));
+                let mut rec = all_recursive;
+                let tip = tr("Auch alle Unterordner durchsuchen. Bei Laufwerken und dem Benutzerordner ist das anfangs aus, damit nicht die ganze Platte durchsucht wird. Systemordner werden immer ausgelassen.");
+                if ui.checkbox(&mut rec, tr("Mit Unterordnern")).on_hover_text(tip).changed() {
+                    self.set_recursive(rec, out);
+                }
+                if self.scanning {
+                    ui.add(egui::Spinner::new().size(14.0));
+                    ui.label(RichText::new(tr("Durchsucht Unterordner …")).size(12.0).color(theme::dim()));
+                    if ui.small_button(tr("Stopp")).on_hover_text(tr("Suche anhalten, gefundene Titel bleiben")).clicked() {
+                        self.scanning = false;
+                        self.stopped = true;
+                        out.push(BrowserAction::StopScan);
                     }
+                } else if self.stopped {
+                    ui.label(RichText::new(tr("Suche angehalten")).size(12.0).color(theme::yellow()));
+                } else if self.limited {
+                    ui.label(RichText::new(trf("Nur die ersten {} Titel. Für mehr einen Unterordner wählen.", &[&SCAN_LIMIT])).size(12.0).color(theme::yellow()));
+                }
+                if let Some(e) = &self.error {
+                    ui.label(RichText::new(e).size(12.0).color(theme::cue()));
                 }
             });
+            self.head_widths.0 = left.response.rect.width();
+            if !wrap_tools {
+                tools_w = list_tools(ui, ctx, &rows, &sel_rows, out);
+            }
         });
+        if wrap_tools {
+            ui.horizontal(|ui| tools_w = list_tools(ui, ctx, &rows, &sel_rows, out));
+        }
+        self.head_widths.1 = tools_w;
 
         if !self.adv.is_empty() {
             self.filter_bar(ui);
@@ -945,20 +972,14 @@ impl Browser {
         let spacing = ui.spacing().item_spacing.x;
         // Feste Spalten (Vorhören, Nummer, A/B) samt Abständen
         let fixed_w = 30.0 + 40.0 + 80.0 + spacing * (cols.len() + 3) as f32;
-        let title_saved = self.widths.contains_key(&TrackColumn::Title);
-        let col_widths: Vec<f32> = cols
-            .iter()
-            .map(|c| match c {
-                // Ohne gezogene Breite füllt der Titel die Liste, so wie sie gerade breit ist
-                TrackColumn::Title if !title_saved => {
-                    let others: f32 = cols[1..].iter().map(|c| self.width(*c)).sum();
-                    (ui.available_width() - fixed_w - others).max(c.default_width().min(200.0))
-                }
-                c => self.width(*c),
-            })
-            .collect();
-        // Ändert sich die Breite der Liste, rechnet egui den Titel dann neu aus (nur ohne gezogene Breite)
-        let fill_key = if title_saved { 0 } else { (ui.available_width() / 4.0).round() as i32 };
+        // Platz für die Spalten mit veränderbarer Breite
+        let space = ui.available_width() - fixed_w;
+        let col_widths = fit_widths(&cols, |c| self.widths.get(&c).copied(), |c| self.width(c), space);
+        // Hängen die Breiten gerade vom Platz ab (Titel füllt oder Spalten geben nach), rechnet egui sie bei
+        // geänderter Fenstergröße neu; sonst behält die Tabelle die gezogenen Breiten
+        let flexible = !self.widths.contains_key(&TrackColumn::Title)
+            || cols.iter().zip(&col_widths).any(|(c, w)| (self.width(*c) - w).abs() > 0.5);
+        let fill_key: Vec<i32> = if flexible { col_widths.iter().map(|w| (w / 4.0).round() as i32).collect() } else { Vec::new() };
         // Tatsächliche Breiten der Spalten in diesem Bild, aus dem Tabellenkopf gemessen
         let mut measured: Vec<f32> = Vec::new();
         let mut header_resp: Option<egui::Response> = None;
@@ -996,9 +1017,10 @@ impl Browser {
                 table = table.column(Column::initial(*w).at_least(c.min_width()).at_most(1200.0).clip(true).resizable(true));
             }
             table
-                .column(Column::exact(80.0))
-                // Leerer Rest rechts, damit das Ziehen einer Spalte keine andere verschiebt
+                // Leerer Rest vor den A/B-Tasten: das Ziehen einer Spalte verschiebt keine andere,
+                // und die Tasten bleiben am rechten Rand
                 .column(Column::remainder())
+                .column(Column::exact(80.0))
                 .header(20.0, |mut h| {
                     let head = |ui: &mut egui::Ui, t: &str| {
                         ui.add(egui::Label::new(RichText::new(t).size(10.5).color(theme::faint())).truncate().selectable(false));
@@ -1011,11 +1033,11 @@ impl Browser {
                             head(ui, &tr(c.name()).to_uppercase());
                         });
                     }
+                    h.col(|_| {});
                     h.col(|ui| {
                         let b = Button::new(RichText::new(tr("SPALTEN")).size(10.5).color(theme::faint())).frame(false);
                         menu_button = Some(ui.add(b).on_hover_text(tr("Spalten auswählen (auch mit Rechtsklick auf den Tabellenkopf)")));
                     });
-                    h.col(|_| {});
                     header_resp = Some(h.response());
                 })
                 .body(|body| {
@@ -1076,6 +1098,7 @@ impl Browser {
                             });
                         }
                         let mut right_edge = f32::INFINITY;
+                        row.col(|_| {});
                         row.col(|ui| {
                             right_edge = ui.max_rect().right() + ui.spacing().item_spacing.x / 2.0;
                             // Feste Größe, damit die Tasten in die Zeilenhöhe passen und mittig sitzen
@@ -1092,7 +1115,6 @@ impl Browser {
                                 }
                             }
                         });
-                        row.col(|_| {});
                         let mut resp = row.response();
                         if let Some(t) = tip {
                             resp = resp.on_hover_ui_at_pointer(|ui| {
@@ -1180,6 +1202,38 @@ fn elided_cell(ui: &mut egui::Ui, text: RichText, tip: &mut Option<String>) {
     ui.add(egui::Label::new(text).truncate().show_tooltip_when_elided(false).selectable(false));
 }
 
+/// Tasten über der Titelliste (BPM ermitteln, in Playlist A/B), rechtsbündig. Liefert die belegte Breite.
+fn list_tools(ui: &mut egui::Ui, ctx: &BrowserCtx<'_>, rows: &[PathBuf], sel_rows: &[PathBuf], out: &mut Vec<BrowserAction>) -> f32 {
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        // Mit Auswahl gelten die Tasten nur für die ausgewählten Titel
+        let (paths, label) = if sel_rows.is_empty() { (rows, "Ordner in Playlist {}") } else { (sel_rows, "Auswahl in Playlist {}") };
+        for list in [1usize, 0] {
+            let c = theme::deck_color(list);
+            let b = Button::new(RichText::new(trf(label, &[&theme::deck_letter(list)])).color(c).strong())
+                .fill(c.gamma_multiply(0.12))
+                .stroke(egui::Stroke::new(1.0, c.gamma_multiply(0.6)));
+            if ui.add_enabled(!paths.is_empty(), b).clicked() {
+                out.push(BrowserAction::Add { list, paths: paths.to_vec() });
+            }
+        }
+        // BPM aus dem Tag zählt als bekannt; Titel mit noch ungelesenen Tags gelten als offen
+        let known = |p: &PathBuf| ctx.bpms.contains_key(p) || ctx.metas.get(p).is_some_and(|m| m.bpm.is_some());
+        let missing = paths.iter().filter(|p| !known(p)).count();
+        let tip = if missing == 0 {
+            tr("Alle BPM sind bekannt")
+        } else if sel_rows.is_empty() {
+            tr("Fehlende BPM der Titel in der Liste im Hintergrund ermitteln (BPM aus den Tags werden übernommen)")
+        } else {
+            tr("Fehlende BPM der ausgewählten Titel im Hintergrund ermitteln (BPM aus den Tags werden übernommen)")
+        };
+        if ui.add_enabled(missing > 0, Button::new(tr("BPM ermitteln"))).on_hover_text(tip).on_disabled_hover_text(tip).clicked() {
+            out.push(BrowserAction::AnalyzeBpm { paths: paths.to_vec(), force: false });
+        }
+        ui.min_rect().width()
+    })
+    .inner
+}
+
 enum FolderMenu {
     Op(FolderOp),
     Reveal,
@@ -1206,6 +1260,11 @@ fn folder_menu(ui: &mut egui::Ui, count: usize, removable: bool) -> Option<Folde
     let hint = tr("Abwechselnd ein Titel nach A, der nächste nach B. Passt zum Auto-Fade.");
     if ui.button(tr("Auf Playlist A und B verteilen")).on_hover_text(hint).clicked() {
         pick = Some(FolderMenu::Op(FolderOp::Distribute));
+    }
+    ui.separator();
+    let hint = tr("Im Hintergrund für alle Titel ohne BPM-Angabe im Tag. Die Werte werden gemerkt.");
+    if ui.button(tr("Fehlende BPM ermitteln")).on_hover_text(hint).clicked() {
+        pick = Some(FolderMenu::Op(FolderOp::AnalyzeBpm));
     }
     ui.separator();
     if ui.button(reveal_label()).clicked() {
@@ -1240,6 +1299,11 @@ fn track_menu(ui: &mut egui::Ui, paths: &[PathBuf], ctx: &BrowserCtx<'_>, out: &
         if b.on_hover_text(tr("Direkt hinter den geladenen Titel")).clicked() {
             act = Some(BrowserAction::AddNext { list, paths: paths.to_vec() });
         }
+    }
+    ui.separator();
+    let hint = tr("Tempo im Hintergrund neu ermitteln, auch wenn eine BPM-Angabe im Tag steht. Der Wert wird gemerkt.");
+    if ui.button(tr("BPM analysieren")).on_hover_text(hint).clicked() {
+        act = Some(BrowserAction::AnalyzeBpm { paths: paths.to_vec(), force: true });
     }
     if let [path] = paths {
         ui.separator();
@@ -1348,6 +1412,27 @@ fn preview_bar(ui: &mut egui::Ui, rect: egui::Rect, path: &Path, ctx: &BrowserCt
 
 /// Taste für das Vollbild: vier Ecken, die nach außen (Vollbild an) oder innen (Vollbild aus) zeigen.
 /// Selbst gezeichnet, weil die Schriften kein passendes Zeichen haben.
+/// Breiten der Spalten, die in `space` passen. Ohne gezogene Breite füllt der Titel den Rest.
+/// Reicht der Platz nicht, gibt erst der Titel nach, dann alle übrigen gleichmäßig bis zur Mindestbreite.
+/// So bleiben die A/B-Tasten am rechten Rand sichtbar; gespeichert bleiben die gewünschten Breiten.
+fn fit_widths(cols: &[TrackColumn], saved: impl Fn(TrackColumn) -> Option<f32>, width: impl Fn(TrackColumn) -> f32, space: f32) -> Vec<f32> {
+    let others: f32 = cols.iter().filter(|c| **c != TrackColumn::Title).map(|c| width(*c)).sum();
+    let title_min = TrackColumn::Title.min_width();
+    let title = saved(TrackColumn::Title).map_or(space - others, |w| w.min(space - others)).max(title_min);
+    let mut out: Vec<f32> = cols.iter().map(|c| if *c == TrackColumn::Title { title } else { width(*c) }).collect();
+    let excess = out.iter().sum::<f32>() - space;
+    if excess > 0.0 {
+        let slack: f32 = cols.iter().zip(&out).filter(|(c, _)| **c != TrackColumn::Title).map(|(c, w)| w - c.min_width()).sum();
+        if slack > 0.0 {
+            let k = (1.0 - excess / slack).max(0.0);
+            for (c, w) in cols.iter().zip(out.iter_mut()).filter(|(c, _)| **c != TrackColumn::Title) {
+                *w = c.min_width() + (*w - c.min_width()) * k;
+            }
+        }
+    }
+    out
+}
+
 /// Lupe für die erweiterte Suche, selbst gezeichnet (das Zeichen fehlt in den Schriften).
 /// Leuchtet in der Auswahlfarbe, solange Filter aktiv sind oder das Fenster offen ist.
 fn search_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
@@ -1393,6 +1478,26 @@ fn fullscreen_button(ui: &mut egui::Ui, fullscreen: bool) -> egui::Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn widths_fit_so_the_deck_buttons_stay_visible() {
+        use TrackColumn::*;
+        let cols = [Title, Artist, Time];
+        let width = |c: TrackColumn| match c {
+            Title => 300.0,
+            Artist => 200.0,
+            _ => 50.0,
+        };
+        // Titel ohne gezogene Breite füllt den Rest
+        assert_eq!(fit_widths(&cols, |_| None, width, 600.0), vec![350.0, 200.0, 50.0]);
+        // Gezogene Breite bleibt, solange sie passt
+        assert_eq!(fit_widths(&cols, |c| (c == Title).then_some(300.0), width, 600.0), vec![300.0, 200.0, 50.0]);
+        // Zu eng: erst der Titel bis zur Mindestbreite, dann die übrigen gleichmäßig
+        let w = fit_widths(&cols, |c| (c == Title).then_some(300.0), width, 300.0);
+        assert_eq!(w[0], Title.min_width());
+        assert!((w.iter().sum::<f32>() - 300.0).abs() < 0.01, "{w:?}");
+        assert!(w[1] >= Artist.min_width() && w[2] >= Time.min_width());
+    }
 
     #[test]
     fn subfolders_off_for_drives_and_home() {
