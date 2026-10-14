@@ -96,7 +96,26 @@ pub fn show_mixer(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerActi
         }
     });
 
+    // Kopfhörer-Block (Regler und Betriebsart) durch eine Linie vom Master getrennt
+    ui.separator();
     ui.label(small("KOPFHÖRER"));
+    ui.horizontal(|ui| {
+        ui.label(small("CUE"));
+        let (resp, new) = hw::mini_fader(ui, "headmix", m.head_mix, settings::DEFAULT_HEAD_MIX, 0.0, 1.0, ui.available_width() - 34.0);
+        resp.on_hover_text(tr("Mischung Vorhören ↔ Master"));
+        if let Some(v) = new {
+            out.push(MixerAction::HeadMix(v));
+        }
+        ui.label(small("MST"));
+    });
+    ui.horizontal(|ui| {
+        ui.label(small("PEGEL"));
+        if let (_, Some(v)) = hw::mini_fader(ui, "headvol", m.head_volume, settings::DEFAULT_HEAD_VOLUME, 0.0, 1.0, ui.available_width() - 4.0) {
+            out.push(MixerAction::HeadVolume(v));
+        }
+    });
+    // Betriebsart unter den Reglern, damit sie mit den Auto-Fade-Tasten darunter eine Tastengruppe bildet
+    ui.add_space(2.0);
     ui.horizontal(|ui| {
         let bw = (ui.available_width() - 12.0) / 3.0;
         let third = if m.head_device {
@@ -113,21 +132,6 @@ pub fn show_mixer(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerActi
             if hw::button(ui, vec2(bw, 26.0 * k), tr(label), fonts::bold(11.5 * k), hw::Look::Color(theme::yellow()), on, true).on_hover_text(tr(tip)).clicked() {
                 out.push(MixerAction::HeadMode(mode));
             }
-        }
-    });
-    ui.horizontal(|ui| {
-        ui.label(small("CUE"));
-        let (resp, new) = hw::mini_fader(ui, "headmix", m.head_mix, settings::DEFAULT_HEAD_MIX, 0.0, 1.0, ui.available_width() - 34.0);
-        resp.on_hover_text(tr("Mischung Vorhören ↔ Master"));
-        if let Some(v) = new {
-            out.push(MixerAction::HeadMix(v));
-        }
-        ui.label(small("MST"));
-    });
-    ui.horizontal(|ui| {
-        ui.label(small("PEGEL"));
-        if let (_, Some(v)) = hw::mini_fader(ui, "headvol", m.head_volume, settings::DEFAULT_HEAD_VOLUME, 0.0, 1.0, ui.available_width() - 4.0) {
-            out.push(MixerAction::HeadVolume(v));
         }
     });
     // Das aktive Gerät steht in den Einstellungen; hier nur ein Hinweis, wenn es fehlt
@@ -199,21 +203,41 @@ pub enum FadeAction {
 
 pub fn show_fade(ui: &mut egui::Ui, m: &FadeModel<'_>, out: &mut Vec<FadeAction>) {
     let k = scale(ui);
+    // Die Tasten stehen oben, damit sie sichtbar bleiben, wenn der Ordnerbrowser die Mittelspalte kürzt;
+    // Überblendzeit und Kurve werden im Betrieb seltener gebraucht
     ui.horizontal(|ui| {
-        // Überblendzeit als LCD, die Überschrift steht im Display
-        let scale = (ui.available_width() / 230.0).clamp(1.0, 1.5);
-        let (lcd, _) = ui.allocate_exact_size(vec2(96.0, 40.0) * scale, Sense::hover());
-        hw::well(ui.painter(), lcd, 4.0);
-        ui.painter().text(lcd.left_top() + vec2(6.0, 4.0), Align2::LEFT_TOP, tr("AUTO-FADE"), fonts::bold(9.0 * scale), theme::well_ink().gamma_multiply(0.6));
-        hw::lcd_text(ui.painter(), lcd.right_bottom() - vec2(8.0, 5.0), Align2::RIGHT_BOTTOM, &format!("{:4.1}", m.fade_secs), 17.0 * scale, theme::well_ink());
-        ui.label(small("SEK."));
-        let (resp, new) = hw::mini_fader(ui, "fadesecs", m.fade_secs, settings::DEFAULT_FADE_SECS, 1.0, 20.0, ui.available_width() - 4.0);
-        resp.on_hover_text(tr("Überblendzeit"));
-        if let Some(v) = new {
-            out.push(FadeAction::FadeSecs((v * 2.0).round() / 2.0));
+        let avail = ui.available_width() - 12.0;
+        let bw = avail * 0.36;
+        if hw::button(ui, vec2(bw, 34.0 * k), "AUTO", fonts::bold(14.0 * k), hw::Look::Color(theme::play()), m.auto, true).clicked() {
+            out.push(FadeAction::Auto(!m.auto));
+        }
+        if hw::button(ui, vec2(bw, 34.0 * k), tr("FADEN"), fonts::bold(14.0 * k), hw::Look::Plain, false, true).clicked() {
+            out.push(FadeAction::FadeNow);
+        }
+        let tip = tr("Beim Überblenden kommt der neue Titel ohne Bässe herein, in der Mitte tauschen die Bässe. Klingt sauberer als ein reiner Lautstärke-Fade.");
+        let swap = hw::button(ui, vec2(avail - 2.0 * bw, 34.0 * k), "BASS\nSWAP", fonts::bold(10.0 * k), hw::Look::Color(theme::yellow()), m.bass_swap, true);
+        if swap.on_hover_text(tip).clicked() {
+            out.push(FadeAction::BassSwap(!m.bass_swap));
         }
     });
+    ui.vertical_centered(|ui| ui.label(RichText::new(m.status).size(12.0).color(theme::dim())));
+    ui.add_space(4.0);
+    // Crossfader über der Kurve, die weiße Linie darin zeigt seine Stellung
+    // A und B direkt auf die Höhe der Fadermitte gezeichnet, damit beide gleich sitzen
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
+    let label_w = 16.0;
+    let rect = Rect::from_min_max(pos2(row.left() + label_w, row.top()), pos2(row.right() - label_w, row.bottom()));
+    let (resp, new) = hw::horizontal_fader(ui, rect, "crossfader", m.crossfader, 0.0);
+    resp.on_hover_text(tr("Crossfader"));
+    if let Some(x) = new {
+        out.push(FadeAction::Crossfader(x));
+    }
+    let p = ui.painter();
+    p.text(pos2(row.left() + label_w / 2.0 - 2.0, row.center().y), Align2::CENTER_CENTER, "A", fonts::bold(14.0), theme::deck_color(0));
+    p.text(pos2(row.right() - label_w / 2.0 + 2.0, row.center().y), Align2::CENTER_CENTER, "B", fonts::bold(14.0), theme::deck_color(1));
 
+
+    ui.add_space(4.0);
     // Blendkurve: Linien lassen sich ziehen, Rechtsklick setzt auf „Weich“ zurück
     // Flaches Breitformat, nach oben begrenzt, damit die Box auf großen Monitoren nicht wuchtig wird
     let cw = ui.available_width();
@@ -261,36 +285,22 @@ pub fn show_fade(ui: &mut egui::Ui, m: &FadeModel<'_>, out: &mut Vec<FadeAction>
         }
     }
 
-    // Crossfader
-    // A und B direkt auf die Höhe der Fadermitte gezeichnet, damit beide gleich sitzen
-    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
-    let label_w = 16.0;
-    let rect = Rect::from_min_max(pos2(row.left() + label_w, row.top()), pos2(row.right() - label_w, row.bottom()));
-    let (resp, new) = hw::horizontal_fader(ui, rect, "crossfader", m.crossfader, 0.0);
-    resp.on_hover_text(tr("Crossfader"));
-    if let Some(x) = new {
-        out.push(FadeAction::Crossfader(x));
-    }
-    let p = ui.painter();
-    p.text(pos2(row.left() + label_w / 2.0 - 2.0, row.center().y), Align2::CENTER_CENTER, "A", fonts::bold(14.0), theme::deck_color(0));
-    p.text(pos2(row.right() - label_w / 2.0 + 2.0, row.center().y), Align2::CENTER_CENTER, "B", fonts::bold(14.0), theme::deck_color(1));
-
+    // Überblendzeit unter der Kurve
+    ui.add_space(4.0);
     ui.horizontal(|ui| {
-        let avail = ui.available_width() - 12.0;
-        let bw = avail * 0.36;
-        if hw::button(ui, vec2(bw, 34.0 * k), "AUTO", fonts::bold(14.0 * k), hw::Look::Color(theme::play()), m.auto, true).clicked() {
-            out.push(FadeAction::Auto(!m.auto));
-        }
-        if hw::button(ui, vec2(bw, 34.0 * k), tr("FADEN"), fonts::bold(14.0 * k), hw::Look::Plain, false, true).clicked() {
-            out.push(FadeAction::FadeNow);
-        }
-        let tip = tr("Beim Überblenden kommt der neue Titel ohne Bässe herein, in der Mitte tauschen die Bässe. Klingt sauberer als ein reiner Lautstärke-Fade.");
-        let swap = hw::button(ui, vec2(avail - 2.0 * bw, 34.0 * k), "BASS\nSWAP", fonts::bold(10.0 * k), hw::Look::Color(theme::yellow()), m.bass_swap, true);
-        if swap.on_hover_text(tip).clicked() {
-            out.push(FadeAction::BassSwap(!m.bass_swap));
+        // Überblendzeit als LCD, die Überschrift steht im Display
+        let scale = (ui.available_width() / 230.0).clamp(1.0, 1.5);
+        let (lcd, _) = ui.allocate_exact_size(vec2(96.0, 40.0) * scale, Sense::hover());
+        hw::well(ui.painter(), lcd, 4.0);
+        ui.painter().text(lcd.left_top() + vec2(6.0, 4.0), Align2::LEFT_TOP, tr("AUTO-FADE"), fonts::bold(9.0 * scale), theme::well_ink().gamma_multiply(0.6));
+        hw::lcd_text(ui.painter(), lcd.right_bottom() - vec2(8.0, 5.0), Align2::RIGHT_BOTTOM, &format!("{:4.1}", m.fade_secs), 17.0 * scale, theme::well_ink());
+        ui.label(small("SEK."));
+        let (resp, new) = hw::mini_fader(ui, "fadesecs", m.fade_secs, settings::DEFAULT_FADE_SECS, 1.0, 20.0, ui.available_width() - 4.0);
+        resp.on_hover_text(tr("Überblendzeit"));
+        if let Some(v) = new {
+            out.push(FadeAction::FadeSecs((v * 2.0).round() / 2.0));
         }
     });
-    ui.vertical_centered(|ui| ui.label(RichText::new(m.status).size(12.0).color(theme::dim())));
 
     egui::CollapsingHeader::new(small("MOTOR · ANLAUF & AUSLAUF")).id_salt("motor").show(ui, |ui| {
         let mut motor = m.motor;
