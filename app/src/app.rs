@@ -139,6 +139,8 @@ pub struct FadeWerkDjApp {
     eq_sent: [[f32; 3]; 2],
     bass_swap: bool,
     meters: [Meter; 3],
+    /// Frequenzbänder des Masters für MAIN.
+    bands: crate::meter::Bands,
     preview: Option<PreviewView>,
     next_token: u64,
     notice: Option<(String, f64)>,
@@ -233,6 +235,7 @@ impl FadeWerkDjApp {
             eq_sent: [[f32::NAN; 3]; 2],
             bass_swap: settings.bass_swap,
             meters: Default::default(),
+            bands: Default::default(),
             preview: None,
             next_token: 1,
             notice: None,
@@ -756,6 +759,39 @@ impl FadeWerkDjApp {
         }
         self.history.rename(&today.to_string(), name);
         self.browser.open_history_day(today.to_string());
+    }
+
+    /// Füllt die Playlists wieder so, wie an diesem Tag gespielt wurde: Titel von Player A nach A, von B
+    /// nach B, in der Reihenfolge von damals. Titel ohne Player-Angabe (importierte Playlists) werden
+    /// abwechselnd verteilt, fehlende Dateien übersprungen. Ein laufender Titel bleibt, der Rest folgt dahinter.
+    fn restore_history(&mut self, date: &str, now: f64) {
+        let Some(day) = self.history.day(date) else { return };
+        let mut lists: [Vec<PathBuf>; 2] = Default::default();
+        let mut next = 0;
+        for e in day.entries.iter().filter(|e| e.path.is_file()) {
+            let d = e.deck.map(usize::from).filter(|d| *d < 2).unwrap_or_else(|| {
+                next += 1;
+                (next - 1) % 2
+            });
+            lists[d].push(e.path.clone());
+        }
+        let counts = [lists[0].len(), lists[1].len()];
+        if counts == [0, 0] {
+            self.notify(tr("Keine der Dateien dieses Tages ist zu finden"), now);
+            return;
+        }
+        for (d, paths) in lists.into_iter().enumerate() {
+            let playing = self.has_track(d) && self.ctl.shared.decks[d].is_playing();
+            self.playlists[d].clear_keep(playing);
+            let first = self.playlists[d].entries.len();
+            let any = !paths.is_empty();
+            self.playlists[d].push(paths);
+            // Steht der Player, gleich den ersten Titel bereitlegen
+            if !playing && any {
+                self.load_index(d, first, false, false);
+            }
+        }
+        self.notify(trf("Wiederhergestellt: {} Titel in Playlist A, {} in B", &[&counts[0], &counts[1]]), now);
     }
 
     /// Speichert einen Tag in einem der Exportformate (Speicherort wählt der Nutzer).
@@ -1382,6 +1418,7 @@ impl FadeWerkDjApp {
                 self.save_settings();
             }
             BrowserAction::HistoryRename { date, name } => self.history.rename(&date, &name),
+            BrowserAction::HistoryRestore(date) => self.restore_history(&date, now),
             BrowserAction::HistoryRemove { date, slots } => {
                 self.history.remove_entries(&date, &slots);
                 self.notify(trf("{} Einträge aus der Historie entfernt", &[&slots.len()]), now);
@@ -1455,6 +1492,7 @@ impl eframe::App for FadeWerkDjApp {
         for (m, l) in self.meters.iter_mut().zip(levels) {
             m.update(l, dt, now);
         }
+        self.bands.update(self.ctl.shared.take_bands(), dt, now);
 
         let mut deck_actions: [Vec<DeckAction>; 2] = Default::default();
         let mut mixer_actions = Vec::new();
@@ -1547,6 +1585,7 @@ impl eframe::App for FadeWerkDjApp {
             .collect();
         let mixer_model = MixerModel {
             meters: &self.meters,
+            bands: &self.bands,
             volume: [self.decks[0].volume, self.decks[1].volume],
             head_mode: self.head_mode,
             head_mix: self.head_mix,

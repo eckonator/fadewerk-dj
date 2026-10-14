@@ -51,6 +51,8 @@ pub enum BrowserAction {
     HistoryDelete(String),
     HistoryExport { date: String, format: ExportFormat },
     HistoryRemove { date: String, slots: Vec<usize> },
+    /// Playlists A und B wieder so füllen, wie an diesem Tag gespielt wurde.
+    HistoryRestore(String),
     HistoryImport,
     Preview(PathBuf),
     StopPreview,
@@ -957,6 +959,7 @@ impl Browser {
             // Nur vorhandene Dateien gehen in die Playlists
             let mut paths = || day.entries.iter().map(|e| e.path.clone()).filter(|p| *self.exists.entry(p.clone()).or_insert_with(|| p.is_file())).collect::<Vec<_>>();
             match m {
+                DayMenu::Restore => out.push(BrowserAction::HistoryRestore(date.clone())),
                 DayMenu::Add(list) => out.push(BrowserAction::Add { list, paths: paths() }),
                 DayMenu::Distribute => out.push(BrowserAction::Distribute(paths())),
                 DayMenu::Rename => self.renaming = Some((date.clone(), day.name.clone(), true)),
@@ -1152,11 +1155,11 @@ impl Browser {
             });
             self.head_widths.0 = left.response.rect.width();
             if !wrap_tools {
-                tools_w = list_tools(ui, ctx, &row_paths, &sel_paths, hist_day.is_some(), out);
+                tools_w = list_tools(ui, ctx, &row_paths, &sel_paths, hist_day.map(|d| d.date.as_str()), out);
             }
         });
         if wrap_tools {
-            ui.horizontal(|ui| tools_w = list_tools(ui, ctx, &row_paths, &sel_paths, hist_day.is_some(), out));
+            ui.horizontal(|ui| tools_w = list_tools(ui, ctx, &row_paths, &sel_paths, hist_day.map(|d| d.date.as_str()), out));
         }
         self.head_widths.1 = tools_w;
 
@@ -1458,10 +1461,11 @@ fn elided_cell(ui: &mut egui::Ui, text: RichText, tip: &mut Option<String>) {
 }
 
 /// Tasten über der Titelliste (BPM ermitteln, in Playlist A/B), rechtsbündig. Liefert die belegte Breite.
-fn list_tools(ui: &mut egui::Ui, ctx: &BrowserCtx<'_>, rows: &[PathBuf], sel_rows: &[PathBuf], history: bool, out: &mut Vec<BrowserAction>) -> f32 {
+/// `history` = Datum, wenn ein Tag der Historie gezeigt wird (dann gibt es „Wiederherstellen“).
+fn list_tools(ui: &mut egui::Ui, ctx: &BrowserCtx<'_>, rows: &[PathBuf], sel_rows: &[PathBuf], history: Option<&str>, out: &mut Vec<BrowserAction>) -> f32 {
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         // Mit Auswahl gelten die Tasten nur für die ausgewählten Titel
-        let (paths, label) = match (sel_rows.is_empty(), history) {
+        let (paths, label) = match (sel_rows.is_empty(), history.is_some()) {
             (false, _) => (sel_rows, "Auswahl in Playlist {}"),
             (true, false) => (rows, "Ordner in Playlist {}"),
             (true, true) => (rows, "Alle in Playlist {}"),
@@ -1487,6 +1491,11 @@ fn list_tools(ui: &mut egui::Ui, ctx: &BrowserCtx<'_>, rows: &[PathBuf], sel_row
         };
         if ui.add_enabled(missing > 0, Button::new(tr("BPM ermitteln"))).on_hover_text(tip).on_disabled_hover_text(tip).clicked() {
             out.push(BrowserAction::AnalyzeBpm { paths: paths.to_vec(), force: false });
+        }
+        if let Some(date) = history
+            && ui.add_enabled(!rows.is_empty(), Button::new(tr("Wiederherstellen"))).on_hover_text(tr(RESTORE_HINT)).clicked()
+        {
+            out.push(BrowserAction::HistoryRestore(date.to_owned()));
         }
         ui.min_rect().width()
     })
@@ -1518,8 +1527,12 @@ fn tree_button(ui: &mut egui::Ui, text: &str, selected: bool) -> egui::Response 
     resp
 }
 
+/// Erklärung zu „Wiederherstellen“ (Taste über der Liste und Tag-Menü).
+const RESTORE_HINT: &str = "Playlists A und B wieder so füllen, wie an diesem Tag gespielt wurde. Ersetzt die jetzigen Playlists; ein gerade laufender Titel bleibt.";
+
 /// Rechtsklick-Menü eines Tages der Historie.
 enum DayMenu {
+    Restore,
     Add(usize),
     Distribute,
     Rename,
@@ -1529,6 +1542,10 @@ enum DayMenu {
 
 fn history_menu(ui: &mut egui::Ui) -> Option<DayMenu> {
     let mut pick = None;
+    if ui.button(tr("Wiederherstellen")).on_hover_text(tr(RESTORE_HINT)).clicked() {
+        pick = Some(DayMenu::Restore);
+    }
+    ui.separator();
     for list in [0usize, 1] {
         if ui.button(trf("An Playlist {} anhängen", &[&theme::deck_letter(list)])).clicked() {
             pick = Some(DayMenu::Add(list));
