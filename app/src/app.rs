@@ -120,6 +120,8 @@ pub struct FadeWerkDjApp {
     /// Titel, deren BPM-Analyse noch läuft, und Gesamtzahl seit dem letzten Leerlauf (für die Fortschrittsanzeige).
     bpm_pending: HashSet<PathBuf>,
     bpm_total: usize,
+    /// Ergebnis der Hintergrundprüfung des BPM-Caches beim Start (welche Dateien es noch gibt).
+    bpm_check: Option<std::sync::mpsc::Receiver<Vec<(PathBuf, bool)>>>,
     autofade: AutoFade,
     crossfader: f32,
     curve: Curve,
@@ -203,6 +205,7 @@ impl FadeWerkDjApp {
             bpm_cache: Default::default(),
             bpm_pending: HashSet::new(),
             bpm_total: 0,
+            bpm_check: None,
             autofade: { let mut a = AutoFade::default(); a.enabled = settings.auto_fade; a.fade_secs = settings.fade_secs; a },
             crossfader: -1.0,
             curve: curve_from(settings.curve, settings.curve_points),
@@ -252,6 +255,7 @@ impl FadeWerkDjApp {
         if app.persist {
             app.bpm_cache = crate::bpm_cache::BpmCache::load();
             app.bpms.extend(app.bpm_cache.all().map(|(p, b)| (p.clone(), b)));
+            app.bpm_check = Some(app.bpm_cache.start_check());
         }
         if app.persist {
             // Playlists vom letzten Mal wiederherstellen und die geladenen Titel wieder in die Player legen
@@ -631,6 +635,19 @@ impl FadeWerkDjApp {
         }
     }
 
+    /// Gemerkte BPM für einen Titel prüfen: geänderte Datei → verwerfen, umgezogene Datei → übernehmen.
+    fn resolve_bpm(&mut self, path: &Path) {
+        match self.bpm_cache.resolve(path) {
+            crate::bpm_cache::Resolved::Bpm(b) => {
+                self.bpms.insert(path.to_path_buf(), b);
+            }
+            crate::bpm_cache::Resolved::Stale => {
+                self.bpms.remove(path);
+            }
+            crate::bpm_cache::Resolved::Unknown => {}
+        }
+    }
+
     fn token(&mut self) -> u64 {
         self.next_token += 1;
         self.next_token
@@ -702,10 +719,7 @@ impl FadeWerkDjApp {
                     for v in self.decks.iter_mut().filter(|v| v.path.as_ref() == Some(&path)) {
                         v.meta = Some(meta.clone());
                     }
-                    // Datei geändert (etwa neue Tags): gemerkte BPM gilt nicht mehr
-                    if !self.bpm_cache.validate(&path) {
-                        self.bpms.remove(&path);
-                    }
+                    self.resolve_bpm(&path);
                     self.metas.insert(path, meta);
                 }
                 Response::Bpm { path, bpm, analyzed } => {
@@ -1184,6 +1198,10 @@ impl FadeWerkDjApp {
             BrowserAction::NeedMeta(p) => self.request_meta(p),
             BrowserAction::AnalyzeBpm { paths, force } => {
                 for p in paths {
+                    // Vielleicht nur umgezogen (Ordner umbenannt): dann ist die BPM schon bekannt
+                    if !force {
+                        self.resolve_bpm(&p);
+                    }
                     // Ohne `force` nur Titel ohne bekannte BPM
                     if (force || !self.bpms.contains_key(&p)) && self.bpm_pending.insert(p.clone()) {
                         self.bpm_total += 1;
@@ -1571,6 +1589,15 @@ impl eframe::App for FadeWerkDjApp {
             self.save_session_if_changed();
             if self.persist {
                 self.bpm_cache.save_if_dirty();
+            }
+        }
+        if let Some(rx) = &self.bpm_check
+            && let Ok(results) = rx.try_recv()
+        {
+            self.bpm_check = None;
+            let removed = self.bpm_cache.apply_check(results);
+            if removed > 0 {
+                log::info!("BPM-Cache: {removed} Einträge ohne Datei entfernt");
             }
         }
 
