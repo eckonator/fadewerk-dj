@@ -151,6 +151,8 @@ pub fn show(ui: &mut egui::Ui, m: &DeckModel<'_>, out: &mut Vec<DeckAction>) {
     ui.allocate_rect(Rect::from_min_max(avail.min, pos2(avail.right(), avail.top() + plat)), Sense::hover());
 
     platter(ui, m, color, plat_rect, out);
+    // Nach dem Teller: liegt obenauf und bekommt Klicks auf den Tonkopf zuerst
+    tonearm(ui, m, plat_rect, mirrored, out);
     ui.scope_builder(UiBuilder::new().max_rect(ctrl_rect), |ui| controls(ui, m, color, out));
     ui.scope_builder(UiBuilder::new().max_rect(pitch_rect), |ui| pitch(ui, m, out));
 }
@@ -398,6 +400,145 @@ fn paint_platter(ui: &egui::Ui, c: Pos2, r: f32, angle: f32, color: Color32, m: 
     p.circle_filled(c, r * 0.03, Color32::from_rgb(0xcf, 0xd6, 0xe4));
     if grabbing || m.scratching {
         p.circle_stroke(c, r + 1.0, Stroke::new(2.5, color));
+    }
+}
+
+/// Tonarm, in Tellerradien: Abstand Drehpunkt–Tellermitte, Länge Drehpunkt–Nadel.
+const ARM_PIVOT: f32 = 1.08;
+const ARM_LEN: f32 = 1.0;
+/// Nadelabstand von der Mitte: äußere Rille (Titelanfang), innere Rille (Titelende), Ruhe auf der Stütze.
+const GROOVE_OUT: f32 = 0.88;
+const GROOVE_IN: f32 = 0.38;
+const ARM_REST: f32 = 1.0;
+/// Dauer des Schwenks auf die Platte und zurück auf die Stütze.
+const ARM_SWING_SECS: f32 = 0.6;
+const ARM_RETURN_SECS: f32 = 0.25;
+
+/// Richtung des Arms (Bogenmaß, Player A) für einen Nadelabstand `rho` (in Tellerradien) von der Mitte.
+/// Der Drehpunkt liegt oben rechts neben dem Teller; die Nadel liegt auf dem Kreis um ihn.
+fn arm_angle(rho: f32) -> f32 {
+    let toward_pivot = -std::f32::consts::FRAC_PI_4;
+    let cos = ((rho * rho - ARM_PIVOT * ARM_PIVOT - ARM_LEN * ARM_LEN) / (2.0 * ARM_PIVOT * ARM_LEN)).clamp(-1.0, 1.0);
+    toward_pivot + cos.acos()
+}
+
+/// Nadelabstand (in Tellerradien) für eine Stelle im Titel: Anfang außen, Ende innen.
+fn groove_at(frac: f32) -> f32 {
+    GROOVE_OUT - (GROOVE_OUT - GROOVE_IN) * frac.clamp(0.0, 1.0)
+}
+
+/// Tonarm neben dem Teller (bei Player B gespiegelt). Steht der Player, liegt er auf seiner Stütze; bei Play
+/// schwenkt er auf die Platte und senkt sich, die Nadel wandert mit dem Titel von außen nach innen. Bei Pause
+/// hebt er sich über der Stelle. Den Tonkopf ziehen springt an die Stelle, an der die Nadel losgelassen wird.
+fn tonearm(ui: &mut egui::Ui, m: &DeckModel<'_>, rect: Rect, mirrored: bool, out: &mut Vec<DeckAction>) {
+    let c = rect.center();
+    let r = rect.width().min(rect.height()) * 0.5 - 2.0;
+    let sx = if mirrored { -1.0 } else { 1.0 };
+    let id = ui.id().with(("tonearm", m.deck));
+    let ctx = ui.ctx().clone();
+    let now = ui.input(|i| i.time);
+
+    let frac = if m.duration > 0.0 { (m.position / m.duration) as f32 } else { 0.0 };
+    let on_record = m.has_track && (m.playing || m.speed.abs() > 0.01 || m.scratching);
+    let paused = m.has_track && !on_record && m.position > 0.5;
+    let mut target = if on_record || paused { groove_at(frac) } else { ARM_REST };
+
+    let pivot = c + vec2(sx, -1.0) * (ARM_PIVOT * r * std::f32::consts::FRAC_1_SQRT_2);
+    let dir = |rho: f32| {
+        let a = arm_angle(rho);
+        vec2(sx * a.cos(), a.sin())
+    };
+
+    // Tonkopf greifen: Fläche um die Nadel aus dem letzten Bild
+    let shown: f32 = ui.data(|d| d.get_temp(id.with("shown"))).unwrap_or(target);
+    let head = pivot + dir(shown) * ARM_LEN * r;
+    let grab = Rect::from_center_size(head, vec2(0.3, 0.3) * r);
+    let resp = ui.interact(grab, id, if m.has_track && m.duration > 0.0 { Sense::drag() } else { Sense::hover() });
+    let mut dragging = None;
+    if resp.dragged()
+        && let Some(pos) = resp.interact_pointer_pos()
+    {
+        dragging = Some(((pos - c).length() / r).clamp(GROOVE_IN, GROOVE_OUT));
+    }
+    if resp.drag_stopped()
+        && let Some(rho) = ui.data(|d| d.get_temp::<f32>(id.with("drag")))
+    {
+        let f = (GROOVE_OUT - rho) / (GROOVE_OUT - GROOVE_IN);
+        out.push(DeckAction::Seek(f as f64 * m.duration));
+        // Bis die Engine die neue Stelle meldet, bleibt der Arm dort, statt kurz zurückzuschwingen
+        ui.data_mut(|d| d.insert_temp(id.with("settle"), (rho, now + 0.5)));
+    }
+    if let Some(rho) = dragging {
+        ui.data_mut(|d| d.insert_temp(id.with("drag"), rho));
+    }
+    if let Some((rho, until)) = ui.data(|d| d.get_temp::<(f32, f64)>(id.with("settle"))) {
+        if now < until && (target - rho).abs() > 0.01 && dragging.is_none() {
+            target = rho;
+        } else {
+            ui.data_mut(|d| d.remove::<(f32, f64)>(id.with("settle")));
+        }
+    }
+    if m.has_track && m.duration > 0.0 {
+        resp.clone().on_hover_cursor(egui::CursorIcon::Grab).on_hover_text(tr("Tonarm ziehen = an diese Stelle springen"));
+    }
+
+    // Schwenk und Heben weich, beim Ziehen folgt der Arm der Hand
+    let rho = match dragging {
+        Some(d) => ctx.animate_value_with_time(id.with("rho"), d, 0.0),
+        // Zurück auf die Stütze geht es zügig, das Aufsetzen auf die Platte gemächlich
+        None => ctx.animate_value_with_time(id.with("rho"), target, if target == ARM_REST { ARM_RETURN_SECS } else { ARM_SWING_SECS }),
+    };
+    let lift = ctx.animate_value_with_time(id.with("lift"), if on_record && dragging.is_none() { 0.0 } else { 1.0 }, 0.25);
+    ui.data_mut(|d| d.insert_temp(id.with("shown"), rho));
+
+    let p = ui.painter();
+    let u = dir(rho);
+    let n = vec2(-u.y, u.x);
+    let stylus = pivot + u * ARM_LEN * r;
+    let elbow = pivot + u * ARM_LEN * r * 0.8;
+    let rest_post = pivot + dir(ARM_REST) * ARM_LEN * r * 0.72;
+    let metal = Color32::from_rgb(0xc9, 0xcf, 0xd9);
+    let metal_dark = Color32::from_rgb(0x5e, 0x66, 0x74);
+    let tube_w = (r * 0.04).max(2.5);
+    let head_w = (r * 0.085).max(5.0) * (1.0 + 0.08 * lift);
+
+    // Stütze, auf der der Arm in Ruhe liegt
+    p.circle_filled(rest_post + vec2(1.0, 2.0), r * 0.045, Color32::from_black_alpha(90));
+    p.circle_filled(rest_post, r * 0.04, Color32::from_rgb(0x1c, 0x21, 0x2b));
+    p.circle_stroke(rest_post, r * 0.04, Stroke::new(1.0, metal_dark));
+
+    // Schatten: angehoben fällt er weiter weg
+    let sh = vec2(1.0, 1.4) * (r * 0.02 + r * 0.05 * lift);
+    let shadow = Color32::from_black_alpha(70);
+    p.line_segment([pivot + sh, elbow + sh], Stroke::new(tube_w + 2.0, shadow));
+    p.line_segment([elbow + sh, stylus + sh], Stroke::new(head_w + 2.0, shadow));
+
+    // Sockel mit Lager
+    p.circle_filled(pivot + vec2(0.0, 3.0), r * 0.15, Color32::from_black_alpha(80));
+    p.circle_filled(pivot, r * 0.14, Color32::from_rgb(0x23, 0x29, 0x35));
+    p.circle_stroke(pivot, r * 0.14, Stroke::new(1.5, metal_dark));
+    p.circle_filled(pivot, r * 0.085, Color32::from_rgb(0x39, 0x41, 0x50));
+
+    // Gegengewicht hinter dem Lager
+    let w0 = pivot - u * r * 0.1;
+    let w1 = pivot - u * r * 0.28;
+    p.line_segment([w0, w1], Stroke::new(r * 0.13, metal_dark));
+    p.line_segment([w0 - n * r * 0.03, w1 - n * r * 0.03], Stroke::new(r * 0.035, metal.gamma_multiply(0.6)));
+
+    // Rohr mit Glanzkante
+    p.line_segment([pivot, elbow], Stroke::new(tube_w + 1.5, metal_dark));
+    p.line_segment([pivot, elbow], Stroke::new(tube_w, metal));
+    p.line_segment([pivot - n * tube_w * 0.2, elbow - n * tube_w * 0.2], Stroke::new(tube_w * 0.3, Color32::from_white_alpha(170)));
+
+    // Tonkopf mit Griff; die Nadel sitzt vorn
+    p.line_segment([elbow, stylus], Stroke::new(head_w + 1.5, Color32::from_rgb(0x10, 0x13, 0x19)));
+    p.line_segment([elbow, stylus], Stroke::new(head_w, Color32::from_rgb(0x2a, 0x30, 0x3c)));
+    let finger = elbow + u * (stylus - elbow).length() * 0.35;
+    p.line_segment([finger, finger + n * sx * r * 0.09], Stroke::new((r * 0.022).max(1.5), metal));
+    p.circle_filled(stylus - u * r * 0.03, (r * 0.018).max(1.2), metal);
+    p.circle_filled(pivot, r * 0.04, metal);
+    if resp.hovered() || dragging.is_some() {
+        p.circle_stroke(stylus - u * r * 0.06, r * 0.11, Stroke::new(1.5, theme::deck_color(m.deck).gamma_multiply(0.8)));
     }
 }
 
