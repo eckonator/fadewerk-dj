@@ -210,6 +210,7 @@ pub struct FadeModel<'a> {
     pub status: &'a str,
     pub motor: Motor,
     pub bass_swap: bool,
+    pub auto_sync: bool,
 }
 
 pub enum FadeAction {
@@ -220,6 +221,7 @@ pub enum FadeAction {
     FadeNow,
     Motor(Motor),
     BassSwap(bool),
+    AutoSync(bool),
 }
 
 pub fn show_fade(ui: &mut egui::Ui, m: &FadeModel<'_>, out: &mut Vec<FadeAction>) {
@@ -227,18 +229,24 @@ pub fn show_fade(ui: &mut egui::Ui, m: &FadeModel<'_>, out: &mut Vec<FadeAction>
     // Die Tasten stehen oben, damit sie sichtbar bleiben, wenn der Ordnerbrowser die Mittelspalte kürzt;
     // Überblendzeit und Kurve werden im Betrieb seltener gebraucht
     ui.horizontal(|ui| {
-        let avail = ui.available_width() - 12.0;
-        let bw = avail * 0.36;
+        let avail = ui.available_width() - 18.0;
+        let bw = avail * 0.3;
+        let small_w = (avail - 2.0 * bw) / 2.0;
         if hw::button(ui, vec2(bw, 34.0 * k), "AUTO", fonts::bold(14.0 * k), hw::Look::Color(theme::play()), m.auto, true).clicked() {
             out.push(FadeAction::Auto(!m.auto));
         }
-        if hw::button(ui, vec2(bw, 34.0 * k), tr("FADEN"), fonts::bold(14.0 * k), hw::Look::Plain, false, true).clicked() {
+        if hw::button(ui, vec2(bw, 34.0 * k), tr("FADE"), fonts::bold(14.0 * k), hw::Look::Plain, false, true).clicked() {
             out.push(FadeAction::FadeNow);
         }
         let tip = tr("Beim Überblenden kommt der neue Titel ohne Bässe herein, in der Mitte tauschen die Bässe. Klingt sauberer als ein reiner Lautstärke-Fade.");
-        let swap = hw::button(ui, vec2(avail - 2.0 * bw, 34.0 * k), "BASS\nSWAP", fonts::bold(10.0 * k), hw::Look::Color(theme::yellow()), m.bass_swap, true);
+        let swap = hw::button(ui, vec2(small_w, 34.0 * k), "BASS\nSWAP", fonts::bold(10.0 * k), hw::Look::Color(theme::yellow()), m.bass_swap, true);
         if swap.on_hover_text(tip).clicked() {
             out.push(FadeAction::BassSwap(!m.bass_swap));
+        }
+        let tip = tr("Beim Titelwechsel bekommt der neue Titel das Tempo des laufenden. Danach läuft sein Pitch langsam auf 0 % zurück (0,1 % pro Sekunde).");
+        let sync = hw::button(ui, vec2(small_w, 34.0 * k), "AUTO\nSYNC", fonts::bold(10.0 * k), hw::Look::Color(theme::yellow()), m.auto_sync, true);
+        if sync.on_hover_text(tip).clicked() {
+            out.push(FadeAction::AutoSync(!m.auto_sync));
         }
     });
     ui.vertical_centered(|ui| ui.label(RichText::new(m.status).size(12.0).color(theme::dim())));
@@ -262,7 +270,7 @@ pub fn show_fade(ui: &mut egui::Ui, m: &FadeModel<'_>, out: &mut Vec<FadeAction>
     // Blendkurve: Linien lassen sich ziehen, Rechtsklick setzt auf „Weich“ zurück
     // Flaches Breitformat, nach oben begrenzt, damit die Box auf großen Monitoren nicht wuchtig wird
     let cw = ui.available_width();
-    let (rect, resp) = ui.allocate_exact_size(vec2(cw, (cw * 0.36).clamp(84.0, 130.0)), Sense::click_and_drag());
+    let (rect, resp) = ui.allocate_exact_size(vec2(cw, (cw * 0.33).clamp(84.0, 124.0)), Sense::click_and_drag());
     if let Some(c) = curve_editor(ui, &resp, rect, m.curve) {
         out.push(FadeAction::Curve(c));
     }
@@ -307,14 +315,14 @@ pub fn show_fade(ui: &mut egui::Ui, m: &FadeModel<'_>, out: &mut Vec<FadeAction>
     }
 
     // Überblendzeit unter der Kurve
-    ui.add_space(4.0);
+    ui.add_space(6.0);
+    // Überschrift wie bei KOPFHÖRER, darunter Überblendzeit als kleines LCD und Regler
+    ui.label(small("AUTO-FADE"));
     ui.horizontal(|ui| {
-        // Überblendzeit als LCD, die Überschrift steht im Display
         let scale = (ui.available_width() / 230.0).clamp(1.0, 1.5);
-        let (lcd, _) = ui.allocate_exact_size(vec2(96.0, 40.0) * scale, Sense::hover());
+        let (lcd, _) = ui.allocate_exact_size(vec2(52.0, 22.0) * scale, Sense::hover());
         hw::well(ui.painter(), lcd, 4.0);
-        ui.painter().text(lcd.left_top() + vec2(6.0, 4.0), Align2::LEFT_TOP, tr("AUTO-FADE"), fonts::bold(9.0 * scale), theme::well_ink().gamma_multiply(0.6));
-        hw::lcd_text(ui.painter(), lcd.right_bottom() - vec2(8.0, 5.0), Align2::RIGHT_BOTTOM, &format!("{:4.1}", m.fade_secs), 17.0 * scale, theme::well_ink());
+        hw::lcd_text(ui.painter(), lcd.right_center() - vec2(6.0, 0.0), Align2::RIGHT_CENTER, &format!("{:4.1}", m.fade_secs), 13.0 * scale, theme::well_ink());
         ui.label(small("SEK."));
         let (resp, new) = hw::mini_fader(ui, "fadesecs", m.fade_secs, settings::DEFAULT_FADE_SECS, 1.0, 20.0, ui.available_width() - 4.0);
         resp.on_hover_text(tr("Überblendzeit"));

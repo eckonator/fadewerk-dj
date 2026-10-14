@@ -125,7 +125,7 @@ fn en(de: &str) -> Option<&'static str> {
         "Hart" => "Sharp",
         "Linien ziehen formt die Blendkurve, Rechtsklick setzt sie zurück" => "Drag the lines to shape the fade curve, right-click resets it",
         "Crossfader" => "Crossfader",
-        "FADEN" => "FADE NOW",
+        "FADE" => "FADE",
         "MOTOR · ANLAUF & AUSLAUF" => "MOTOR · START & STOP",
         "ANLAUF " => "START  ",
         "AUSLAUF" => "STOP   ",
@@ -322,6 +322,10 @@ fn en(de: &str) -> Option<&'static str> {
         "Band ganz herausnehmen" => "Remove this band completely",
         "Beim Überblenden kommt der neue Titel ohne Bässe herein, in der Mitte tauschen die Bässe. Klingt sauberer als ein reiner Lautstärke-Fade."
             => "While fading, the new track comes in without bass; halfway through the basses swap. Sounds cleaner than a plain volume fade.",
+        "Beim Titelwechsel bekommt der neue Titel das Tempo des laufenden. Danach läuft sein Pitch langsam auf 0 % zurück (0,1 % pro Sekunde)."
+            => "On a track change the new track takes over the tempo of the playing one. Afterwards its pitch slowly returns to 0 % (0.1 % per second).",
+        "Auto-Sync steuert den Pitch; Pitch anfassen übernimmt von Hand" => "Auto sync controls the pitch; touching the pitch takes over manually",
+        "Auto-Sync: {} ↔ {} BPM liegen zu weit auseinander" => "Auto sync: {} ↔ {} BPM are too far apart",
         "Auswahl in Playlist {}" => "Selection to playlist {}",
         "Auswahl ({} Titel) in Playlist {}" => "Selection ({} tracks) to playlist {}",
         "· {} ausgewählt" => "· {} selected",

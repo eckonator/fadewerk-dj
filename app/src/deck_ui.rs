@@ -53,6 +53,8 @@ pub struct DeckModel<'a> {
     pub artist: &'a str,
     pub bpm: Option<f32>,
     pub pitch_pct: f32,
+    /// Auto-Sync steuert gerade den Pitch (SYNC-Taste leuchtet).
+    pub auto_synced: bool,
     pub position: f64,
     pub duration: f64,
     pub playing: bool,
@@ -625,8 +627,9 @@ fn controls(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, out: &mut Vec<
         {
             out.push(DeckAction::Pfl(!m.pfl));
         }
-        if hw::button(ui, vec2(w - gap - pfl_w, 28.0 * k()), "SYNC", fonts::bold(12.0 * k()), hw::Look::Plain, false, enabled && m.bpm.is_some())
-            .on_hover_text(tr("Tempo an den anderen Player angleichen"))
+        let tip = if m.auto_synced { tr("Auto-Sync steuert den Pitch; Pitch anfassen übernimmt von Hand") } else { tr("Tempo an den anderen Player angleichen") };
+        if hw::button(ui, vec2(w - gap - pfl_w, 28.0 * k()), "SYNC", fonts::bold(12.0 * k()), hw::Look::Color(theme::yellow()), m.auto_synced, enabled && m.bpm.is_some())
+            .on_hover_text(tip)
             .clicked()
         {
             out.push(DeckAction::Sync);
@@ -660,15 +663,16 @@ fn time_box(ui: &mut egui::Ui, width: f32, label: &str, value: &str, color: Colo
 
 fn pitch(ui: &mut egui::Ui, m: &DeckModel<'_>, out: &mut Vec<DeckAction>) {
     let area = ui.max_rect();
-    // Rechtsklick irgendwo auf den Pitch-Bereich setzt auf 0. Liegt unter dem Fader, damit dieser bedienbar bleibt.
+    // Oben = schneller wie an Plattenspielern mit „+“ oben
+    let value = (m.pitch_pct + PITCH_RANGE) / (2.0 * PITCH_RANGE);
+    // Rechtsklick irgendwo auf den Pitch-Bereich lässt ihn langsam auf 0 laufen (über den Fader, damit es
+    // nicht hörbar springt). Liegt unter dem Fader, damit dieser bedienbar bleibt.
     if ui.interact(area, ui.id().with(("pitch-reset", m.deck)), Sense::click()).secondary_clicked() {
-        out.push(DeckAction::Pitch(0.0));
+        hw::start_glide(ui, ("pitch", m.deck), value, 0.5, 1.0);
     }
     let p = ui.painter().clone();
     p.text(pos2(area.center().x, area.top()), Align2::CENTER_TOP, "PITCH", fonts::bold(10.0 * k()), theme::dim());
     let fader = Rect::from_min_max(pos2(area.left() + 4.0, area.top() + 18.0), pos2(area.right() - 4.0, area.bottom() - 26.0));
-    // Oben = schneller wie an Plattenspielern mit „+“ oben
-    let value = (m.pitch_pct + PITCH_RANGE) / (2.0 * PITCH_RANGE);
     // Grundwert 0,5 = Mitte = 0 %
     let (resp, new) = hw::vertical_fader(ui, fader, ("pitch", m.deck), value, 0.5, true);
     resp.on_hover_text(tr("Rechtsklick oder Doppelklick setzt auf 0"));

@@ -11,6 +11,7 @@
 //! - `FW_BPM=1` ermittelt in der Demo die fehlenden BPM des Startordners (Ergebnis in `bpm.json`, mit `FW_PERSIST=1`).
 //! - `FW_SEARCH="genre=Rock,year=1980-1989"` öffnet die erweiterte Suche mit diesen Feldern.
 //! - `FW_COLUMNS=artist,album,genre,year,…` zeigt diese Spalten in der Titelliste des Browsers.
+//! - `FW_AUTOSYNC=1` schaltet Auto-Sync ein (ohne zu speichern).
 //! - `FW_STEEL=1` schaltet gebürsteten Stahl ein (ohne zu speichern).
 //! - `FW_SETTINGS=audio|sprache|aussehen|ueber` öffnet das Einstellungsfenster auf dieser Seite.
 //! - `FW_POINTER=x,y` bewegt die Maus (in Punkten) nach Bild 100 dorthin, etwa um Tooltips zu sehen;

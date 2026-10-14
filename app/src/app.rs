@@ -40,6 +40,8 @@ const ZOOM_STEP: f32 = 0.1;
 const END_WARNING_SECS: f64 = 15.0;
 /// In den letzten Sekunden blinkt er doppelt so schnell.
 const END_WARNING_FAST_SECS: f64 = 5.0;
+/// So schnell (Prozent Pitch pro Sekunde) läuft Auto-Sync nach der Überblendung auf 0 % zurück, unhörbar langsam.
+const AUTO_SYNC_RATE: f32 = 0.1;
 /// Breite der Mittelspalte: wächst mit dem Fenster, damit die Player auf großen Monitoren nicht ausufern.
 fn center_width(total: f32) -> f32 {
     (total * 0.2).clamp(250.0, 440.0)
@@ -65,6 +67,10 @@ struct DeckView {
     loaded_id: u64,
     pending: Option<Pending>,
     pitch_pct: f32,
+    /// Auto-Sync steuert den Pitch: Tempofaktor gegenüber dem anderen Titel (1, 2 oder ½).
+    sync: Option<f32>,
+    /// Lief im letzten Bild (für den Start-Zeitpunkt von Auto-Sync).
+    was_playing: bool,
     pfl: bool,
     volume: f32,
     repeat: Repeat,
@@ -87,6 +93,8 @@ impl Default for DeckView {
             loaded_id: 0,
             pending: None,
             pitch_pct: 0.0,
+            sync: None,
+            was_playing: false,
             pfl: false,
             volume: crate::settings::DEFAULT_CHANNEL_VOLUME,
             repeat: Repeat::Off,
@@ -138,6 +146,7 @@ pub struct FadeWerkDjApp {
     /// Zuletzt an die Engine geschickte EQ-Faktoren; NaN erzwingt erneutes Senden.
     eq_sent: [[f32; 3]; 2],
     bass_swap: bool,
+    auto_sync: bool,
     meters: [Meter; 3],
     /// Frequenzbänder des Masters für MAIN.
     bands: crate::meter::Bands,
@@ -234,6 +243,7 @@ impl FadeWerkDjApp {
             eq_kill: [[false; 3]; 2],
             eq_sent: [[f32::NAN; 3]; 2],
             bass_swap: settings.bass_swap,
+            auto_sync: settings.auto_sync || std::env::var_os("FW_AUTOSYNC").is_some(),
             meters: Default::default(),
             bands: Default::default(),
             preview: None,
@@ -569,6 +579,7 @@ impl FadeWerkDjApp {
         s.head_mix = self.head_mix;
         s.eq_db = self.eq_db;
         s.bass_swap = self.bass_swap;
+        s.auto_sync = self.auto_sync;
         if s != self.settings {
             self.settings = s;
             self.save_due = Some(now + 1.0);
@@ -1034,6 +1045,74 @@ impl FadeWerkDjApp {
         }
     }
 
+    /// Pitch, mit dem Player `d` im Tempo des anderen läuft, und der Tempofaktor dazu. Ohne `factor` wird der
+    /// nächstliegende aus 1, 2 und ½ gewählt (70 und 140 BPM passen zusammen). `None` ohne BPM.
+    fn sync_pitch(&self, d: usize, factor: Option<f32>) -> Option<(f32, f32)> {
+        let o = 1 - d;
+        let mine = self.decks[d].bpm?;
+        let theirs = self.decks[o].bpm.filter(|_| self.has_track(o))? * (1.0 + self.decks[o].pitch_pct / 100.0);
+        let pct = |f: f32| (theirs / (mine * f) - 1.0) * 100.0;
+        let f = factor.unwrap_or_else(|| [1.0, 2.0, 0.5].into_iter().min_by(|a, b| pct(*a).abs().total_cmp(&pct(*b).abs())).unwrap_or(1.0));
+        Some((pct(f), f))
+    }
+
+    fn send_pitch(&mut self, d: usize, pct: f32) {
+        self.decks[d].pitch_pct = pct;
+        self.ctl.send(Command::SetPitch { deck: d, pitch: pct / 100.0 });
+    }
+
+    /// Auto-Sync: startet ein Player, während der andere zu hören ist, übernimmt er dessen Tempo und hält es,
+    /// solange der andere zu hören ist (also auch während der Überblendung). Ist er allein auf Sendung, läuft sein
+    /// Pitch mit `AUTO_SYNC_RATE` auf 0 % zurück. Steht er still und ist nicht zu hören, geht der Pitch sofort auf 0.
+    fn step_auto_sync(&mut self, dt: f32, now: f64) {
+        for d in 0..2 {
+            let o = 1 - d;
+            let playing = self.has_track(d) && self.ctl.shared.decks[d].is_playing();
+            let started = playing && !self.decks[d].was_playing;
+            self.decks[d].was_playing = playing;
+            if !self.auto_sync {
+                continue;
+            }
+            if started && self.on_air(o) {
+                self.decks[d].sync = None;
+                if let Some((pct, factor)) = self.sync_pitch(d, None) {
+                    if pct.abs() <= PITCH_RANGE {
+                        self.decks[d].sync = Some(factor);
+                        self.send_pitch(d, pct);
+                    } else {
+                        let theirs = self.decks[o].bpm.unwrap_or(0.0) * (1.0 + self.decks[o].pitch_pct / 100.0);
+                        let mine = self.decks[d].bpm.unwrap_or(0.0);
+                        self.notify(trf("Auto-Sync: {} ↔ {} BPM liegen zu weit auseinander", &[&format!("{mine:.1}"), &format!("{theirs:.1}")]), now);
+                    }
+                }
+            }
+            let Some(factor) = self.decks[d].sync else { continue };
+            if !playing {
+                if !self.on_air(d) {
+                    self.decks[d].sync = None;
+                    self.send_pitch(d, 0.0);
+                }
+            } else if self.on_air(o) {
+                // Dem anderen folgen, auch wenn dessen Pitch sich ändert
+                if let Some((pct, _)) = self.sync_pitch(d, Some(factor))
+                    && pct.abs() <= PITCH_RANGE
+                    && pct != self.decks[d].pitch_pct
+                {
+                    self.send_pitch(d, pct);
+                }
+            } else {
+                let p = self.decks[d].pitch_pct;
+                let step = AUTO_SYNC_RATE * dt;
+                if p.abs() <= step {
+                    self.decks[d].sync = None;
+                    self.send_pitch(d, 0.0);
+                } else {
+                    self.send_pitch(d, p - step * p.signum());
+                }
+            }
+        }
+    }
+
     fn fade_status(&self) -> String {
         if let Some(f) = self.autofade.fade() {
             return trf("Blende von {} auf {}, noch {} s", &[&theme::deck_letter(f.from), &theme::deck_letter(f.to), &format!("{:.1}", f.remaining_secs())]);
@@ -1122,6 +1201,7 @@ impl FadeWerkDjApp {
                 }
             }
             DeckAction::Sync => {
+                self.decks[d].sync = None;
                 let o = 1 - d;
                 match (self.decks[d].bpm, self.decks[o].bpm.filter(|_| self.has_track(o))) {
                     (Some(mine), Some(theirs)) => {
@@ -1153,6 +1233,7 @@ impl FadeWerkDjApp {
                 self.ctl.send(Command::SetLoop { deck: d, range });
             }
             DeckAction::Pitch(p) => {
+                self.decks[d].sync = None;
                 self.decks[d].pitch_pct = p;
                 self.ctl.send(Command::SetPitch { deck: d, pitch: p / 100.0 });
             }
@@ -1228,6 +1309,12 @@ impl FadeWerkDjApp {
                 self.ctl.send(Command::SetMotor(m));
             }
             FadeAction::BassSwap(on) => self.bass_swap = on,
+            FadeAction::AutoSync(on) => {
+                self.auto_sync = on;
+                for v in &mut self.decks {
+                    v.sync = None;
+                }
+            }
         }
     }
 
@@ -1489,6 +1576,7 @@ impl eframe::App for FadeWerkDjApp {
         self.record_plays();
         self.handle_track_ends();
         self.step_autofade(dt);
+        self.step_auto_sync(dt, now);
         self.push_eq();
         let levels = self.ctl.shared.take_levels();
         for (m, l) in self.meters.iter_mut().zip(levels) {
@@ -1568,6 +1656,7 @@ impl eframe::App for FadeWerkDjApp {
                     artist: v.meta.as_ref().map_or("", |m| m.artist.as_str()),
                     bpm: v.bpm,
                     pitch_pct: v.pitch_pct,
+                    auto_synced: v.sync.is_some(),
                     position: if in_sync { st.position_secs() } else { 0.0 },
                     duration: if in_sync { st.duration_secs() } else { v.meta.as_ref().map_or(0.0, |m| m.duration_secs) },
                     playing: in_sync && st.is_playing(),
@@ -1607,6 +1696,7 @@ impl eframe::App for FadeWerkDjApp {
             status: &status,
             motor: self.motor,
             bass_swap: self.bass_swap,
+            auto_sync: self.auto_sync,
         };
         let playlists = &self.playlists;
         let metas = &self.metas;
