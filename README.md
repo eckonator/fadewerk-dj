@@ -29,6 +29,11 @@ written in Rust. Click a folder and start playing: no database, no library impor
   the right-click menu: append, play next, shuffle in, spread across A and B, show in Finder.
   Choose the track list columns (artist, album, genre, year, comment, subfolder, file name, format,
   BPM, time) and drag their widths; both are remembered.
+- **History**: below the folders, “History” lists every day with the tracks that were played, in order,
+  with time and deck. A track counts once it has been audible on master for 30 seconds; tracks until
+  6 am belong to the day before. Give a day a name (“Grandma’s birthday”), remove entries, export it as
+  M3U8 playlist, CSV table or FadeWerk DJ history file, and import such files or any M3U playlist.
+  Recording can be switched off in the settings.
 - **A turntable per deck**: drag the platter or the waveform to scratch forwards and backwards,
   hold it to stop the record, tap the waveform to play or pause. Embedded cover art turns the record
   into a spinning picture disc.
@@ -140,7 +145,7 @@ With these switches FadeWerk DJ saves nothing.
 
 ## Roadmap
 
-- Cache for BPM and waveform, so values show up in the browser right away
+- Cache for the waveform, so it shows up right away
 - Beat grid with phase, hot cues, key detection, keylock
 - MIDI controllers (jog wheels as turntables)
 - Sampler and recording

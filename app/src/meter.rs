@@ -40,7 +40,8 @@ impl Meter {
     /// Zeichnet zwei LED-Ketten (links/rechts) nebeneinander in `rect`.
     pub fn paint(&self, painter: &Painter, rect: Rect) {
         painter.rect_filled(rect, 2.0, Color32::from_rgb(3, 6, 11));
-        let gap_x = (rect.width() * 0.14).max(1.0);
+        // Fuge zwischen links und rechts bleibt schmal, auch wenn die Anzeige breit wird
+        let gap_x = (rect.width() * 0.14).clamp(1.0, 4.0);
         let gap_y = 1.0;
         let col_w = (rect.width() - gap_x) / 2.0;
         let seg_h = (rect.height() - gap_y * (SEGMENTS - 1) as f32) / SEGMENTS as f32;

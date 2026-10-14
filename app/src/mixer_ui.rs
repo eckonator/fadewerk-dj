@@ -59,14 +59,22 @@ pub fn show_mixer(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerActi
     let h = (w * 0.4).clamp(110.0, 180.0);
     let (rect, _) = ui.allocate_exact_size(vec2(w, h + 18.0), Sense::hover());
     let led_w = (w * 0.055).clamp(14.0, 24.0);
-    let main_w = led_w * 1.7;
     let bar = Rect::from_min_size(rect.min, vec2(w, h));
-    let led_a = Rect::from_min_size(bar.min, vec2(led_w, h));
-    let led_b = Rect::from_min_size(pos2(bar.right() - led_w, bar.top()), vec2(led_w, h));
-    let led_m = Rect::from_center_size(pos2(bar.center().x, bar.center().y), vec2(main_w, h));
+    // Außenkante des Schachts (2 pt um die LEDs) bündig mit dem äußeren EQ-Knopf darüber
+    let inset = eq_outer_inset(w) + 2.0;
+    let led_a = Rect::from_min_size(pos2(bar.left() + inset, bar.top()), vec2(led_w, h));
+    let led_b = Rect::from_min_size(pos2(bar.right() - inset - led_w, bar.top()), vec2(led_w, h));
     let fader_w = (w * 0.16).clamp(40.0, 60.0);
-    let fa_center = (led_a.right() + led_m.left()) / 2.0;
-    let fb_center = (led_m.right() + led_b.left()) / 2.0;
+    // Jeder Fader hängt mit festem Abstand an seiner LED-Kette; auf breiten Fenstern wächst nur der Raum zur Mitte
+    let gap = 10.0;
+    // MAIN füllt den Platz zwischen den Fadern (gleicher Abstand wie zur LED-Kette, 2 pt Schacht),
+    // höchstens dreimal so breit wie die Grundbreite
+    let main_base = led_w * 1.7;
+    let between = (led_b.left() - led_a.right()) - 2.0 * (gap + fader_w) - 2.0 * (gap + 2.0);
+    let main_w = between.clamp(main_base, main_base * 3.0);
+    let led_m = Rect::from_center_size(pos2(bar.center().x, bar.center().y), vec2(main_w, h));
+    let fa_center = (led_a.right() + gap + fader_w / 2.0).min((led_a.right() + led_m.left()) / 2.0);
+    let fb_center = (led_b.left() - gap - fader_w / 2.0).max((led_m.right() + led_b.left()) / 2.0);
     let fad_a = Rect::from_center_size(pos2(fa_center, bar.center().y), vec2(fader_w, h));
     let fad_b = Rect::from_center_size(pos2(fb_center, bar.center().y), vec2(fader_w, h));
 
@@ -140,14 +148,25 @@ pub fn show_mixer(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerActi
     }
 }
 
+/// Maße der EQ-Reihe bei Breite `w`: Knopfdurchmesser, Breite einer Gruppe (A oder B), Platz je Knopf.
+fn eq_geometry(w: f32) -> (f32, f32, f32) {
+    let d = (w * 0.12).clamp(28.0, 40.0);
+    let group_w = (w - (w * 0.1).max(24.0)) / 2.0;
+    (d, group_w, group_w / 3.0)
+}
+
+/// Abstand der äußeren EQ-Knöpfe vom Rand der Mittelspalte.
+fn eq_outer_inset(w: f32) -> f32 {
+    let (d, _, slot) = eq_geometry(w);
+    (slot - d) / 2.0
+}
+
 /// EQ-Reihe über der Pegelbrücke: links A, rechts B, je Höhen, Mitten, Bässe mit Kill-Taste darunter.
 fn eq_strip(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerAction>) {
     let w = ui.available_width();
-    let d = (w * 0.12).clamp(28.0, 40.0);
+    let (d, group_w, slot) = eq_geometry(w);
     let (label_h, kill_h) = (12.0, 15.0);
     let (rect, _) = ui.allocate_exact_size(vec2(w, label_h + d + 3.0 + kill_h), Sense::hover());
-    let group_w = (w - (w * 0.1).max(24.0)) / 2.0;
-    let slot = group_w / 3.0;
     // 0 dB steht auf 12 Uhr: die linke Hälfte des Wegs senkt bis −26 dB, die rechte hebt bis +6 dB
     let to_norm = |db: f32| if db <= 0.0 { 0.5 * (1.0 - db / settings::EQ_MIN_DB) } else { 0.5 + 0.5 * db / settings::EQ_MAX_DB };
     let to_db = |n: f32| if n <= 0.5 { settings::EQ_MIN_DB * (1.0 - 2.0 * n) } else { settings::EQ_MAX_DB * (2.0 * n - 1.0) };

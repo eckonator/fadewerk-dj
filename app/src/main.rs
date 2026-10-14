@@ -10,6 +10,8 @@ mod bpm_cache;
 mod browser;
 mod deck_ui;
 mod fonts;
+mod history;
+mod history_ui;
 mod hw;
 mod devtools;
 mod diagnose;

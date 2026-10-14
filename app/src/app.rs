@@ -15,6 +15,8 @@ use crate::browser::{Browser, BrowserAction, BrowserCtx};
 use crate::deck_ui::{self, DeckAction, DeckModel, PITCH_RANGE, Repeat};
 use crate::devtools::DevTools;
 use crate::i18n::{self, tr, trf};
+use crate::history::{Entry, ExportFormat, History, PlayTracker};
+use crate::history_ui::{DialogEvent, HistoryDialog};
 use crate::settings::Settings;
 use crate::settings_ui::{SettingsAction, SettingsCtx, SettingsUi};
 use crate::tag_editor::{TagEditor, TagEditorEvent};
@@ -159,6 +161,18 @@ pub struct FadeWerkDjApp {
     new_version: Option<crate::update::NewVersion>,
     /// Frage „nach Updates suchen?“ beim ersten Start.
     ask_update: bool,
+    /// Gespielte Titel je Tag (`historie/`).
+    history: History,
+    /// Erkennt je Player, wann ein Titel als gespielt gilt.
+    play_trackers: [PlayTracker; 2],
+    /// Titelenden je Player, die die Historie schon gesehen hat (danach zählt ein Titel erneut).
+    history_ended: [u64; 2],
+    history_clock: std::time::Instant,
+    /// Laufender Import einer Historie oder Playlist.
+    import_rx: Option<std::sync::mpsc::Receiver<crate::history::ImportResult>>,
+    history_dialog: Option<HistoryDialog>,
+    /// Zum Neuzeichnen aus Hintergrund-Threads.
+    repaint_ctx: egui::Context,
 }
 
 impl FadeWerkDjApp {
@@ -236,6 +250,13 @@ impl FadeWerkDjApp {
             update_rx: None,
             new_version: None,
             ask_update: false,
+            history: History::default(),
+            play_trackers: Default::default(),
+            history_ended: [0; 2],
+            history_clock: std::time::Instant::now(),
+            import_rx: None,
+            history_dialog: None,
+            repaint_ctx: cc.egui_ctx.clone(),
         };
         app.persist = !app.dev.isolated();
         // Update-Prüfung: beim ersten Start fragen, danach nur wenn erlaubt (nicht bei Entwicklerläufen,
@@ -251,6 +272,9 @@ impl FadeWerkDjApp {
         }
         if app.persist && app.settings.fullscreen {
             cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+        }
+        if app.persist {
+            app.history = History::load();
         }
         if app.persist {
             app.bpm_cache = crate::bpm_cache::BpmCache::load();
@@ -324,6 +348,10 @@ impl FadeWerkDjApp {
                 && let Some(t) = tracks.first()
             {
                 app.tag_editor = Some(TagEditor::open(t.clone()));
+            }
+            // FW_HISTORY=1: Beispiel-Historie aus den Demo-Titeln (nicht gespeichert), Tag geöffnet
+            if std::env::var_os("FW_HISTORY").is_some() {
+                app.demo_history(&tracks);
             }
             // FW_PREVIEW=1: den zweiten Titel vorhören, um die Vorhör-Anzeige zu prüfen
             if std::env::var_os("FW_PREVIEW").is_some()
@@ -501,6 +529,7 @@ impl FadeWerkDjApp {
             SettingsAction::Zoom(z) => self.set_zoom(ctx, z),
             // Wirkt erst beim nächsten Start
             SettingsAction::OpenGl(on) => self.settings.opengl = on,
+            SettingsAction::RecordHistory(on) => self.settings.record_history = on,
             SettingsAction::UpdateCheck(on) => {
                 self.settings.update_check = Some(on);
                 self.ask_update = false;
@@ -664,6 +693,127 @@ impl FadeWerkDjApp {
     fn request_meta(&mut self, path: PathBuf) {
         if !self.metas.contains_key(&path) && self.meta_requested.insert(path.clone()) {
             self.lib.request_meta(path);
+        }
+    }
+
+    /// Historie: Titel eintragen, sobald sie lange genug über Master zu hören waren.
+    fn record_plays(&mut self) {
+        let dt = self.history_clock.elapsed().as_secs_f64();
+        self.history_clock = std::time::Instant::now();
+        for d in 0..2 {
+            let st = &self.ctl.shared.decks[d];
+            // Zu Ende gelaufen: spielt der Titel noch einmal, zählt er erneut
+            let ended = st.ended_count();
+            if ended != self.history_ended[d] {
+                self.history_ended[d] = ended;
+                self.play_trackers[d].restart();
+            }
+            let id = if self.settings.record_history { self.decks[d].loaded_id } else { 0 };
+            let audible = self.on_air(d) && st.is_playing() && self.master_volume > 0.02;
+            let pos = st.position_secs();
+            let Some(at) = self.play_trackers[d].update(id, audible, pos, dt, crate::history::now_local) else { continue };
+            let v = &self.decks[d];
+            let Some(path) = v.path.clone() else { continue };
+            let meta = v.meta.clone().unwrap_or_else(|| TrackMeta::from_filename(&path));
+            let entry = Entry {
+                size: std::fs::metadata(&path).ok().map(|m| m.len()),
+                path,
+                title: meta.title,
+                artist: meta.artist,
+                album: meta.album,
+                duration_secs: meta.duration_secs,
+                played_at: Some(at.strftime("%Y-%m-%dT%H:%M:%S").to_string()),
+                deck: Some(d as u8),
+            };
+            log::info!("Historie: {} – {}", entry.artist, entry.title);
+            self.history.record(entry);
+        }
+    }
+
+    /// Entwicklerschalter `FW_HISTORY`: zwei Beispieltage aus den Demo-Titeln, der neuere ist geöffnet.
+    fn demo_history(&mut self, tracks: &[PathBuf]) {
+        let today = crate::history::history_date(crate::history::now_local());
+        // Ein Titel, dessen Datei fehlt (wird ausgegraut gezeigt)
+        let gone = PathBuf::from("/gibt/es/nicht/Unbekannt - Verschollen.mp3");
+        let at = today.at(19, 56, 0, 0);
+        self.history.record(Entry { path: gone, title: "Verschollen".into(), artist: "Unbekannt".into(), played_at: Some(at.strftime("%Y-%m-%dT%H:%M:%S").to_string()), deck: Some(0), ..Default::default() });
+        for (k, p) in tracks.iter().enumerate() {
+            let meta = TrackMeta::from_filename(p);
+            let day = if k < 3 { today.yesterday().unwrap_or(today) } else { today };
+            let at = day.at(20, 0, 0, 0) + jiff::Span::new().minutes(4 * k as i64);
+            self.history.record(Entry {
+                path: p.clone(),
+                title: meta.title,
+                artist: meta.artist,
+                duration_secs: 200.0,
+                played_at: Some(at.strftime("%Y-%m-%dT%H:%M:%S").to_string()),
+                deck: Some((k % 2) as u8),
+                ..Default::default()
+            });
+        }
+        self.history.rename(&today.to_string(), "Omas Geburtstag");
+        self.browser.open_history_day(today.to_string());
+    }
+
+    /// Speichert einen Tag in einem der Exportformate (Speicherort wählt der Nutzer).
+    fn export_history(&mut self, date: &str, format: ExportFormat, now: f64) {
+        let Some(day) = self.history.day(date) else { return };
+        let (filter, text) = match format {
+            ExportFormat::M3u => (tr("Playlist"), crate::history::to_m3u(day)),
+            ExportFormat::Csv => {
+                let sep = if i18n::lang() == i18n::Lang::De { ';' } else { ',' };
+                let headers = [tr("Nr."), tr("Uhrzeit"), tr("Interpret"), tr("Titel"), tr("Album"), tr("Länge"), tr("Player"), tr("Datei")];
+                (tr("Tabelle"), crate::history::to_csv(day, sep, headers))
+            }
+            ExportFormat::Json => (tr("FadeWerk-DJ-Historie"), crate::history::to_json(day)),
+        };
+        let ext = format.extension();
+        let Some(file) = rfd::FileDialog::new()
+            .set_title(tr("Historie exportieren"))
+            .set_file_name(format!("{}.{ext}", day.file_stem()))
+            .add_filter(filter, &[ext])
+            .save_file()
+        else {
+            return;
+        };
+        match std::fs::write(&file, text) {
+            Ok(()) => self.notify(trf("Exportiert: {}", &[&file.file_name().unwrap_or_default().to_string_lossy()]), now),
+            Err(e) => self.notify(trf("Export fehlgeschlagen: {}", &[&e]), now),
+        }
+    }
+
+    /// Ordner, in denen beim Import fehlende Titel gesucht werden: eigene Ordner und der Musikordner.
+    fn music_roots(&self) -> Vec<PathBuf> {
+        let mut roots = self.settings.folders.clone();
+        if let Some(m) = dirs::audio_dir()
+            && !roots.iter().any(|r| m.starts_with(r))
+        {
+            roots.push(m);
+        }
+        roots
+    }
+
+    fn poll_import(&mut self, now: f64) {
+        let Some(rx) = &self.import_rx else { return };
+        let Ok(result) = rx.try_recv() else { return };
+        self.import_rx = None;
+        match result {
+            Ok((crate::history::Imported::Day(day), found)) => {
+                let date = day.date.clone();
+                let n = day.entries.len();
+                let added = self.history.merge(day);
+                self.browser.open_history_day(date.clone());
+                let mut text = if added == n { trf("Historie {} importiert: {} Titel", &[&date, &n]) } else { trf("Historie {}: {} neue Titel", &[&date, &added]) };
+                if found > 0 {
+                    text.push_str(&trf(" ({} wiedergefunden)", &[&found]));
+                }
+                self.notify(text, now);
+            }
+            Ok((crate::history::Imported::List { name, entries }, found)) => {
+                let date = crate::history::history_date(crate::history::now_local()).to_string();
+                self.history_dialog = Some(HistoryDialog::Import { entries, found, date, name });
+            }
+            Err(e) => self.notify(trf("Import fehlgeschlagen: {}", &[&e]), now),
         }
     }
 
@@ -1228,6 +1378,28 @@ impl FadeWerkDjApp {
                 self.settings.folders.retain(|p| p != &dir);
                 self.save_settings();
             }
+            BrowserAction::HistoryRename { date, name } => self.history.rename(&date, &name),
+            BrowserAction::HistoryRemove { date, slots } => {
+                self.history.remove_entries(&date, &slots);
+                self.notify(trf("{} Einträge aus der Historie entfernt", &[&slots.len()]), now);
+            }
+            BrowserAction::HistoryDelete(date) => {
+                if let Some(day) = self.history.day(&date) {
+                    self.history_dialog = Some(HistoryDialog::Delete { date, label: day.label(), count: day.entries.len() });
+                }
+            }
+            BrowserAction::HistoryExport { date, format } => self.export_history(&date, format, now),
+            BrowserAction::HistoryImport => {
+                if self.import_rx.is_none()
+                    && let Some(file) = rfd::FileDialog::new()
+                        .set_title(tr("Historie importieren"))
+                        .add_filter(tr("Historie oder Playlist"), &["json", "m3u", "m3u8"])
+                        .pick_file()
+                {
+                    let ctx = self.repaint_ctx.clone();
+                    self.import_rx = Some(crate::history::import_in_background(file, self.music_roots(), move || ctx.request_repaint()));
+                }
+            }
             BrowserAction::OpenSettings => self.settings_ui.toggle(),
             BrowserAction::ToggleFullscreen => self.toggle_fullscreen = true,
         }
@@ -1271,6 +1443,8 @@ impl eframe::App for FadeWerkDjApp {
         self.last_time = now;
 
         self.poll_library(&ctx, now);
+        self.poll_import(now);
+        self.record_plays();
         self.handle_track_ends();
         self.step_autofade(dt);
         self.push_eq();
@@ -1304,6 +1478,8 @@ impl eframe::App for FadeWerkDjApp {
             preview_dur: preview_st.duration_secs(),
             deck_playing: [self.ctl.shared.decks[0].is_playing(), self.ctl.shared.decks[1].is_playing()],
             fullscreen: ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)),
+            history: &self.history,
+            importing: self.import_rx.is_some(),
         };
         // Höhe merken; ohne gespeicherten Wert 240 pt, auf hohen Monitoren mehr (bei 1400 pt Höhe etwa 450),
         // auf niedrigen weniger (ein gutes Viertel der Höhe)
@@ -1580,6 +1756,22 @@ impl eframe::App for FadeWerkDjApp {
                 TagEditorEvent::Reveal(path) => self.browser_action(BrowserAction::Reveal(path), now),
             }
         }
+        if let Some(event) = self.history_dialog.as_mut().and_then(|d| d.show(&ctx)) {
+            self.history_dialog = None;
+            match event {
+                DialogEvent::Import(day) => {
+                    let (date, n) = (day.date.clone(), day.entries.len());
+                    self.history.merge(day);
+                    self.browser.open_history_day(date.clone());
+                    self.notify(trf("Historie {} importiert: {} Titel", &[&date, &n]), now);
+                }
+                DialogEvent::Delete(date) => {
+                    self.history.delete_day(&date);
+                    self.notify(trf("Historie {} gelöscht", &[&date]), now);
+                }
+                DialogEvent::Close => {}
+            }
+        }
         for a in settings_actions {
             self.settings_action(a, &ctx, now);
         }
@@ -1590,6 +1782,7 @@ impl eframe::App for FadeWerkDjApp {
             self.save_session_if_changed();
             if self.persist {
                 self.bpm_cache.save_if_dirty();
+                self.history.save_dirty();
             }
         }
         if let Some(rx) = &self.bpm_check
@@ -1651,6 +1844,7 @@ impl Drop for FadeWerkDjApp {
         self.save_session_if_changed();
         if self.persist {
             self.bpm_cache.save_if_dirty();
+            self.history.save_dirty();
         }
     }
 }
