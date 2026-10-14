@@ -14,11 +14,18 @@ pub struct Fade {
     duration: f32,
     from_x: f32,
     to_x: f32,
+    /// Am Ende den alten Player anhalten und neu laden lassen. Nicht, wenn der alte ohnehin stand.
+    handover: bool,
 }
 
 impl Fade {
     pub fn remaining_secs(&self) -> f32 {
         (self.duration - self.elapsed).max(0.0)
+    }
+
+    /// Übergabe von einem laufenden Player an den anderen (nicht bloß Hineinblenden aus der Stille)?
+    pub fn is_handover(&self) -> bool {
+        self.handover
     }
 
     /// Fortschritt der Überblendung, 0.0 bis 1.0.
@@ -84,6 +91,24 @@ impl AutoFade {
             duration: self.fade_secs.max(0.05),
             from_x: crossfader_now,
             to_x: side(to),
+            handover: true,
+        });
+    }
+
+    /// Blendet den Crossfader zu `deck`, ohne dass der andere Player danach angehalten oder neu
+    /// geladen wird. Für den Start eines Players, während der andere steht.
+    pub fn glide_to(&mut self, deck: usize, crossfader_now: f32) {
+        if self.fade.is_some() {
+            return;
+        }
+        self.fade = Some(Fade {
+            from: 1 - deck,
+            to: deck,
+            elapsed: 0.0,
+            duration: self.fade_secs.max(0.05),
+            from_x: crossfader_now,
+            to_x: side(deck),
+            handover: false,
         });
     }
 
@@ -102,7 +127,7 @@ impl AutoFade {
             let done = *f;
             self.fade = None;
             self.active = done.to;
-            return Some(FadeStep { crossfader, finished: Some(done.from) });
+            return Some(FadeStep { crossfader, finished: done.handover.then_some(done.from) });
         }
         Some(FadeStep { crossfader, finished: None })
     }
@@ -118,6 +143,17 @@ impl AutoFade {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn glide_moves_fader_without_handover() {
+        let mut a = AutoFade { fade_secs: 2.0, ..Default::default() };
+        a.glide_to(1, -1.0);
+        assert_eq!(a.fade().map(|f| (f.from, f.to)), Some((0, 1)));
+        let end = a.step(2.0).unwrap();
+        assert_eq!(end.crossfader, 1.0);
+        assert_eq!(end.finished, None);
+        assert_eq!(a.active, 1);
+    }
 
     #[test]
     fn starts_only_inside_fade_window() {

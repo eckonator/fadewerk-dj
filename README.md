@@ -19,17 +19,21 @@ written in Rust. Click a folder and start playing: no database, no library impor
   the fade time, the other deck starts and the crossfader blends over. The finished deck then
   loads its next track. Fade curve smooth, linear, sharp or drawn by hand. Optional **bass swap**:
   the incoming track starts without bass and the basses swap halfway through the fade.
+  Starting a deck while the other one is stopped glides the crossfader over to it.
 - **No import**: click a folder and all tracks, including subfolders, are there instantly.
-  Search across title, artist, album and path. Tags, BPM and waveform are analysed in the background.
+  Quick search across title, artist, album and path; the advanced search (magnifier, ⇧⌘F) filters
+  by title, artist, album, folder, genre, year range and BPM range, shown as removable filter chips. Tags, BPM and waveform are analysed in the background.
   Select several tracks or folders (⌘/Ctrl-click, Shift-click) and drag them into a playlist, or use
   the right-click menu: append, play next, shuffle in, spread across A and B, show in Finder.
+  Choose the track list columns (artist, album, genre, year, comment, subfolder, file name, format,
+  BPM, time) and drag their widths; both are remembered.
 - **A turntable per deck**: drag the platter or the waveform to scratch forwards and backwards,
   hold it to stop the record, tap the waveform to play or pause. Embedded cover art turns the record
   into a spinning picture disc.
 - **Motor**: start, pause and stop spin up and down like a real turntable
   (adjustable start and stop time). CUE jumps instantly.
-- **Transport per deck**: CUE, play/pause, stop, previous, next, repeat (off, track, list),
-  eject, pitch ±8 %, sync, loops of 4, 8 or 16 beats.
+- **Transport per deck**: CUE, play/pause, stop, previous, next, repeat (off, track, list;
+  track repeat fades the end into the start with the fade time and curve), eject, pitch ±8 %, sync, loops of 4, 8 or 16 beats.
 - **Pre-listening** per deck, in the playlists and right in the folder browser. Headphones via
   split output (left master, right headphones), on outputs 3/4 of a multichannel interface,
   or on a separate second audio device.

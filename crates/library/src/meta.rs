@@ -12,6 +12,10 @@ pub struct TrackMeta {
     pub title: String,
     pub artist: String,
     pub album: String,
+    pub genre: String,
+    /// Erscheinungsjahr (nur die Jahreszahl, auch wenn im Tag ein ganzes Datum steht).
+    pub year: String,
+    pub comment: String,
     pub duration_secs: f64,
     /// BPM aus dem Tag, falls vorhanden. Sonst liefert die Analyse beim Laden einen Wert.
     pub bpm: Option<f32>,
@@ -45,6 +49,11 @@ pub fn read_meta(path: &Path) -> anyhow::Result<TrackMeta> {
         if let Some(a) = tag.album() {
             meta.album = a.into_owned();
         }
+        let get = |k: ItemKey| tag.get_string(k).map(|s| s.trim().to_owned()).unwrap_or_default();
+        meta.genre = get(ItemKey::Genre);
+        meta.comment = get(ItemKey::Comment);
+        let date = Some(get(ItemKey::RecordingDate)).filter(|d| !d.is_empty()).unwrap_or_else(|| get(ItemKey::Year));
+        meta.year = year_of(&date);
         meta.bpm = tag
             .get_string(ItemKey::IntegerBpm)
             .or_else(|| tag.get_string(ItemKey::Bpm))
@@ -52,6 +61,14 @@ pub fn read_meta(path: &Path) -> anyhow::Result<TrackMeta> {
             .filter(|b| (40.0..=250.0).contains(b));
     }
     Ok(meta)
+}
+
+/// Jahreszahl aus einer Datumsangabe wie „2021“, „2021-05-03“ oder „03.05.2021“.
+fn year_of(date: &str) -> String {
+    date.split(|c: char| !c.is_ascii_digit())
+        .find(|p| p.len() == 4)
+        .map(str::to_owned)
+        .unwrap_or_else(|| date.to_owned())
 }
 
 /// Kantenlänge, auf die Cover verkleinert werden. Reicht für den größten Plattenteller.
@@ -209,6 +226,14 @@ pub fn write_tags(path: &Path, fields: &TagFields) -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn year_from_dates() {
+        assert_eq!(year_of("2021"), "2021");
+        assert_eq!(year_of("2021-05-03"), "2021");
+        assert_eq!(year_of("03.05.2021"), "2021");
+        assert_eq!(year_of(""), "");
+    }
+
     /// Kleinste gültige WAV-Datei: 0,1 s Stille, 8 kHz, mono, 16 Bit.
     fn write_wav(path: &Path) {
         let samples = 800u32;
@@ -253,6 +278,8 @@ mod tests {
         assert_eq!(back.track, "3");
         assert_eq!(back.bpm, "124");
         assert!((info.duration_secs - 0.1).abs() < 0.01);
+        let meta = read_meta(&path).unwrap();
+        assert_eq!((meta.genre.as_str(), meta.year.as_str()), ("House", "2026"));
         // Ein geleertes Feld verschwindet
         write_tags(&path, &TagFields { genre: String::new(), ..back }).unwrap();
         assert_eq!(read_tags(&path).unwrap().0.genre, "");

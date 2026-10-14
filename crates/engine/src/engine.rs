@@ -33,6 +33,8 @@ pub enum Command {
     Seek { deck: usize, secs: f64 },
     SetPitch { deck: usize, pitch: f32 },
     SetRepeatTrack { deck: usize, on: bool },
+    /// Dauer der Überblendung vom Titelende in den Anfang bei Repeat (für beide Player).
+    SetRepeatFade(f32),
     SetLoop { deck: usize, range: Option<(f64, f64)> },
     ScratchBegin { deck: usize },
     ScratchTo { deck: usize, secs: f64 },
@@ -137,6 +139,7 @@ pub struct Engine {
     xf_target: f32,
     xf: f32,
     curve: Curve,
+    repeat_fade_secs: f32,
     volume: [f32; DECKS],
     pfl: [bool; DECKS],
     eq: [Eq; DECKS],
@@ -169,6 +172,7 @@ impl Engine {
             xf_target: -1.0,
             xf: -1.0,
             curve: Curve::Soft,
+            repeat_fade_secs: 0.0,
             volume: [0.85; DECKS],
             pfl: [false; DECKS],
             eq: std::array::from_fn(|_| Eq::new(sample_rate)),
@@ -216,7 +220,18 @@ impl Engine {
             ScratchTo { deck, secs } if ok(deck) => self.decks[deck].scratch_to_secs(secs),
             ScratchEnd { deck } if ok(deck) => self.decks[deck].scratch_end(),
             SetCrossfader(x) => self.xf_target = x.clamp(-1.0, 1.0),
-            SetCurve(c) => self.curve = c,
+            SetCurve(c) => {
+                self.curve = c;
+                for d in &mut self.decks {
+                    d.set_repeat_fade(self.repeat_fade_secs, c);
+                }
+            }
+            SetRepeatFade(secs) => {
+                self.repeat_fade_secs = secs;
+                for d in &mut self.decks {
+                    d.set_repeat_fade(secs, self.curve);
+                }
+            }
             SetChannelVolume { deck, volume } if deck < DECKS => self.volume[deck] = volume.clamp(0.0, 1.0),
             SetPfl { deck, on } if deck < DECKS => self.pfl[deck] = on,
             SetEq { deck, band, gain } if deck < DECKS => self.eq[deck].set_gain(band, gain),

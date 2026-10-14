@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use std::sync::Arc;
 
+use crate::mixer::Curve;
 use crate::motor::Motor;
 use crate::track::TrackAudio;
 
@@ -31,6 +32,10 @@ pub struct Deck {
     loop_range: Option<(f64, f64)>,
     stop_pending: bool,
     repeat_track: bool,
+    /// Bei Repeat blendet das Titelende über so viele Sekunden in den Anfang (0 = harter Sprung).
+    repeat_fade_secs: f32,
+    /// Blendkurve dafür, dieselbe wie beim Crossfader.
+    repeat_curve: Curve,
     ended: bool,
 }
 
@@ -49,6 +54,8 @@ impl Default for Deck {
             loop_range: None,
             stop_pending: false,
             repeat_track: false,
+            repeat_fade_secs: 0.0,
+            repeat_curve: Curve::Soft,
             ended: false,
         }
     }
@@ -76,7 +83,13 @@ impl Deck {
 
     pub fn eject(&mut self) -> Option<Arc<TrackAudio>> {
         let old = self.track.take();
-        *self = Deck { pitch: self.pitch, repeat_track: self.repeat_track, ..Deck::default() };
+        *self = Deck {
+            pitch: self.pitch,
+            repeat_track: self.repeat_track,
+            repeat_fade_secs: self.repeat_fade_secs,
+            repeat_curve: self.repeat_curve,
+            ..Deck::default()
+        };
         old
     }
 
@@ -137,6 +150,12 @@ impl Deck {
 
     pub fn set_repeat_track(&mut self, on: bool) {
         self.repeat_track = on;
+    }
+
+    /// Überblendung von Titelende in den Anfang bei Repeat (Dauer in Sekunden und Kurve).
+    pub fn set_repeat_fade(&mut self, secs: f32, curve: Curve) {
+        self.repeat_fade_secs = secs.max(0.0);
+        self.repeat_curve = curve;
     }
 
     pub fn set_loop_secs(&mut self, range: Option<(f64, f64)>) {
@@ -206,6 +225,14 @@ impl Deck {
         let len = track.len_frames() as f64;
         let step_scale = track_rate / out_rate as f64;
         let smooth = 1.0 - (-1.0 / (RATE_SMOOTH_SECS * out_rate)).exp();
+        // Repeat mit Überblendung: in den letzten `fade` Frames läuft der Anfang des Titels mit,
+        // im gleichen Abstand wie das Ende (Lesekopf 2 = pos - fade_start). Höchstens ein Drittel des Titels.
+        let fade = if self.repeat_track && self.loop_range.is_none() {
+            (self.repeat_fade_secs as f64 * track_rate).min(len / 3.0)
+        } else {
+            0.0
+        };
+        let fade_start = len - fade;
 
         // Motor über den Block vorrechnen, pro Sample linear überblenden
         let dt = n as f32 / out_rate;
@@ -234,7 +261,13 @@ impl Deck {
                 continue;
             }
 
-            let s = track.sample_at(self.pos);
+            let mut s = track.sample_at(self.pos);
+            if fade > 0.0 && self.pos > fade_start {
+                let p = ((self.pos - fade_start) / fade) as f32;
+                let (out_gain, in_gain) = self.repeat_curve.gains(p * 2.0 - 1.0);
+                let head = track.sample_at(self.pos - fade_start);
+                s = [s[0] * out_gain + head[0] * in_gain, s[1] * out_gain + head[1] * in_gain];
+            }
             // Der Tonabnehmer reagiert auf Geschwindigkeit: langsame Platte klingt leiser
             let amp = self.rate.abs().min(1.0);
             *frame = [s[0] * amp, s[1] * amp];
@@ -254,7 +287,8 @@ impl Deck {
                 if self.scratch.is_some() {
                     self.pos = len;
                 } else if self.repeat_track {
-                    self.pos -= len;
+                    // Mit Überblendung ist der Anfang schon hörbar, es geht hinter dem Blendstück weiter
+                    self.pos -= fade_start;
                 } else {
                     self.pos = len;
                     self.playing = false;
@@ -365,5 +399,29 @@ mod tests {
         run(&mut d, &motor, 1.5);
         assert!(d.is_playing());
         assert!(d.position_secs() < 0.6);
+    }
+
+    #[test]
+    fn repeat_track_fades_end_into_start() {
+        let motor = Motor { spin_up_secs: 0.001, spin_down_secs: 0.001 };
+        // Erste Hälfte 0.2, zweite 0.8: in der Blende mischen sich Ende und Anfang
+        let mut samples = vec![[0.2f32; 2]; 3000];
+        samples[1500..].fill([0.8; 2]);
+        let mut d = Deck::default();
+        d.load(Arc::new(TrackAudio::new(SR as u32, samples)), 1, false);
+        d.set_repeat_track(true);
+        d.set_repeat_fade(0.5, Curve::Linear);
+        d.play();
+        run(&mut d, &motor, 2.6);
+        assert!(d.position_secs() > 2.5);
+        let mut buf = vec![[0.0f32; 2]; 10];
+        d.render(&motor, SR, &mut buf);
+        let mid = buf[5][0];
+        assert!(mid > 0.25 && mid < 0.75, "Blende mischt nicht: {mid}");
+        // Nach dem Ende geht es hinter dem schon gehörten Anfang weiter
+        run(&mut d, &motor, 0.5);
+        assert!(d.is_playing());
+        let p = d.position_secs();
+        assert!(p > 0.5 && p < 0.7, "pos {p}");
     }
 }
