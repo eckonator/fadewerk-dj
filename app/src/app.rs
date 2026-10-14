@@ -1070,6 +1070,7 @@ impl FadeWerkDjApp {
                 pl.move_entry(i, before);
             }
             PlaylistAction::EditTags(p) => self.browser_action(BrowserAction::EditTags(p), now),
+            PlaylistAction::AnalyzeBpm(p) => self.browser_action(BrowserAction::AnalyzeBpm { paths: vec![p], force: true }, now),
             PlaylistAction::Drop { item, before } => match item {
                 DragItem::Files(paths) => {
                     let at = before.min(self.playlists[d].entries.len());
