@@ -1259,6 +1259,8 @@ impl FadeWerkDjApp {
                 pl.move_entry(i, before);
             }
             PlaylistAction::EditTags(p) => self.browser_action(BrowserAction::EditTags(p), now),
+            // Wie Ziehen ans Ende der anderen Playlist
+            PlaylistAction::MoveToOther(i) => self.playlist_action(1 - d, PlaylistAction::Drop { item: DragItem::Row { list: d, index: i }, before: usize::MAX }, now),
             PlaylistAction::AnalyzeBpm(p) => self.browser_action(BrowserAction::AnalyzeBpm { paths: vec![p], force: true }, now),
             PlaylistAction::Drop { item, before } => match item {
                 DragItem::Files(paths) => {

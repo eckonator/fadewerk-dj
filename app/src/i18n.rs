@@ -234,6 +234,7 @@ fn en(de: &str) -> Option<&'static str> {
         "Zeit" => "Time",
         "SPALTEN" => "COLUMNS",
         "Spalten anzeigen" => "Show columns",
+        "In Playlist {} verschieben" => "Move to playlist {}",
         "Wiederherstellen" => "Restore",
         "Playlists A und B wieder so füllen, wie an diesem Tag gespielt wurde. Ersetzt die jetzigen Playlists; ein gerade laufender Titel bleibt." => "Fill playlists A and B again the way this day was played. Replaces the current playlists; a track that is playing stays.",
         "Keine der Dateien dieses Tages ist zu finden" => "None of this day's files can be found",
