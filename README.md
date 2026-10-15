@@ -28,7 +28,8 @@ written in Rust. Click a folder and start playing: no database, no library impor
   Select several tracks or folders (⌘/Ctrl-click, Shift-click) and drag them into a playlist, or use
   the right-click menu: append, play next, shuffle in, spread across A and B, show in Finder.
   Choose the track list columns (artist, album, genre, year, comment, subfolder, file name, format,
-  BPM, time) and drag their widths; both are remembered.
+  BPM, time) and drag their widths; click a column header to sort ascending or descending. All of
+  this is remembered.
 - **History**: below the folders, “History” lists every day with the tracks that were played, in order,
   with time and deck. A track counts once it has been audible on master for 30 seconds; tracks until
   6 am belong to the day before. Give a day a name (“Grandma’s birthday”), remove entries, export it as
@@ -52,7 +53,8 @@ written in Rust. Click a folder and start playing: no database, no library impor
   **3-band EQ per deck** (isolator, −26 to +6 dB) with kill buttons.
   Right-click or double-click resets any fader to its default.
 - **Playlists**: fill and reorder by drag & drop, also between A and B (or via the right-click menu);
-  drop tracks straight onto a deck. Playlists and settings are kept when you quit.
+  drop tracks straight onto a deck. The loaded track always moves to the top of its playlist, the
+  played ones stay above it. Playlists and settings are kept when you quit.
 - **Skins** Night, Classic, Day and Neon, optionally with a brushed steel look.
   The layout adapts to the window size, including 4K monitors. **Full screen** via the button
   in the folder browser, F11 or ⌃⌘F on macOS.
@@ -147,6 +149,7 @@ Code comments are in German; issues and contributions in English are welcome.
 | `FW_BPM=1` | Detects the missing BPM of the start folder. |
 | `FW_SEARCH="genre=rock,year=1980-1989"` | Opens the advanced search with these fields. |
 | `FW_COLUMNS=artist,album,genre,…` | Shows these columns in the track list. |
+| `FW_SORT=artist` / `FW_SORT=bpm:desc` | Sorts the track list by this column. |
 | `FW_POINTER=x,y` | Moves the mouse there (points); `x,y,1` clicks, `x,y,2` right-clicks, `x1,y1,x2,y2` drags. |
 | `FW_SETTINGS=audio\|sprache\|aussehen\|ueber` | Opens the settings window. |
 | `FW_UPDATE_ASK=1` | Shows the question whether to check for updates. |
