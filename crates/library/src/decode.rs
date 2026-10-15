@@ -130,6 +130,8 @@ fn decode_bytes(bytes: Vec<u8>, ext: Option<&str>) -> anyhow::Result<TrackAudio>
     if frames.is_empty() {
         return Err(anyhow!("keine Audiodaten"));
     }
+    // Eine Abtastrate von 0 (kaputter Dateikopf) ergäbe im Player eine Division durch 0
+    anyhow::ensure!(sample_rate > 0, "ungültige Abtastrate 0 im Dateikopf");
     Ok(TrackAudio::new(sample_rate, frames))
 }
 

@@ -206,11 +206,68 @@ impl Settings {
         migrate_old_dir();
         let Some(p) = path() else { return Self::default() };
         match std::fs::read_to_string(&p) {
-            Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
+            Ok(s) => Self::from_json(&s).unwrap_or_else(|e| {
                 log::warn!("Einstellungen in {} unlesbar, nehme Standardwerte: {e}", p.display());
                 Self::default()
             }),
             Err(_) => Self::default(),
+        }
+    }
+
+    /// Liest Einstellungen nachsichtig: Ein Eintrag, den diese Version nicht versteht (etwa ein Skin aus einer
+    /// neueren Version oder ein kaputter Wert), fällt einzeln auf den Standard zurück, statt alle zurückzusetzen.
+    /// Danach werden Zahlen auf sinnvolle Bereiche begrenzt.
+    pub fn from_json(text: &str) -> Result<Self, String> {
+        let file: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        let serde_json::Value::Object(fields) = file else { return Err("kein JSON-Objekt".into()) };
+        let mut base = serde_json::to_value(Self::default()).map_err(|e| e.to_string())?;
+        let mut parsed: Self = match serde_json::from_value(serde_json::Value::Object(fields.clone())) {
+            Ok(s) => s,
+            Err(_) => {
+                for (key, value) in fields {
+                    let mut candidate = base.clone();
+                    candidate[&key] = value.clone();
+                    if serde_json::from_value::<Self>(candidate).is_ok() {
+                        base[&key] = value;
+                    } else {
+                        log::warn!("Einstellung „{key}“ unlesbar, nehme den Standardwert");
+                    }
+                }
+                serde_json::from_value(base).map_err(|e| e.to_string())?
+            }
+        };
+        parsed.sanitize();
+        Ok(parsed)
+    }
+
+    /// Begrenzt Zahlen auf die Bereiche der Regler; Unsinn (negativ, riesig, unendlich) wird zum Standard.
+    fn sanitize(&mut self) {
+        let d = Self::default();
+        let fit = |v: f32, lo: f32, hi: f32, def: f32| if v.is_finite() { v.clamp(lo, hi) } else { def };
+        self.browser_height = fit(self.browser_height, 0.0, 10_000.0, 0.0);
+        self.tree_width = fit(self.tree_width, 0.0, 5_000.0, 0.0);
+        self.deck_height = fit(self.deck_height, 0.0, 10_000.0, 0.0);
+        self.column_widths.retain(|(_, w)| w.is_finite() && *w > 0.0 && *w < 5_000.0);
+        self.fx_slots.truncate(fw_engine::FX_SLOTS);
+        self.fx_volume = fit(self.fx_volume, 0.0, 1.0, d.fx_volume);
+        self.spin_up_secs = fit(self.spin_up_secs, 0.1, 2.0, d.spin_up_secs);
+        self.spin_down_secs = fit(self.spin_down_secs, 0.2, 4.0, d.spin_down_secs);
+        self.fade_secs = fit(self.fade_secs, 1.0, 20.0, d.fade_secs);
+        if self.curve > 3 {
+            self.curve = d.curve;
+        }
+        for p in &mut self.curve_points {
+            *p = fit(*p, 0.0, 1.0, 0.5);
+        }
+        self.master_volume = fit(self.master_volume, 0.0, 1.0, d.master_volume);
+        self.head_volume = fit(self.head_volume, 0.0, 1.0, d.head_volume);
+        self.head_mix = fit(self.head_mix, 0.0, 1.0, d.head_mix);
+        for db in self.eq_db.iter_mut().flatten() {
+            *db = fit(*db, EQ_MIN_DB, EQ_MAX_DB, 0.0);
+        }
+        self.ui_zoom = fit(self.ui_zoom, 0.7, 1.5, 1.0);
+        if self.buffer_frames.is_some_and(|b| !(16..=16_384).contains(&b)) {
+            self.buffer_frames = None;
         }
     }
 
@@ -225,6 +282,41 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn garbage_files_give_errors_not_panics() {
+        for text in ["", "null", "[]", "{", "\"text\"", "42", "{\"language\":", "\u{0}\u{1}"] {
+            assert!(Settings::from_json(text).is_err(), "{text:?} sollte ein Fehler sein");
+        }
+    }
+
+    #[test]
+    fn one_unknown_value_does_not_reset_everything() {
+        // Etwa eine ältere Version, die Einstellungen einer neueren liest
+        let s = Settings::from_json(r#"{"skin":"Plasma","fx_volume":0.3,"curve_points":"kaputt","folders":["/Musik"]}"#).unwrap();
+        assert_eq!(s.skin, Settings::default().skin);
+        assert_eq!(s.fx_volume, 0.3);
+        assert_eq!(s.curve_points, Settings::default().curve_points);
+        assert_eq!(s.folders, [PathBuf::from("/Musik")]);
+    }
+
+    #[test]
+    fn nonsense_numbers_are_limited() {
+        let s = Settings::from_json(
+            r#"{"ui_zoom":40,"fade_secs":-3,"master_volume":7,"eq_db":[[1e30,-99,0],[5,5,5]],"curve":9,
+                "buffer_frames":0,"tree_width":-20,"column_widths":[["artist",-5],["album",120]],"spin_up_secs":1e39}"#,
+        )
+        .unwrap();
+        assert_eq!(s.ui_zoom, 1.5);
+        assert_eq!(s.fade_secs, 1.0);
+        assert_eq!(s.master_volume, 1.0);
+        assert_eq!(s.eq_db[0], [EQ_MAX_DB, EQ_MIN_DB, 0.0]);
+        assert_eq!(s.curve, 0);
+        assert_eq!(s.buffer_frames, None);
+        assert_eq!(s.tree_width, 0.0);
+        assert_eq!(s.column_widths, [("album".to_owned(), 120.0)]);
+        assert!(s.spin_up_secs > 0.0 && s.spin_up_secs <= 2.0);
+    }
 
     #[test]
     fn unknown_or_missing_fields_fall_back_to_defaults() {

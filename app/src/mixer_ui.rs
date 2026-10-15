@@ -308,52 +308,86 @@ fn fade_settings(ui: &mut egui::Ui, m: &FadeModel<'_>, out: &mut Vec<FadeAction>
 
     // Überblendzeit unter der Kurve als kleines LCD und Regler
     ui.add_space(6.0);
+    if let Some(v) = secs_row(ui, m.fade_secs, &FADE_TIME) {
+        out.push(FadeAction::FadeSecs(v));
+    }
+}
+
+/// Eine Zeit in Sekunden als LCD (anklickbar zum Eintippen), „SEK.“ und Hardware-Fader.
+struct SecsField {
+    id: &'static str,
+    min: f32,
+    max: f32,
+    default: f32,
+    /// Raster beim Ziehen und für Pfeiltasten/Mausrad.
+    step: f32,
+    /// Raster beim Eintippen.
+    typed_step: f32,
+    decimals: usize,
+    fader_tip: &'static str,
+}
+
+const FADE_TIME: SecsField = SecsField {
+    id: "fadesecs",
+    min: FADE_MIN_SECS,
+    max: FADE_MAX_SECS,
+    default: settings::DEFAULT_FADE_SECS,
+    step: 0.5,
+    typed_step: 0.1,
+    decimals: 1,
+    fader_tip: "Überblendzeit",
+};
+
+/// Zeile aus LCD, „SEK.“ und Fader. Liefert den neuen Wert, wenn er geändert wurde.
+fn secs_row(ui: &mut egui::Ui, value: f32, f: &SecsField) -> Option<f32> {
     ui.horizontal(|ui| {
         let scale = (ui.available_width() / 230.0).clamp(1.0, 1.5);
         let (lcd, lcd_resp) = ui.allocate_exact_size(vec2(52.0, 22.0) * scale, Sense::click());
         hw::well(ui.painter(), lcd, 4.0);
-        if let Some(v) = fade_secs_lcd(ui, lcd, lcd_resp, m.fade_secs, 13.0 * scale) {
-            out.push(FadeAction::FadeSecs(v));
-        }
+        let typed = secs_lcd(ui, lcd, lcd_resp, value, 13.0 * scale, f);
         ui.label(small("SEK."));
-        let (resp, new) = hw::mini_fader(ui, "fadesecs", m.fade_secs, settings::DEFAULT_FADE_SECS, FADE_MIN_SECS, FADE_MAX_SECS, ui.available_width() - 4.0);
-        let keyed = hw::nudge(ui, &resp, (m.fade_secs * 2.0).round() / 2.0, 0.5, FADE_MIN_SECS, FADE_MAX_SECS);
-        resp.on_hover_text(tr("Überblendzeit"));
-        if let Some(v) = keyed.or(new.map(|v| (v * 2.0).round() / 2.0)) {
-            out.push(FadeAction::FadeSecs(v));
-        }
-    });
-
+        let snap = |v: f32| ((v / f.step).round() * f.step).clamp(f.min, f.max);
+        let (resp, new) = hw::mini_fader(ui, f.id, value, f.default, f.min, f.max, ui.available_width() - 4.0);
+        let keyed = hw::nudge(ui, &resp, snap(value), f.step, f.min, f.max);
+        resp.on_hover_text(tr(f.fader_tip));
+        typed.or(keyed).or(new.map(snap))
+    })
+    .inner
 }
 
 /// Reiter MOTOR: Anlauf und Auslauf der Plattenteller.
 fn motor_settings(ui: &mut egui::Ui, m: &FadeModel<'_>, out: &mut Vec<FadeAction>) {
-    {
-        let mut motor = m.motor;
-        let mut changed = false;
-        ui.spacing_mut().slider_width = ui.available_width() - 110.0;
-        ui.horizontal(|ui| {
-            ui.label(small("ANLAUF "));
-            let r = ui.add(egui::Slider::new(&mut motor.spin_up_secs, 0.1..=2.0).step_by(0.05).suffix(" s"));
-            if r.secondary_clicked() || r.double_clicked() {
-                motor.spin_up_secs = Motor::default().spin_up_secs;
-                changed = true;
-            }
-            changed |= r.changed();
-        });
-        ui.horizontal(|ui| {
-            ui.label(small("AUSLAUF"));
-            let r = ui.add(egui::Slider::new(&mut motor.spin_down_secs, 0.2..=4.0).step_by(0.1).suffix(" s"));
-            if r.secondary_clicked() || r.double_clicked() {
-                motor.spin_down_secs = Motor::default().spin_down_secs;
-                changed = true;
-            }
-            changed |= r.changed();
-        });
-        if changed {
-            out.push(FadeAction::Motor(motor));
-        }
+    const SPIN_UP: SecsField = SecsField {
+        id: "spinup",
+        min: 0.1,
+        max: 2.0,
+        default: 0.5,
+        step: 0.05,
+        typed_step: 0.05,
+        decimals: 2,
+        fader_tip: "Anlaufzeit bei Play",
+    };
+    const SPIN_DOWN: SecsField = SecsField {
+        id: "spindown",
+        min: 0.2,
+        max: 4.0,
+        default: 1.6,
+        step: 0.1,
+        typed_step: 0.1,
+        decimals: 1,
+        fader_tip: "Auslaufzeit bei Pause und Stopp",
+    };
+    debug_assert_eq!((SPIN_UP.default, SPIN_DOWN.default), (Motor::default().spin_up_secs, Motor::default().spin_down_secs));
+    ui.label(small("ANLAUF"));
+    if let Some(v) = secs_row(ui, m.motor.spin_up_secs, &SPIN_UP) {
+        out.push(FadeAction::Motor(Motor { spin_up_secs: v, ..m.motor }));
     }
+    ui.add_space(2.0);
+    ui.label(small("AUSLAUF"));
+    if let Some(v) = secs_row(ui, m.motor.spin_down_secs, &SPIN_DOWN) {
+        out.push(FadeAction::Motor(Motor { spin_down_secs: v, ..m.motor }));
+    }
+    ui.add_space(2.0);
     ui.label(RichText::new(tr("Wie schnell die Teller bei Play anlaufen und bei Pause oder Stopp auslaufen. Im Kopfhörer starten und halten sie sofort.")).size(11.5).color(theme::faint()));
 }
 
@@ -569,17 +603,17 @@ fn curve_editor(ui: &egui::Ui, resp: &egui::Response, rect: Rect, curve: Curve) 
     Some(Curve::Custom(pts))
 }
 
-/// LCD der Überblendzeit. Klick öffnet die Eingabe direkt im Display: Enter oder Wegklicken übernimmt,
-/// Esc bricht ab. Komma oder Punkt, auf 0,1 s gerundet und auf den Reglerbereich begrenzt.
-fn fade_secs_lcd(ui: &mut egui::Ui, lcd: Rect, resp: egui::Response, secs: f32, size: f32) -> Option<f32> {
-    let edit_id = ui.id().with("fadesecs-edit");
+/// LCD einer Zeit. Klick öffnet die Eingabe direkt im Display: Enter oder Wegklicken übernimmt,
+/// Esc bricht ab. Komma oder Punkt, gerundet auf `typed_step` und auf den Reglerbereich begrenzt.
+fn secs_lcd(ui: &mut egui::Ui, lcd: Rect, resp: egui::Response, secs: f32, size: f32, f: &SecsField) -> Option<f32> {
+    let edit_id = ui.id().with((f.id, "edit"));
     let mut text: Option<String> = ui.data(|d| d.get_temp(edit_id));
     if text.is_none() && resp.clicked() {
-        text = Some(format!("{secs:.1}"));
+        text = Some(format!("{secs:.prec$}", prec = f.decimals));
     }
     let Some(mut buf) = text else {
-        hw::lcd_text(ui.painter(), lcd.right_center() - vec2(6.0, 0.0), Align2::RIGHT_CENTER, &format!("{secs:4.1}"), size, theme::well_ink());
-        resp.on_hover_cursor(egui::CursorIcon::Text).on_hover_text(tr("Klicken, um die Überblendzeit einzugeben"));
+        hw::lcd_text(ui.painter(), lcd.right_center() - vec2(6.0, 0.0), Align2::RIGHT_CENTER, &format!("{secs:4.prec$}", prec = f.decimals), size, theme::well_ink());
+        resp.on_hover_cursor(egui::CursorIcon::Text).on_hover_text(tr("Klicken, um die Zeit einzugeben"));
         return None;
     };
     let field = egui::TextEdit::singleline(&mut buf)
@@ -609,7 +643,7 @@ fn fade_secs_lcd(ui: &mut egui::Ui, lcd: Rect, resp: egui::Response, secs: f32, 
             return None;
         }
         let v: f32 = buf.trim().trim_end_matches(['s', 'S']).trim().replace(',', ".").parse().ok()?;
-        return v.is_finite().then(|| ((v * 10.0).round() / 10.0).clamp(FADE_MIN_SECS, FADE_MAX_SECS));
+        return v.is_finite().then(|| ((v / f.typed_step).round() * f.typed_step).clamp(f.min, f.max));
     }
     ui.data_mut(|d| d.insert_temp(edit_id, buf));
     None
