@@ -66,10 +66,21 @@ pub struct DeckModel<'a> {
     pub cover: Option<egui::TextureId>,
     pub pfl: bool,
     pub repeat: Repeat,
+    /// Läuft rückwärts (REV-Taste).
+    pub reverse: bool,
     pub loop_beats: Option<u32>,
     pub loop_range: Option<(f64, f64)>,
     pub on_air: bool,
     pub scratching: bool,
+    /// Gerade ausgeworfene Platte, die noch aus dem Player gleitet.
+    pub leaving: Option<Leaving<'a>>,
+}
+
+/// Label bzw. Cover einer ausgeworfenen Platte, damit sie beim Hinausgleiten noch so aussieht wie vorher.
+pub struct Leaving<'a> {
+    pub title: &'a str,
+    pub artist: &'a str,
+    pub cover: Option<egui::TextureId>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -81,6 +92,7 @@ pub enum DeckAction {
     Next,
     Eject,
     CycleRepeat,
+    Reverse(bool),
     Pfl(bool),
     Sync,
     Loop(u32),
@@ -154,7 +166,7 @@ pub fn show(ui: &mut egui::Ui, m: &DeckModel<'_>, out: &mut Vec<DeckAction>) {
 
     platter(ui, m, color, plat_rect, out);
     // Nach dem Teller: liegt obenauf und bekommt Klicks auf den Tonkopf zuerst
-    tonearm(ui, m, plat_rect, mirrored, out);
+    tonearm(ui, m, plat_rect, out);
     ui.scope_builder(UiBuilder::new().max_rect(ctrl_rect), |ui| controls(ui, m, color, out));
     ui.scope_builder(UiBuilder::new().max_rect(pitch_rect), |ui| pitch(ui, m, out));
 }
@@ -293,6 +305,24 @@ fn overview(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, out: &mut Vec<
     }
 }
 
+/// So lange stillgehalten, greift die Hand die Platte (hält sie an), auch ohne zu ziehen (Sekunden).
+const GRAB_HOLD_SECS: f64 = 0.15;
+/// So weit bewegt (Punkte), greift die Hand sofort und scratcht.
+const GRAB_MOVE_PX: f32 = 3.0;
+
+/// Gedrückte linke Maustaste auf dem Teller: wann und wo, und ob die Hand die Platte schon greift.
+#[derive(Clone, Copy)]
+struct Press {
+    at: f64,
+    origin: Pos2,
+    grabbed: bool,
+    /// Winkel des Zeigers im letzten Bild (für das Scratchen).
+    angle: f32,
+}
+
+/// Teller: kurz klicken = Play bzw. Pause, festhalten = anhalten, ziehen = scratchen, Rechtsklick = Stopp,
+/// Mausrad = scratchen. Die Hand greift erst nach kurzer Zeit oder Bewegung, damit ein Klick nicht vorher
+/// schon die Platte bremst (sonst liefe sie beim Pausieren nicht mehr aus).
 fn platter(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, rect: Rect, out: &mut Vec<DeckAction>) {
     let id = ui.id().with(("platter", m.deck));
     let resp = ui.interact(rect, id, Sense::drag());
@@ -302,31 +332,111 @@ fn platter(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, rect: Rect, out
     paint_platter(ui, c, r, angle, color, m, resp.dragged());
 
     let pointer_angle = |p: Pos2| (p.y - c.y).atan2(p.x - c.x);
-    if resp.drag_started() && m.has_track {
-        out.push(DeckAction::ScratchBegin);
-        if let Some(p) = resp.interact_pointer_pos() {
-            ui.data_mut(|d| d.insert_temp(id, pointer_angle(p)));
+    let primary = egui::PointerButton::Primary;
+    let now = ui.input(|i| i.time);
+    let mut press: Option<Press> = ui.data(|d| d.get_temp(id));
+    if resp.drag_started_by(primary) && m.has_track
+        && let Some(p) = resp.interact_pointer_pos()
+    {
+        press = Some(Press { at: now, origin: p, grabbed: false, angle: pointer_angle(p) });
+    }
+    if let Some(pr) = press.as_mut()
+        && resp.dragged_by(primary)
+        && m.has_track
+        && let Some(p) = resp.interact_pointer_pos()
+    {
+        if !pr.grabbed && (now - pr.at >= GRAB_HOLD_SECS || p.distance(pr.origin) > GRAB_MOVE_PX) {
+            pr.grabbed = true;
+            out.push(DeckAction::ScratchBegin);
+        }
+        if pr.grabbed {
+            let a = pointer_angle(p);
+            let mut da = a - pr.angle;
+            if da > std::f32::consts::PI { da -= TAU; }
+            if da < -std::f32::consts::PI { da += TAU; }
+            pr.angle = a;
+            if da != 0.0 {
+                out.push(DeckAction::ScratchBy(da as f64 / TAU as f64 / REV_PER_SEC));
+            }
+        } else {
+            // Ohne Bewegung kommt sonst kein neues Bild, das das Greifen auslöst
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(GRAB_HOLD_SECS / 3.0));
         }
     }
-    if resp.dragged() && m.has_track && let Some(p) = resp.interact_pointer_pos() {
-        let a = pointer_angle(p);
-        let last: f32 = ui.data(|d| d.get_temp(id)).unwrap_or(a);
-        let mut da = a - last;
-        if da > std::f32::consts::PI { da -= TAU; }
-        if da < -std::f32::consts::PI { da += TAU; }
-        ui.data_mut(|d| d.insert_temp(id, a));
-        if da != 0.0 {
-            out.push(DeckAction::ScratchBy(da as f64 / TAU as f64 / REV_PER_SEC));
+    if resp.drag_stopped_by(primary) {
+        match press.take() {
+            Some(pr) if pr.grabbed => out.push(DeckAction::ScratchEnd),
+            // Kurz angetippt: wie die Play/Pause-Taste (Pause läuft mit dem Motor aus)
+            Some(_) if m.has_track => out.push(DeckAction::TogglePlay),
+            _ => {}
         }
     }
-    if resp.drag_stopped() {
-        out.push(DeckAction::ScratchEnd);
+    ui.data_mut(|d| match press {
+        Some(pr) => {
+            d.insert_temp(id, pr);
+        }
+        None => d.remove::<Press>(id),
+    });
+    wheel_scratch(ui, &resp, m.has_track, out);
+    // Rechtsklick wie die Stopp-Taste: läuft aus, danach zurück zum Cue-Punkt
+    let right_click = resp.hovered() && ui.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary));
+    if right_click && m.has_track {
+        out.push(DeckAction::Stop);
     }
     if m.has_track {
-        resp.on_hover_cursor(egui::CursorIcon::Grab).on_hover_text(tr("Teller ziehen = scratchen"));
+        resp.on_hover_cursor(egui::CursorIcon::Grab).on_hover_text(tr("Klick = Play/Pause, Rechtsklick = Stopp, festhalten, ziehen oder Mausrad = scratchen"));
     }
 }
 
+/// Trackpad-Weg (Punkte) für eine volle Umdrehung beim Scratchen mit dem Rad.
+const WHEEL_POINTS_PER_REV: f32 = 400.0;
+/// Eine Rastung des Mausrads dreht die Platte um diesen Anteil einer Umdrehung.
+const WHEEL_REV_PER_NOTCH: f32 = 1.0 / 16.0;
+/// So lange ohne Radbewegung, dann gilt die Platte als losgelassen (Sekunden).
+const WHEEL_RELEASE_SECS: f64 = 0.15;
+
+/// Mausrad bzw. Trackpad über dem Teller scratcht: nach oben oder rechts dreht vorwärts. Die erste Bewegung
+/// legt die Hand auf die Platte, nach `WHEEL_RELEASE_SECS` Ruhe lässt sie los; der Schwung des Trackpads
+/// (auch das Nachgleiten des Systems) rollt dann wie beim Ziehen nach.
+fn wheel_scratch(ui: &egui::Ui, resp: &egui::Response, has_track: bool, out: &mut Vec<DeckAction>) {
+    let id = resp.id.with("wheel-scratch");
+    let now = ui.input(|i| i.time);
+    let mut last: Option<f64> = ui.data(|d| d.get_temp(id));
+    if has_track && !resp.dragged() {
+        let w = hw::take_wheel(ui, resp);
+        let revs = w.points / WHEEL_POINTS_PER_REV + w.notches * WHEEL_REV_PER_NOTCH;
+        if revs != 0.0 {
+            if last.is_none() {
+                out.push(DeckAction::ScratchBegin);
+            }
+            out.push(DeckAction::ScratchBy(revs as f64 / REV_PER_SEC));
+            last = Some(now);
+        }
+    }
+    if let Some(t) = last {
+        if resp.dragged() || !has_track || now - t > WHEEL_RELEASE_SECS {
+            // Ziehen mit der Maus übernimmt selbst; sonst Hand weg
+            if !resp.dragged() {
+                out.push(DeckAction::ScratchEnd);
+            }
+            last = None;
+        } else {
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(WHEEL_RELEASE_SECS / 2.0));
+        }
+    }
+    ui.data_mut(|d| match last {
+        Some(t) => {
+            d.insert_temp(id, t);
+        }
+        None => d.remove::<f64>(id),
+    });
+}
+
+/// Dauer, in der die Platte beim Auswerfen hinaus- bzw. beim Laden hereingleitet (Sekunden).
+const RECORD_SLIDE_SECS: f32 = 0.5;
+
+/// Teller mit Gummimatte, darauf die Platte. Ohne Titel liegt keine Platte auf; beim Auswerfen gleitet sie
+/// nach außen aus dem Player (A nach links, B nach rechts), beim Laden von dort wieder herein.
 fn paint_platter(ui: &egui::Ui, c: Pos2, r: f32, angle: f32, color: Color32, m: &DeckModel<'_>, grabbing: bool) {
     let p = ui.painter();
     let rot = |a: f32, rr: f32| c + vec2((a + angle).cos(), (a + angle).sin()) * rr;
@@ -349,8 +459,46 @@ fn paint_platter(ui: &egui::Ui, c: Pos2, r: f32, angle: f32, color: Color32, m: 
     for i in 0..dots {
         p.circle_filled(rot(i as f32 / dots as f32 * TAU, r * 0.955), (r * 0.012).max(1.0), Color32::from_rgb(0xcf, 0xd6, 0xe4));
     }
+    // Gummimatte mit feinen Ringen, sichtbar, wenn keine Platte aufliegt
+    p.circle_filled(c, r * 0.91, Color32::from_rgb(0x1a, 0x1d, 0x24));
+    for k in 1..=if lite { 2 } else { 5 } {
+        p.circle_stroke(c, r * (0.18 * k as f32).min(0.88), Stroke::new(1.0, Color32::from_white_alpha(10)));
+    }
+    let pin = |p: &egui::Painter| p.circle_filled(c, r * 0.03, Color32::from_rgb(0xcf, 0xd6, 0xe4));
+    pin(p);
+
+    // Lage der Platte: 0 = auf dem Teller, 1 = ganz draußen; weich angefahren und abgebremst
+    let id = ui.id().with(("record-slide", m.deck));
+    let t = ui.ctx().animate_value_with_time(id, if m.has_track { 0.0 } else { 1.0 }, RECORD_SLIDE_SECS);
+    let slide = t * t * (3.0 - 2.0 * t);
+    // Beim Hinausgleiten dreht sie im Winkel weiter, in dem sie zuletzt stand
+    let angle_id = id.with("angle");
+    let angle = if m.has_track {
+        ui.ctx().data_mut(|d| d.insert_temp(angle_id, angle));
+        angle
+    } else {
+        ui.ctx().data(|d| d.get_temp(angle_id)).unwrap_or(angle)
+    };
+    let (title, artist, cover) = match (&m.leaving, m.has_track) {
+        (_, true) => (m.title, m.artist, m.cover),
+        (Some(l), false) => (l.title, l.artist, l.cover),
+        (None, false) => ("", "", None),
+    };
+    if slide >= 1.0 {
+        return;
+    }
+    // Nach außen aus dem Player: A nach links, B nach rechts; abgeschnitten am Rand des Player-Gehäuses
+    let out_dir = if m.deck == 1 { 1.0 } else { -1.0 };
+    let c = c + vec2(out_dir * slide * r * 2.3, 0.0);
+    let clipped = p.with_clip_rect(ui.max_rect().expand(6.0).intersect(ui.clip_rect()));
+    let p = &clipped;
+    let rot = |a: f32, rr: f32| c + vec2((a + angle).cos(), (a + angle).sin()) * rr;
+    if slide > 0.0 && !lite {
+        // Schatten der angehobenen Platte
+        p.circle_filled(c + vec2(0.0, 4.0), r * 0.92, Color32::from_black_alpha(70));
+    }
+
     // Vinyl mit Rillen; mit Cover bleibt nur ein schmaler Rillenrand außen (Picture-Disc)
-    let cover = m.cover.filter(|_| m.has_track);
     p.circle_filled(c, r * 0.91, Color32::from_rgb(0x0b, 0x0b, 0x0e));
     if let Some(tex) = cover {
         paint_cover(p, c, r * COVER_RADIUS, angle, tex);
@@ -373,9 +521,8 @@ fn paint_platter(ui: &egui::Ui, c: Pos2, r: f32, angle: f32, color: Color32, m: 
         p.add(egui::Shape::convex_polygon(pts, Color32::from_white_alpha(alpha), Stroke::NONE));
     }
     // Label mit Titel, dreht mit (entfällt, wenn das Cover die Platte füllt)
-    let label_color = if m.has_track { color } else { theme::panel2() };
     if cover.is_none() {
-        p.circle_filled(c, r * 0.33, label_color);
+        p.circle_filled(c, r * 0.33, color);
     }
     let text_color = Color32::from_rgba_unmultiplied(10, 14, 22, 220);
     let label_text = |text: &str, size: f32, dy: f32| {
@@ -391,21 +538,22 @@ fn paint_platter(ui: &egui::Ui, c: Pos2, r: f32, angle: f32, color: Color32, m: 
     if cover.is_some() {
         // Mittelloch der Picture-Disc
         p.circle_filled(c, r * 0.05, Color32::from_black_alpha(150));
-    } else if m.has_track {
-        label_text(m.title, (r * 0.085).max(8.0), -r * 0.1);
-        label_text(m.artist, (r * 0.065).max(7.0), r * 0.1);
     } else {
-        // Zweizeilig, damit das Mittelloch nichts verdeckt
-        label_text("FADEWERK", (r * 0.08).max(8.0), -r * 0.1);
-        label_text("DJ", (r * 0.08).max(8.0), r * 0.1);
+        label_text(title, (r * 0.085).max(8.0), -r * 0.1);
+        label_text(artist, (r * 0.065).max(7.0), r * 0.1);
     }
     // Markierung, damit die Drehung sichtbar ist
     let a = -std::f32::consts::FRAC_PI_2;
     let mark_from = if cover.is_some() { COVER_RADIUS + 0.012 } else { 0.4 };
     p.line_segment([rot(a, r * mark_from), rot(a, r * 0.88)], Stroke::new((r * 0.02).max(1.5), Color32::from_white_alpha(230)));
-    p.circle_filled(c, r * 0.03, Color32::from_rgb(0xcf, 0xd6, 0xe4));
-    if grabbing || m.scratching {
-        p.circle_stroke(c, r + 1.0, Stroke::new(2.5, color));
+    if slide <= 0.0 {
+        // Der Dorn schaut durch das Mittelloch
+        pin(p);
+        if grabbing || m.scratching {
+            p.circle_stroke(c, r + 1.0, Stroke::new(2.5, color));
+        }
+    } else {
+        p.circle_filled(c, r * 0.03, Color32::from_black_alpha(200));
     }
 }
 
@@ -433,13 +581,12 @@ fn groove_at(frac: f32) -> f32 {
     GROOVE_OUT - (GROOVE_OUT - GROOVE_IN) * frac.clamp(0.0, 1.0)
 }
 
-/// Tonarm neben dem Teller (bei Player B gespiegelt). Steht der Player, liegt er auf seiner Stütze; bei Play
+/// Tonarm rechts neben dem Teller, bei beiden Playern wie bei echten Plattenspielern. Steht der Player, liegt er auf seiner Stütze; bei Play
 /// schwenkt er auf die Platte und senkt sich, die Nadel wandert mit dem Titel von außen nach innen. Bei Pause
 /// hebt er sich über der Stelle. Den Tonkopf ziehen springt an die Stelle, an der die Nadel losgelassen wird.
-fn tonearm(ui: &mut egui::Ui, m: &DeckModel<'_>, rect: Rect, mirrored: bool, out: &mut Vec<DeckAction>) {
+fn tonearm(ui: &mut egui::Ui, m: &DeckModel<'_>, rect: Rect, out: &mut Vec<DeckAction>) {
     let c = rect.center();
     let r = rect.width().min(rect.height()) * 0.5 - 2.0;
-    let sx = if mirrored { -1.0 } else { 1.0 };
     let id = ui.id().with(("tonearm", m.deck));
     let ctx = ui.ctx().clone();
     let now = ui.input(|i| i.time);
@@ -449,10 +596,10 @@ fn tonearm(ui: &mut egui::Ui, m: &DeckModel<'_>, rect: Rect, mirrored: bool, out
     let paused = m.has_track && !on_record && m.position > 0.5;
     let mut target = if on_record || paused { groove_at(frac) } else { ARM_REST };
 
-    let pivot = c + vec2(sx, -1.0) * (ARM_PIVOT * r * std::f32::consts::FRAC_1_SQRT_2);
+    let pivot = c + vec2(1.0, -1.0) * (ARM_PIVOT * r * std::f32::consts::FRAC_1_SQRT_2);
     let dir = |rho: f32| {
         let a = arm_angle(rho);
-        vec2(sx * a.cos(), a.sin())
+        vec2(a.cos(), a.sin())
     };
 
     // Tonkopf greifen: Fläche um die Nadel aus dem letzten Bild
@@ -542,7 +689,7 @@ fn tonearm(ui: &mut egui::Ui, m: &DeckModel<'_>, rect: Rect, mirrored: bool, out
     p.line_segment([elbow, stylus], Stroke::new(head_w + 1.5, Color32::from_rgb(0x10, 0x13, 0x19)));
     p.line_segment([elbow, stylus], Stroke::new(head_w, Color32::from_rgb(0x2a, 0x30, 0x3c)));
     let finger = elbow + u * (stylus - elbow).length() * 0.35;
-    p.line_segment([finger, finger + n * sx * r * 0.09], Stroke::new((r * 0.022).max(1.5), metal));
+    p.line_segment([finger, finger + n * r * 0.09], Stroke::new((r * 0.022).max(1.5), metal));
     p.circle_filled(stylus - u * r * 0.03, (r * 0.018).max(1.2), metal);
     p.circle_filled(pivot, r * 0.04, metal);
     if resp.hovered() || dragging.is_some() {
@@ -623,9 +770,10 @@ fn controls(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, out: &mut Vec<
         }
     });
 
-    // Vorhören, Sync
+    // Vorhören, Sync, Rückwärts
     ui.horizontal(|ui| {
-        let pfl_w = (w - gap) * 0.6;
+        let pfl_w = (w - 2.0 * gap) * 0.46;
+        let rest_w = (w - 2.0 * gap - pfl_w) / 2.0;
         let label = format!("🎧 {}", tr("VORHÖREN"));
         if hw::button(ui, vec2(pfl_w, 28.0 * k()), &label, fonts::bold(12.0 * k()), hw::Look::Color(color), m.pfl, true)
             .on_hover_text(tr("Auf dem Kopfhörer vorhören, unabhängig vom Crossfader"))
@@ -634,11 +782,17 @@ fn controls(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, out: &mut Vec<
             out.push(DeckAction::Pfl(!m.pfl));
         }
         let tip = if m.auto_synced { tr("Auto-Sync steuert den Pitch; Pitch anfassen übernimmt von Hand") } else { tr("Tempo an den anderen Player angleichen") };
-        if hw::button(ui, vec2(w - gap - pfl_w, 28.0 * k()), "SYNC", fonts::bold(12.0 * k()), hw::Look::Color(theme::yellow()), m.auto_synced, enabled && m.bpm.is_some())
+        if hw::button(ui, vec2(rest_w, 28.0 * k()), "SYNC", fonts::bold(12.0 * k()), hw::Look::Color(theme::yellow()), m.auto_synced, enabled && m.bpm.is_some())
             .on_hover_text(tip)
             .clicked()
         {
             out.push(DeckAction::Sync);
+        }
+        if hw::button(ui, vec2(rest_w, 28.0 * k()), "REV", fonts::bold(12.0 * k()), hw::Look::Color(theme::cue()), m.reverse, true)
+            .on_hover_text(tr("Rückwärts: der Motor dreht die Platte andersherum"))
+            .clicked()
+        {
+            out.push(DeckAction::Reverse(!m.reverse));
         }
     });
 

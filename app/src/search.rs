@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Erweiterte Suche im Ordnerbrowser: gezielt nach Titel, Interpret, Album, Ordner, Genre,
+//! Erweiterte Suche im Ordnerbrowser: gezielt nach Titel, Interpret, Album, Dateiname, Ordner, Genre,
 //! Jahr und BPM filtern. Das Ergebnis filtert die normale Titelliste, zusätzlich zur Schnellsuche.
+
+use std::path::Path;
 
 use fw_library::TrackMeta;
 use serde::{Deserialize, Serialize};
@@ -11,6 +13,7 @@ pub enum Field {
     Title,
     Artist,
     Album,
+    FileName,
     Folder,
     Genre,
     Year,
@@ -18,7 +21,7 @@ pub enum Field {
 }
 
 impl Field {
-    pub const ALL: [Self; 7] = [Self::Title, Self::Artist, Self::Album, Self::Folder, Self::Genre, Self::Year, Self::Bpm];
+    pub const ALL: [Self; 8] = [Self::Title, Self::Artist, Self::Album, Self::FileName, Self::Folder, Self::Genre, Self::Year, Self::Bpm];
 
     /// Anzeigename (deutscher Schlüssel für `tr`).
     pub fn name(self) -> &'static str {
@@ -26,6 +29,7 @@ impl Field {
             Self::Title => "Titel",
             Self::Artist => "Interpret",
             Self::Album => "Album",
+            Self::FileName => "Dateiname",
             Self::Folder => "Ordner",
             Self::Genre => "Genre",
             Self::Year => "Jahr",
@@ -41,6 +45,8 @@ pub struct AdvancedSearch {
     pub title: String,
     pub artist: String,
     pub album: String,
+    /// Dateiname samt Endung.
+    pub file_name: String,
     pub folder: String,
     pub genre: String,
     pub year: (String, String),
@@ -65,6 +71,7 @@ impl AdvancedSearch {
             Field::Title => &mut self.title,
             Field::Artist => &mut self.artist,
             Field::Album => &mut self.album,
+            Field::FileName => &mut self.file_name,
             Field::Folder => &mut self.folder,
             Field::Genre => &mut self.genre,
             Field::Year => &mut self.year.0,
@@ -85,6 +92,7 @@ impl AdvancedSearch {
             Field::Title => &self.title,
             Field::Artist => &self.artist,
             Field::Album => &self.album,
+            Field::FileName => &self.file_name,
             Field::Folder => &self.folder,
             Field::Genre => &self.genre,
             Field::Year => &self.year.0,
@@ -147,6 +155,7 @@ impl AdvancedSearch {
             title: words(&self.title),
             artist: words(&self.artist),
             album: words(&self.album),
+            file_name: words(&self.file_name),
             folder: words(&self.folder),
             genre: words(&self.genre),
             year: (parse(&self.year.0), parse(&self.year.1)),
@@ -156,8 +165,8 @@ impl AdvancedSearch {
 
     /// Passt der Titel? Für einzelne Prüfungen; bei vielen Titeln [`Self::prepare`] benutzen.
     #[cfg(test)]
-    pub fn matches(&self, meta: &TrackMeta, folder: &str, bpm: Option<f32>) -> bool {
-        self.prepare().matches(meta, || folder.into(), bpm)
+    pub fn matches(&self, meta: &TrackMeta, path: &str, bpm: Option<f32>) -> bool {
+        self.prepare().matches(meta, Path::new(path), bpm)
     }
 }
 
@@ -166,6 +175,7 @@ pub struct PreparedSearch {
     title: Vec<String>,
     artist: Vec<String>,
     album: Vec<String>,
+    file_name: Vec<String>,
     folder: Vec<String>,
     genre: Vec<String>,
     year: (Option<f32>, Option<f32>),
@@ -173,10 +183,10 @@ pub struct PreparedSearch {
 }
 
 impl PreparedSearch {
-    /// Passt der Titel? `folder` liefert den Ordner der Datei (nur gefragt, wenn danach gesucht wird),
-    /// `bpm` die bekannte Geschwindigkeit. Textfelder: alle Wörter müssen vorkommen, Groß/Klein egal.
+    /// Passt der Titel unter `path`? `bpm` ist die bekannte Geschwindigkeit. Textfelder: alle Wörter müssen
+    /// vorkommen, Groß/Klein egal; Ordner = Pfad des Dateiordners, Dateiname samt Endung.
     /// Bereiche: Titel ohne Angabe fallen heraus.
-    pub fn matches<'a>(&self, meta: &TrackMeta, folder: impl FnOnce() -> std::borrow::Cow<'a, str>, bpm: Option<f32>) -> bool {
+    pub fn matches(&self, meta: &TrackMeta, path: &Path, bpm: Option<f32>) -> bool {
         let text_ok = |words: &[String], hay: &str| {
             if words.is_empty() {
                 return true;
@@ -190,7 +200,8 @@ impl PreparedSearch {
             && text_ok(&self.genre, &meta.genre)
             && in_range(self.year, || meta.year.trim().parse::<f32>().ok())
             && in_range(self.bpm, || bpm.map(|b| b.round()))
-            && (self.folder.is_empty() || text_ok(&self.folder, &folder()))
+            && (self.file_name.is_empty() || text_ok(&self.file_name, &path.file_name().unwrap_or_default().to_string_lossy()))
+            && (self.folder.is_empty() || text_ok(&self.folder, &path.parent().map(|d| d.to_string_lossy()).unwrap_or_default()))
     }
 }
 
@@ -222,12 +233,17 @@ mod tests {
     fn text_fields_need_all_words_in_their_field() {
         let m = meta("Sunday Bloody Sunday", "U2", "Rock/Pop", "1983");
         let s = AdvancedSearch { title: "bloody sun".into(), ..Default::default() };
-        assert!(s.matches(&m, "/Musik", None));
+        assert!(s.matches(&m, "/Musik/Sunday.mp3", None));
         // Der Interpret steht nicht im Titel
         let s = AdvancedSearch { title: "u2".into(), ..Default::default() };
-        assert!(!s.matches(&m, "/Musik", None));
+        assert!(!s.matches(&m, "/Musik/Sunday.mp3", None));
         let s = AdvancedSearch { genre: "rock".into(), folder: "musik".into(), ..Default::default() };
-        assert!(s.matches(&m, "/Musik", None));
+        assert!(s.matches(&m, "/Musik/Sunday.mp3", None));
+        // Dateiname samt Endung, der Ordner gehört nicht dazu
+        let s = AdvancedSearch { file_name: "sunday mp3".into(), ..Default::default() };
+        assert!(s.matches(&m, "/Musik/Sunday.mp3", None));
+        let s = AdvancedSearch { file_name: "musik".into(), ..Default::default() };
+        assert!(!s.matches(&m, "/Musik/Sunday.mp3", None));
     }
 
     #[test]

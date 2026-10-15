@@ -69,6 +69,8 @@ struct DeckView {
     bpm: Option<f32>,
     /// Eingebettetes Cover als Textur für den Plattenteller.
     cover: Option<egui::TextureHandle>,
+    /// Ausgeworfene Platte, solange sie noch aus dem Player gleitet: (Titel, Interpret, Cover, Zeitpunkt).
+    ejected: Option<(String, String, Option<egui::TextureHandle>, f64)>,
     /// Kennung des Titels in der Engine, 0 = leer.
     loaded_id: u64,
     pending: Option<Pending>,
@@ -80,6 +82,9 @@ struct DeckView {
     pfl: bool,
     volume: f32,
     repeat: Repeat,
+    reverse: bool,
+    /// Zuletzt gesehener Stand von `reverse_ended_count`.
+    reverse_ended_seen: u64,
     loop_beats: Option<u32>,
     loop_range: Option<(f64, f64)>,
     scratching: bool,
@@ -125,6 +130,7 @@ impl Default for DeckView {
             waveform: None,
             bpm: None,
             cover: None,
+            ejected: None,
             loaded_id: 0,
             pending: None,
             pitch_pct: 0.0,
@@ -133,6 +139,8 @@ impl Default for DeckView {
             pfl: false,
             volume: crate::settings::DEFAULT_CHANNEL_VOLUME,
             repeat: Repeat::Off,
+            reverse: false,
+            reverse_ended_seen: 0,
             loop_beats: None,
             loop_range: None,
             scratching: false,
@@ -453,6 +461,7 @@ impl FadeWerkDjApp {
             self.ctl.send(Command::SetPfl { deck: d, on: v.pfl });
             self.ctl.send(Command::SetPitch { deck: d, pitch: v.pitch_pct / 100.0 });
             self.ctl.send(Command::SetRepeatTrack { deck: d, on: v.repeat == Repeat::Track });
+            self.ctl.send(Command::SetReverse { deck: d, on: v.reverse });
         }
         self.eq_sent = [[f32::NAN; 3]; 2];
         self.push_eq();
@@ -546,6 +555,7 @@ impl FadeWerkDjApp {
         self.start_head_audio(now);
         for (d, &(pos, playing)) in st.iter().enumerate() {
             self.decks[d].ended_seen = 0;
+            self.decks[d].reverse_ended_seen = 0;
             if let Some(track) = self.decks[d].audio.clone() {
                 let id = self.decks[d].loaded_id;
                 self.ctl.send(Command::Load { deck: d, id, track, keep_playing: false, start_secs: pos });
@@ -1105,6 +1115,14 @@ impl FadeWerkDjApp {
     // ---------- Titelende und Auto-Fade ----------
 
     fn handle_track_ends(&mut self) {
+        // Rückwärts am Titelanfang: die Engine hat REV ausgeschaltet, die Taste geht mit aus
+        for d in 0..2 {
+            let c = self.ctl.shared.decks[d].reverse_ended_count();
+            if c != self.decks[d].reverse_ended_seen {
+                self.decks[d].reverse_ended_seen = c;
+                self.decks[d].reverse = false;
+            }
+        }
         for d in 0..2 {
             let c = self.ctl.shared.decks[d].ended_count();
             if c != self.decks[d].ended_seen {
@@ -1291,6 +1309,9 @@ impl FadeWerkDjApp {
                 }
                 self.ctl.send(Command::Eject { deck: d });
                 let v = &mut self.decks[d];
+                // Platte mit ihrem Label/Cover noch zeigen, während sie hinausgleitet
+                let (title, artist) = v.meta.as_ref().map_or_else(Default::default, |m| (m.title.clone(), m.artist.clone()));
+                v.ejected = Some((title, artist, v.cover.take(), now));
                 v.path = None;
                 v.meta = None;
                 v.waveform = None;
@@ -1301,6 +1322,10 @@ impl FadeWerkDjApp {
                 v.pending = None;
                 v.loop_beats = None;
                 v.loop_range = None;
+            }
+            DeckAction::Reverse(on) => {
+                self.decks[d].reverse = on;
+                self.ctl.send(Command::SetReverse { deck: d, on });
             }
             DeckAction::CycleRepeat => {
                 let r = self.decks[d].repeat.next();
@@ -1768,6 +1793,12 @@ impl eframe::App for FadeWerkDjApp {
         }
         self.last_heights = heights;
 
+        // Ausgeworfene Platte ist hinausgeglitten (oder schon eine neue geladen)
+        for v in &mut self.decks {
+            if v.ejected.as_ref().is_some_and(|e| now - e.3 > 1.0) || v.loaded_id != 0 {
+                v.ejected = None;
+            }
+        }
         let shown: Vec<f64> = (0..2)
             .map(|d| {
                 let st = &self.ctl.shared.decks[d];
@@ -1795,7 +1826,9 @@ impl eframe::App for FadeWerkDjApp {
                     loading: v.pending.is_some(),
                     waveform: v.waveform.as_deref(),
                     cover: v.cover.as_ref().map(|t| t.id()),
+                    leaving: v.ejected.as_ref().map(|(title, artist, cover, _)| deck_ui::Leaving { title, artist, cover: cover.as_ref().map(|t| t.id()) }),
                     pfl: v.pfl,
+                    reverse: v.reverse,
                     repeat: v.repeat,
                     loop_beats: v.loop_beats,
                     loop_range: v.loop_range,

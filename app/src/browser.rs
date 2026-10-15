@@ -576,7 +576,7 @@ impl Browser {
                 });
                 ui.add_space(6.0);
                 ui.label(
-                    RichText::new(tr("Sucht in den gewählten Ordnern. Bei Jahr und BPM fallen Titel ohne Angabe heraus; BPM kennt FadeWerk DJ aus den Tags oder nach dem Laden in einen Player."))
+                    RichText::new(tr("Sucht in den gewählten Ordnern. Titel und Interpret stammen aus den Tags, fehlen sie, aus dem Dateinamen („Interpret - Titel“). Bei Jahr und BPM fallen Titel ohne Angabe heraus; BPM kennt FadeWerk DJ aus den Tags oder nach dem Laden in einen Player."))
                         .size(11.5)
                         .color(theme::faint()),
                 );
@@ -1092,9 +1092,8 @@ impl Browser {
                 let m = meta_for(ctx.metas, &r.path, entry_of(r));
                 let p = &r.path;
                 if let Some(adv) = &adv {
-                    let folder = || p.parent().map(|d| d.to_string_lossy()).unwrap_or_default();
                     let bpm = ctx.bpms.get(p).copied().or(m.bpm);
-                    if !adv.matches(&m, folder, bpm) {
+                    if !adv.matches(&m, p, bpm) {
                         return false;
                     }
                 }
