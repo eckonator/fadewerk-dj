@@ -120,6 +120,7 @@ fn en(de: &str) -> Option<&'static str> {
         "AUTO-FADE" => "AUTO-FADE",
         "SEK." => "SEC.",
         "Überblendzeit" => "Fade time",
+        "Klicken, um die Überblendzeit einzugeben" => "Click to type in the fade time",
         "Weich" => "Smooth",
         "Linear" => "Linear",
         "Hart" => "Sharp",
@@ -207,6 +208,10 @@ fn en(de: &str) -> Option<&'static str> {
         "Alle entfernen" => "Remove all",
         "Keine Titel passen zur Suche." => "No tracks match the search.",
         "Suchfilter merken" => "Remember search filters",
+        "Doppelte Titel ausblenden" => "Hide duplicate tracks",
+        "Liegt derselbe Titel mehrfach in den Ordnern (gleicher Interpret und Titel, fast gleich lang), zeigt die Suche nur das erste Exemplar." => "If the same track is in your folders more than once (same artist and title, nearly the same length), the search shows only the first copy.",
+        "· {} doppelt" => "· {} duplicates",
+        "Kopien desselben Titels sind ausgeblendet. Abschalten in der erweiterten Suche (Lupe)." => "Copies of the same track are hidden. Turn this off in the advanced search (magnifier).",
         "Wartende BPM-Analysen verwerfen" => "Discard pending BPM analyses",
         "Im Hintergrund für alle Titel ohne BPM-Angabe im Tag. Die Werte werden gemerkt." => {
             "In the background for all tracks without a BPM tag. The values are remembered."

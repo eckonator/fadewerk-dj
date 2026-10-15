@@ -34,8 +34,9 @@ pub enum BrowserAction {
     EditTags(PathBuf),
     /// Der Nutzer hat die Breite des Ordnerbaums geändert.
     TreeWidth(f32),
-    /// Erweiterte Suche zum Speichern: „Suchfilter merken“ an/aus und die Suche (leer, wenn nicht gemerkt).
-    SearchMemory(bool, AdvancedSearch),
+    /// Erweiterte Suche zum Speichern: „Suchfilter merken“ an/aus, „Doppelte Titel ausblenden“
+    /// und die Suche (leer, wenn nicht gemerkt).
+    SearchMemory(bool, bool, AdvancedSearch),
     /// Sichtbare Spalten der Titelliste oder ihre Breiten haben sich geändert (Schlüssel, Breiten je Schlüssel).
     TrackColumns(Vec<String>, Vec<(String, f32)>),
     /// Sortierung der Titelliste (Spaltenschlüssel, absteigend) oder `None` = Reihenfolge der Ordner bzw. Historie.
@@ -176,6 +177,33 @@ pub struct BrowserCtx<'a> {
     pub history: &'a History,
     /// Ein Import der Historie läuft gerade.
     pub importing: bool,
+    /// Zählt jede Änderung an `metas` und `bpms`, damit die Titelliste weiß, wann sie neu filtern muss.
+    pub data_gen: u64,
+}
+
+/// Wie oft die Titelliste höchstens neu gefiltert und sortiert wird, solange nur Tags und BPM
+/// nachkommen (beim Einlesen großer Ordner kommen sie in fast jedem Bild).
+const LIST_REBUILD_SECS: f64 = 0.5;
+
+/// Fertig gefilterte und sortierte Titelliste samt Angaben, die sonst jedes Bild alle Titel durchgehen müssten.
+/// Neu berechnet nur, wenn sich Ordner, Suche, Sortierung oder (gedrosselt) Tags/BPM ändern.
+struct ListData {
+    rows: Vec<Row>,
+    /// Pfade der abspielbaren Zeilen (in der Historie ohne fehlende Dateien).
+    paths: Vec<PathBuf>,
+    total_secs: f64,
+    has_subfolders: bool,
+    hidden_dups: usize,
+    /// Titel der Liste ohne bekannte BPM.
+    missing_bpm: usize,
+}
+
+struct ListCache {
+    /// Fingerabdruck von Ordnern, Suche, Sortierung und Titelbestand.
+    key: u64,
+    data_gen: u64,
+    built_at: f64,
+    data: std::rc::Rc<ListData>,
 }
 
 /// Zeile der Titelliste. In der Historie kann derselbe Titel mehrmals vorkommen, deshalb zählt neben dem
@@ -274,7 +302,9 @@ pub struct Browser {
     /// Sortierung per Klick auf den Spaltenkopf: (Spalte, absteigend).
     sort: Option<(TrackColumn, bool)>,
     /// Zuletzt berechnete Reihenfolge (Fingerabdruck von Zeilen, Sortierung und Tags; Stellen in der Liste).
-    sort_cache: Option<(u64, Vec<usize>)>,
+    list_cache: Option<ListCache>,
+    /// Zählt Änderungen an `tracks` (für den Fingerabdruck der Titelliste).
+    tracks_gen: u64,
     /// Entwicklerschalter `FW_SELECT`: wählt zum Prüfen einige Titel aus.
     pub demo_select: bool,
     /// Entwicklerschalter `FW_BPM`: ermittelt einmal die fehlenden BPM des geöffneten Ordners.
@@ -304,8 +334,10 @@ pub struct Browser {
     players_bottom: f32,
     /// Suche beim Schließen und Beenden behalten.
     remember: bool,
-    /// Zuletzt gemeldeter Stand (`remember`, Suche), um Änderungen zum Speichern zu erkennen.
-    reported: (bool, AdvancedSearch),
+    /// Beim Suchen jeden Titel nur einmal zeigen (Kopien in anderen Ordnern ausblenden).
+    hide_duplicates: bool,
+    /// Zuletzt gemeldeter Stand (`remember`, `hide_duplicates`, Suche), um Änderungen zum Speichern zu erkennen.
+    reported: (bool, bool, AdvancedSearch),
 }
 
 impl Browser {
@@ -343,7 +375,8 @@ impl Browser {
             widths: HashMap::new(),
             table_gen: 0,
             sort: None,
-            sort_cache: None,
+            list_cache: None,
+            tracks_gen: 0,
             demo_select: false,
             demo_bpm: false,
             scanning: false,
@@ -362,7 +395,8 @@ impl Browser {
             adv_focus: false,
             players_bottom: 0.0,
             remember: true,
-            reported: (true, AdvancedSearch::default()),
+            hide_duplicates: true,
+            reported: (true, true, AdvancedSearch::default()),
         };
         match start_dir {
             Some(dir) => {
@@ -463,10 +497,11 @@ impl Browser {
     }
 
     /// Gespeicherte erweiterte Suche übernehmen.
-    pub fn set_search_memory(&mut self, remember: bool, search: &AdvancedSearch) {
+    pub fn set_search_memory(&mut self, remember: bool, hide_duplicates: bool, search: &AdvancedSearch) {
         self.remember = remember;
+        self.hide_duplicates = hide_duplicates;
         self.adv = if remember { search.clone() } else { AdvancedSearch::default() };
-        self.reported = (self.remember, self.adv.clone());
+        self.reported = (self.remember, self.hide_duplicates, self.adv.clone());
     }
 
     /// Entwicklerschalter `FW_SEARCH`: erweiterte Suche vorbelegt und offen.
@@ -545,6 +580,9 @@ impl Browser {
                         .size(11.5)
                         .color(theme::faint()),
                 );
+                ui.add_space(4.0);
+                ui.checkbox(&mut self.hide_duplicates, tr("Doppelte Titel ausblenden"))
+                    .on_hover_text(tr("Liegt derselbe Titel mehrfach in den Ordnern (gleicher Interpret und Titel, fast gleich lang), zeigt die Suche nur das erste Exemplar."));
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if ui.add_enabled(!self.adv.is_empty(), Button::new(tr("Alles löschen"))).clicked() {
@@ -617,6 +655,7 @@ impl Browser {
 
     fn rescan(&mut self) {
         self.tracks.clear();
+        self.tracks_gen += 1;
         self.limited = false;
         self.picked.clear();
         self.queued = None;
@@ -681,6 +720,7 @@ impl Browser {
             return;
         }
         self.tracks.extend(tracks);
+        self.tracks_gen += 1;
         if done {
             self.scanning = false;
             self.limited = limited;
@@ -718,10 +758,10 @@ impl Browser {
         // Vor der Liste, damit Eingaben noch in diesem Bild filtern
         self.search_window(&ui.ctx().clone());
         // Geänderte Suche oder „Suchfilter merken“ zum Speichern melden (ohne Merken wird eine leere Suche gespeichert)
-        let now = (self.remember, if self.remember { self.adv.clone() } else { AdvancedSearch::default() });
+        let now = (self.remember, self.hide_duplicates, if self.remember { self.adv.clone() } else { AdvancedSearch::default() });
         if now != self.reported {
             self.reported = now.clone();
-            out.push(BrowserAction::SearchMemory(now.0, now.1));
+            out.push(BrowserAction::SearchMemory(now.0, now.1, now.2));
         }
         if refresh_key {
             self.refresh();
@@ -1032,6 +1072,78 @@ impl Browser {
         }
     }
 
+    /// Filtert und sortiert die Titelliste und rechnet die Angaben darüber aus. Teuer bei großen Ordnern,
+    /// darum nur über den Zwischenspeicher in [`Self::track_list`] aufgerufen.
+    fn build_list(&self, ctx: &BrowserCtx<'_>, dirs: &[PathBuf], f: &str, hist_day: Option<&crate::history::Day>, missing: &HashSet<usize>) -> ListData {
+        let entry_of = |r: &Row| hist_day.and_then(|d| d.entries.get(r.slot));
+        let searching = !f.is_empty() || !self.adv.is_empty();
+        // Alle Suchwörter müssen vorkommen, in beliebiger Reihenfolge
+        let words: Vec<&str> = f.split_whitespace().collect();
+        let adv = (!self.adv.is_empty()).then(|| self.adv.prepare());
+        let all: Box<dyn Iterator<Item = Row>> = match hist_day {
+            Some(day) => Box::new(day.entries.iter().enumerate().map(|(slot, e)| Row { path: e.path.clone(), slot })),
+            None => Box::new(self.tracks.iter().map(|p| Row { path: p.clone(), slot: 0 })),
+        };
+        let mut rows: Vec<Row> = all
+            .filter(|r| {
+                if !searching {
+                    return true;
+                }
+                let m = meta_for(ctx.metas, &r.path, entry_of(r));
+                let p = &r.path;
+                if let Some(adv) = &adv {
+                    let folder = || p.parent().map(|d| d.to_string_lossy()).unwrap_or_default();
+                    let bpm = ctx.bpms.get(p).copied().or(m.bpm);
+                    if !adv.matches(&m, folder, bpm) {
+                        return false;
+                    }
+                }
+                if words.is_empty() {
+                    return true;
+                }
+                let hay = format!(
+                    "{} {} {} {} {} {} {}",
+                    subfolder(dirs, p),
+                    p.file_name().unwrap_or_default().to_string_lossy(),
+                    m.title,
+                    m.artist,
+                    m.album,
+                    m.genre,
+                    m.year
+                )
+                .to_lowercase();
+                words.iter().all(|w| hay.contains(w))
+            })
+            .collect();
+        if let Some((col, desc)) = self.sort {
+            let keys: Vec<Option<SortKey>> = rows
+                .iter()
+                .map(|r| {
+                    let m = meta_for(ctx.metas, &r.path, entry_of(r));
+                    sort_key(col, &m, &r.path, dirs, ctx.bpms.get(&r.path).copied())
+                })
+                .collect();
+            let order = sort_order(&keys, desc);
+            rows = order.iter().filter_map(|&i| rows.get(i).cloned()).collect();
+        }
+        // Beim Suchen Kopien desselben Titels ausblenden (nicht in der Historie: dort sind Wiederholungen gewollt)
+        let mut hidden_dups = 0;
+        if searching && self.hide_duplicates && hist_day.is_none() {
+            let before = rows.len();
+            rows = without_duplicates(rows, |p| ctx.metas.get(p));
+            hidden_dups = before - rows.len();
+        }
+        let paths: Vec<PathBuf> = rows.iter().filter(|r| hist_day.is_none() || !missing.contains(&r.slot)).map(|r| r.path.clone()).collect();
+        ListData {
+            total_secs: rows.iter().map(|r| ctx.metas.get(&r.path).map_or_else(|| entry_of(r).map_or(0.0, |e| e.duration_secs), |m| m.duration_secs)).sum(),
+            has_subfolders: hist_day.is_none() && (dirs.len() > 1 || self.tracks.iter().any(|p| p.parent() != Some(dirs[0].as_path()))),
+            missing_bpm: paths.iter().filter(|p| !bpm_known(ctx, p)).count(),
+            hidden_dups,
+            paths,
+            rows,
+        }
+    }
+
     fn track_list(&mut self, ui: &mut egui::Ui, ctx: &BrowserCtx<'_>, out: &mut Vec<BrowserAction>) {
         // Historie: ein Tag als Titelliste, ohne gewählten Tag ein Hinweis
         let hist_day = match &self.hist {
@@ -1070,90 +1182,51 @@ impl Browser {
             self.meta_requested_upto = 0;
         }
         let entry_of = |r: &Row| hist_day.and_then(|d| d.entries.get(r.slot));
-        // Alle Suchwörter müssen vorkommen, in beliebiger Reihenfolge
-        let words: Vec<&str> = f.split_whitespace().collect();
-        let all: Box<dyn Iterator<Item = Row>> = match hist_day {
-            Some(day) => Box::new(day.entries.iter().enumerate().map(|(slot, e)| Row { path: e.path.clone(), slot })),
-            None => Box::new(self.tracks.iter().map(|p| Row { path: p.clone(), slot: 0 })),
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::hash::DefaultHasher::new();
+            (&dirs, &f, &self.adv, self.hide_duplicates, self.sort, self.tracks_gen, self.tracks.len()).hash(&mut h);
+            hist_day.map(|d| (&d.date, d.entries.len(), missing.len())).hash(&mut h);
+            h.finish()
         };
-        let mut rows: Vec<Row> = all
-            .filter(|r| {
-                if self.adv.is_empty() && words.is_empty() {
-                    return true;
-                }
-                let m = meta_for(ctx.metas, &r.path, entry_of(r));
-                let p = &r.path;
-                if !self.adv.is_empty() {
-                    let folder = p.parent().map(|d| d.to_string_lossy()).unwrap_or_default();
-                    let bpm = ctx.bpms.get(p).copied().or(m.bpm);
-                    if !self.adv.matches(&m, &folder, bpm) {
-                        return false;
-                    }
-                }
-                if words.is_empty() {
-                    return true;
-                }
-                let hay = format!(
-                    "{} {} {} {} {} {} {}",
-                    subfolder(&dirs, p),
-                    p.file_name().unwrap_or_default().to_string_lossy(),
-                    m.title,
-                    m.artist,
-                    m.album,
-                    m.genre,
-                    m.year
-                )
-                .to_lowercase();
-                words.iter().all(|w| hay.contains(w))
-            })
-            .collect();
-        if let Some((col, desc)) = self.sort {
-            // Neu sortiert wird nur, wenn sich Zeilen, Sortierung oder die bekannten Tags/BPM geändert haben
-            let sig = {
-                use std::hash::{Hash, Hasher};
-                let mut h = std::hash::DefaultHasher::new();
-                (&rows, col, desc, ctx.metas.len(), ctx.bpms.len(), &dirs).hash(&mut h);
-                h.finish()
-            };
-            if self.sort_cache.as_ref().is_none_or(|(s, _)| *s != sig) {
-                let keys: Vec<Option<SortKey>> = rows
-                    .iter()
-                    .map(|r| {
-                        let m = meta_for(ctx.metas, &r.path, entry_of(r));
-                        sort_key(col, &m, &r.path, &dirs, ctx.bpms.get(&r.path).copied())
-                    })
-                    .collect();
-                self.sort_cache = Some((sig, sort_order(&keys, desc)));
-            }
-            if let Some((_, order)) = &self.sort_cache {
-                rows = order.iter().filter_map(|&i| rows.get(i).cloned()).collect();
-            }
-        } else {
-            self.sort_cache = None;
+        let now = ui.input(|i| i.time);
+        let stale = match &self.list_cache {
+            None => true,
+            // Neue Tags/BPM nur gedrosselt einarbeiten; geänderte Suche oder Ordner sofort
+            Some(c) => c.key != key || (c.data_gen != ctx.data_gen && now - c.built_at >= LIST_REBUILD_SECS),
+        };
+        if stale {
+            let data = self.build_list(ctx, &dirs, &f, hist_day, &missing);
+            self.list_cache = Some(ListCache { key, data_gen: ctx.data_gen, built_at: now, data: std::rc::Rc::new(data) });
+        } else if self.list_cache.as_ref().is_some_and(|c| c.data_gen != ctx.data_gen) {
+            // Noch gedrosselt: in einem späteren Bild nachholen, auch wenn sonst nichts neu zeichnet
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(LIST_REBUILD_SECS));
         }
+        let Some(data) = self.list_cache.as_ref().map(|c| c.data.clone()) else { return };
+        let rows = &data.rows;
+        let (hidden_dups, has_subfolders) = (data.hidden_dups, data.has_subfolders);
         let total_count = hist_day.map_or(self.tracks.len(), |d| d.entries.len());
-        let has_subfolders = hist_day.is_none() && (dirs.len() > 1 || self.tracks.iter().any(|p| p.parent() != Some(dirs[0].as_path())));
         // Pfade der Zeilen ohne fehlende Dateien: nur die lassen sich laden, vorhören, analysieren
         let playable = |rows: &[Row]| rows.iter().filter(|r| hist_day.is_none() || !missing.contains(&r.slot)).map(|r| r.path.clone()).collect::<Vec<_>>();
 
         if self.demo_select && rows.len() >= 4 && !self.scanning {
             self.demo_select = false;
-            self.picked.click(&rows, &rows[1], false, false);
-            self.picked.click(&rows, &rows[3], false, true);
+            self.picked.click(rows, &rows[1], false, false);
+            self.picked.click(rows, &rows[3], false, true);
         }
 
         // ⌘A wählt alle sichtbaren Titel, Esc hebt die Auswahl auf (nur mit der Maus über der Liste)
         if ui.rect_contains_pointer(ui.max_rect()) && !ui.ctx().egui_wants_keyboard_input() {
             let (all, esc) = ui.input(|i| (i.modifiers.command && i.key_pressed(Key::A), i.key_pressed(Key::Escape)));
             if all {
-                self.picked.select_all(&rows);
+                self.picked.select_all(rows);
             }
             if esc {
                 self.picked.clear();
             }
         }
-        let sel_rows = self.picked.ordered(&rows);
-        let row_paths = playable(&rows);
+        let sel_rows = self.picked.ordered(rows);
+        let row_paths = &data.paths;
         let sel_paths = playable(&sel_rows);
 
         // Reicht die Breite nicht für Angaben und Tasten nebeneinander, kommen die Tasten in eine eigene Zeile
@@ -1168,13 +1241,16 @@ impl Browser {
                     (None, many) => trf("{} Ordner", &[&many.len()]),
                 };
                 ui.label(RichText::new(folder).font(fonts::bold(17.0)));
-                let total: f64 = rows.iter().map(|r| ctx.metas.get(&r.path).map_or_else(|| entry_of(r).map_or(0.0, |e| e.duration_secs), |m| m.duration_secs)).sum();
-                let count = if words.is_empty() && self.adv.is_empty() {
-                    count_tracks(rows.len(), &fmt_time(total))
+                let count = if f.is_empty() && self.adv.is_empty() {
+                    count_tracks(rows.len(), &fmt_time(data.total_secs))
                 } else {
                     trf("{} von {} Titeln", &[&rows.len(), &total_count])
                 };
                 ui.label(RichText::new(count).color(theme::dim()));
+                if hidden_dups > 0 {
+                    ui.label(RichText::new(trf("· {} doppelt", &[&hidden_dups])).size(12.0).color(theme::faint()))
+                        .on_hover_text(tr("Kopien desselben Titels sind ausgeblendet. Abschalten in der erweiterten Suche (Lupe)."));
+                }
                 if !sel_rows.is_empty() {
                     ui.label(RichText::new(trf("· {} ausgewählt", &[&sel_rows.len()])).font(fonts::list(12.5)).color(theme::ink()));
                 }
@@ -1210,11 +1286,11 @@ impl Browser {
             });
             self.head_widths.0 = left.response.rect.width();
             if !wrap_tools {
-                tools_w = list_tools(ui, ctx, &row_paths, &sel_paths, hist_day.map(|d| d.date.as_str()), out);
+                tools_w = list_tools(ui, ctx, row_paths, data.missing_bpm, &sel_paths, hist_day.map(|d| d.date.as_str()), out);
             }
         });
         if wrap_tools {
-            ui.horizontal(|ui| tools_w = list_tools(ui, ctx, &row_paths, &sel_paths, hist_day.map(|d| d.date.as_str()), out));
+            ui.horizontal(|ui| tools_w = list_tools(ui, ctx, row_paths, data.missing_bpm, &sel_paths, hist_day.map(|d| d.date.as_str()), out));
         }
         self.head_widths.1 = tools_w;
 
@@ -1454,7 +1530,7 @@ impl Browser {
                         }
                         if resp.clicked() {
                             let m = resp.ctx.input(|i| i.modifiers);
-                            picked.click(&rows, r, m.command, m.shift);
+                            picked.click(rows, r, m.command, m.shift);
                         }
                         if resp.secondary_clicked() && !in_sel {
                             picked.select_only(r);
@@ -1564,6 +1640,38 @@ fn sort_key(col: TrackColumn, m: &TrackMeta, path: &Path, dirs: &[PathBuf], bpm:
     }
 }
 
+/// BPM bekannt? Aus der Analyse oder dem Tag; Titel mit noch ungelesenen Tags gelten als offen.
+fn bpm_known(ctx: &BrowserCtx<'_>, p: &Path) -> bool {
+    ctx.bpms.contains_key(p) || ctx.metas.get(p).is_some_and(|m| m.bpm.is_some())
+}
+
+/// Gleich lang genug, um als derselbe Titel zu gelten (Sekunden).
+const DUPLICATE_SECS: f64 = 3.0;
+
+/// Lässt von mehreren Exemplaren desselben Titels nur das erste stehen. Derselbe Titel = gleicher
+/// Interpret und Titel aus den Tags (ohne Tags: gleicher Dateiname), Groß/Klein, Umlaute und Satzzeichen
+/// egal, und höchstens `DUPLICATE_SECS` Unterschied in der Länge (Live- oder Extended-Fassung bleibt).
+fn without_duplicates<'a>(rows: Vec<Row>, meta: impl Fn(&Path) -> Option<&'a TrackMeta>) -> Vec<Row> {
+    let key = |t: &str| fold(t).split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
+    let mut seen: HashMap<String, Vec<f64>> = HashMap::new();
+    rows.into_iter()
+        .filter(|r| {
+            let m = meta(&r.path);
+            let (k, secs) = match m {
+                Some(m) if !m.title.trim().is_empty() => (format!("{}\u{1f}{}", key(&m.artist), key(&m.title)), m.duration_secs),
+                _ => (key(&r.path.file_stem().unwrap_or_default().to_string_lossy()), m.map_or(0.0, |m| m.duration_secs)),
+            };
+            let lens = seen.entry(k).or_default();
+            // Unbekannte Länge (0) passt zu allem
+            if lens.iter().any(|&l| l == 0.0 || secs == 0.0 || (l - secs).abs() <= DUPLICATE_SECS) {
+                return false;
+            }
+            lens.push(secs);
+            true
+        })
+        .collect()
+}
+
 /// Kleinbuchstaben, Umlaute wie ihr Grundbuchstabe („Ärzte“ bei A), führende Artikel bleiben.
 fn fold(t: &str) -> String {
     t.trim()
@@ -1656,7 +1764,8 @@ fn elided_cell(ui: &mut egui::Ui, text: RichText, tip: &mut Option<String>) {
 
 /// Tasten über der Titelliste (BPM ermitteln, in Playlist A/B), rechtsbündig. Liefert die belegte Breite.
 /// `history` = Datum, wenn ein Tag der Historie gezeigt wird (dann gibt es „Wiederherstellen“).
-fn list_tools(ui: &mut egui::Ui, ctx: &BrowserCtx<'_>, rows: &[PathBuf], sel_rows: &[PathBuf], history: Option<&str>, out: &mut Vec<BrowserAction>) -> f32 {
+/// `rows_missing_bpm` = Titel der Liste ohne bekannte BPM (vorberechnet, die Liste kann sehr lang sein).
+fn list_tools(ui: &mut egui::Ui, ctx: &BrowserCtx<'_>, rows: &[PathBuf], rows_missing_bpm: usize, sel_rows: &[PathBuf], history: Option<&str>, out: &mut Vec<BrowserAction>) -> f32 {
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         // Mit Auswahl gelten die Tasten nur für die ausgewählten Titel
         let (paths, label) = match (sel_rows.is_empty(), history.is_some()) {
@@ -1674,8 +1783,7 @@ fn list_tools(ui: &mut egui::Ui, ctx: &BrowserCtx<'_>, rows: &[PathBuf], sel_row
             }
         }
         // BPM aus dem Tag zählt als bekannt; Titel mit noch ungelesenen Tags gelten als offen
-        let known = |p: &PathBuf| ctx.bpms.contains_key(p) || ctx.metas.get(p).is_some_and(|m| m.bpm.is_some());
-        let missing = paths.iter().filter(|p| !known(p)).count();
+        let missing = if sel_rows.is_empty() { rows_missing_bpm } else { sel_rows.iter().filter(|p| !bpm_known(ctx, p)).count() };
         let tip = if missing == 0 {
             tr("Alle BPM sind bekannt")
         } else if sel_rows.is_empty() {
@@ -2041,6 +2149,28 @@ fn fullscreen_button(ui: &mut egui::Ui, fullscreen: bool) -> egui::Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duplicates_keep_the_first_copy_only() {
+        let meta = |artist: &str, title: &str, secs: f64| TrackMeta { artist: artist.into(), title: title.into(), duration_secs: secs, ..Default::default() };
+        let metas: HashMap<PathBuf, TrackMeta> = [
+            ("/a/1.mp3", meta("Die Ärzte", "Westerland", 220.0)),
+            ("/b/1.mp3", meta("die aerzte", "Westerland", 221.0)),
+            ("/c/1.mp3", meta("DIE ÄRZTE", "Westerland!", 219.0)),
+            ("/c/2.mp3", meta("Die Ärzte", "Westerland", 300.0)),
+            ("/c/3.mp3", meta("Die Ärzte", "Schrei nach Liebe", 220.0)),
+        ]
+        .into_iter()
+        .map(|(p, m)| (PathBuf::from(p), m))
+        .collect();
+        let rows: Vec<Row> = ["/a/1.mp3", "/b/1.mp3", "/c/1.mp3", "/c/2.mp3", "/c/3.mp3", "/x/Song.wav", "/y/song.wav"]
+            .iter()
+            .map(|p| Row { path: PathBuf::from(p), slot: 0 })
+            .collect();
+        let kept: Vec<String> = without_duplicates(rows, |p| metas.get(p)).into_iter().map(|r| r.path.to_string_lossy().into_owned()).collect();
+        // „aerzte“ ist anders geschrieben und bleibt; die längere Fassung bleibt; ohne Tags zählt der Dateiname
+        assert_eq!(kept, ["/a/1.mp3", "/b/1.mp3", "/c/2.mp3", "/c/3.mp3", "/x/Song.wav"]);
+    }
 
     #[test]
     fn widths_fit_so_the_deck_buttons_stay_visible() {

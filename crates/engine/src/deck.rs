@@ -9,6 +9,11 @@ use crate::track::TrackAudio;
 const SCRATCH_FOLLOW: f64 = 25.0;
 /// Höchste Lesegeschwindigkeit beim Scratchen, als Vielfaches der Nenndrehzahl.
 const SCRATCH_MAX_RATE: f32 = 10.0;
+/// Reibung der frei laufenden Platte nach einem Schwung: Sekunden bis zum Stillstand
+/// aus Nenndrehzahl. Mehr Schwung rollt länger und weiter nach (Weg ∝ Tempo²).
+const COAST_SECS: f32 = 1.0;
+/// Höchste Drehzahl, die ein Schwung der Platte mitgeben kann.
+const COAST_MAX_SPEED: f32 = 4.0;
 /// Zeitkonstante der Geschwindigkeitsglättung in Sekunden.
 const RATE_SMOOTH_SECS: f32 = 0.005;
 
@@ -20,8 +25,10 @@ pub struct Deck {
     track_id: u64,
     pos: f64,
     playing: bool,
-    /// Motordrehzahl ohne Pitch, 0.0 bis 1.0.
+    /// Drehzahl ohne Pitch, 1.0 = Nenndrehzahl. Nach einem Schwung auch darüber oder negativ.
     speed: f32,
+    /// Die Platte rollt nach einem Schwung bei stehendem Motor frei aus.
+    coasting: bool,
     /// Pitch als Anteil, 0.08 = +8 %.
     pitch: f32,
     /// Tatsächliche, geglättete Lesegeschwindigkeit. Beim Scratchen auch negativ.
@@ -47,6 +54,7 @@ impl Default for Deck {
             pos: 0.0,
             playing: false,
             speed: 0.0,
+            coasting: false,
             pitch: 0.0,
             rate: 0.0,
             scratch: None,
@@ -71,6 +79,7 @@ impl Deck {
         self.cue = 0.0;
         self.loop_range = None;
         self.scratch = None;
+        self.coasting = false;
         self.stop_pending = false;
         self.ended = false;
         if !(keep_playing && self.playing) {
@@ -96,6 +105,7 @@ impl Deck {
     pub fn play(&mut self) {
         if self.track.is_some() {
             self.playing = true;
+            self.coasting = false;
             self.stop_pending = false;
             self.ended = false;
         }
@@ -104,6 +114,7 @@ impl Deck {
     /// Pause: der Teller läuft aus und bleibt an der erreichten Stelle stehen.
     pub fn pause(&mut self) {
         self.playing = false;
+        self.coasting = false;
         self.stop_pending = false;
     }
 
@@ -113,8 +124,9 @@ impl Deck {
 
     /// Stopp: der Teller läuft aus, danach springt der Player zum Cue-Punkt.
     pub fn stop(&mut self) {
-        if self.playing || self.speed > 0.0 {
+        if self.playing || self.speed != 0.0 {
             self.playing = false;
+            self.coasting = false;
             self.stop_pending = true;
         } else {
             self.pos = self.cue;
@@ -172,6 +184,7 @@ impl Deck {
     pub fn scratch_begin(&mut self) {
         if self.track.is_some() {
             self.scratch = Some(self.pos);
+            self.coasting = false;
         }
     }
 
@@ -181,15 +194,32 @@ impl Deck {
         }
     }
 
-    /// Hand los: läuft der Player, zieht der Motor die Platte aus der aktuellen
-    /// Handgeschwindigkeit wieder auf Tempo.
+    /// Hand los: die Platte behält den Schwung der Hand. Läuft der Player, zieht der Motor
+    /// sie wieder auf Tempo; steht er, rollt sie frei aus, je schneller desto länger.
     pub fn scratch_end(&mut self) {
         if self.scratch.take().is_some() {
-            self.speed = if self.playing {
-                (self.rate / (1.0 + self.pitch)).clamp(0.0, 1.5)
-            } else {
-                0.0
-            };
+            self.speed = (self.rate / (1.0 + self.pitch)).clamp(-COAST_MAX_SPEED, COAST_MAX_SPEED);
+            self.coasting = !self.playing && self.speed != 0.0;
+        }
+    }
+
+    /// Drehzahl nach `dt` Sekunden: Motor plus Reibung, wenn ein Schwung die Platte
+    /// aus dem Bereich des Motors (0 bis Nenndrehzahl) getragen hat.
+    fn step_speed(&mut self, motor: &Motor, dt: f32) -> f32 {
+        let friction = dt / COAST_SECS;
+        let s = self.speed;
+        if self.coasting {
+            let next = if s > 0.0 { (s - friction).max(0.0) } else { (s + friction).min(0.0) };
+            self.coasting = next != 0.0;
+            next
+        } else if self.playing && s > 1.0 {
+            (s - friction).max(1.0)
+        } else if s < 0.0 {
+            // Rückwärts angestoßen: Reibung bremst, der Motor (falls an) zieht nach vorn
+            let target = if self.playing { 1.0 } else { 0.0 };
+            (motor.step(s, target, dt) + friction).min(target)
+        } else {
+            motor.step(s, if self.playing { 1.0 } else { 0.0 }, dt)
         }
     }
 
@@ -238,7 +268,7 @@ impl Deck {
         let dt = n as f32 / out_rate;
         let speed_start = self.speed;
         let speed_end = if self.scratch.is_none() {
-            motor.step(self.speed, if self.playing { 1.0 } else { 0.0 }, dt)
+            self.step_speed(motor, dt)
         } else {
             self.speed
         };
@@ -286,6 +316,14 @@ impl Deck {
             } else if self.pos >= len {
                 if self.scratch.is_some() {
                     self.pos = len;
+                } else if self.coasting {
+                    // Bei stehendem Motor ans Ende gerollt: anhalten, kein Titelende melden
+                    self.pos = len;
+                    self.speed = 0.0;
+                    self.rate = 0.0;
+                    self.coasting = false;
+                    out[i + 1..].fill([0.0; 2]);
+                    return;
                 } else if self.repeat_track {
                     // Mit Überblendung ist der Anfang schon hörbar, es geht hinter dem Blendstück weiter
                     self.pos -= fade_start;
@@ -302,6 +340,12 @@ impl Deck {
         }
 
         self.speed = speed_end;
+        if self.scratch.is_none() && self.pos <= 0.0 && self.speed < 0.0 {
+            // Rückwärts an den Anfang gerollt: die Platte bleibt dort stehen
+            self.speed = 0.0;
+            self.rate = 0.0;
+            self.coasting = false;
+        }
         if self.stop_pending && !self.playing && self.speed == 0.0 && self.rate.abs() < 1e-3 {
             self.stop_pending = false;
             self.rate = 0.0;
@@ -377,6 +421,51 @@ mod tests {
         d.scratch_to_secs(4.0);
         run(&mut d, &motor, 0.5);
         assert!((d.position_secs() - 4.0).abs() < 0.05, "pos {}", d.position_secs());
+    }
+
+    /// Schwung loslassen und messen, wie weit die stehende Platte nachrollt.
+    fn fling(hand_speed: f64) -> f64 {
+        let motor = Motor::default();
+        let mut d = deck_with_dc(60);
+        d.seek_secs(10.0);
+        d.scratch_begin();
+        // Hand bewegt sich gleichmäßig, Lesekopf folgt
+        for k in 1..=30 {
+            d.scratch_to_secs(10.0 + hand_speed * k as f64 / 100.0);
+            run(&mut d, &motor, 0.01);
+        }
+        let released = d.position_secs();
+        d.scratch_end();
+        run(&mut d, &motor, 6.0);
+        assert_eq!(d.speed(), 0.0, "Platte steht wieder");
+        assert!(!d.is_playing());
+        d.position_secs() - released
+    }
+
+    #[test]
+    fn fling_coasts_further_with_more_momentum() {
+        let small = fling(0.5);
+        let big = fling(2.0);
+        assert!(small > 0.05, "kleiner Schwung rollt etwas nach: {small}");
+        assert!(big > small * 8.0, "viel Schwung rollt viel weiter: {small} / {big}");
+        assert!(fling(-2.0) < -1.0, "rückwärts rollt auch nach");
+    }
+
+    #[test]
+    fn fling_while_playing_returns_to_tempo() {
+        let motor = Motor::default();
+        let mut d = deck_with_dc(60);
+        d.play();
+        run(&mut d, &motor, 1.0);
+        d.scratch_begin();
+        for k in 1..=30 {
+            d.scratch_to_secs(1.0 + 3.0 * k as f64 / 100.0);
+            run(&mut d, &motor, 0.01);
+        }
+        d.scratch_end();
+        assert!(d.speed() > 2.0, "Schwung bleibt erhalten: {}", d.speed());
+        run(&mut d, &motor, 4.0);
+        assert_eq!(d.speed(), 1.0);
     }
 
     #[test]

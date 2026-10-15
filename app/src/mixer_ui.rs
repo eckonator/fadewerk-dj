@@ -9,6 +9,12 @@ use crate::i18n::tr;
 use crate::theme;
 use crate::{fonts, hw, settings};
 
+/// Schritt der Pegelregler je Pfeiltaste.
+const VOLUME_STEP: f32 = 0.02;
+/// Bereich der Überblendzeit in Sekunden.
+const FADE_MIN_SECS: f32 = 1.0;
+const FADE_MAX_SECS: f32 = 20.0;
+
 pub struct MixerModel<'a> {
     pub meters: &'a [Meter; 3],
     /// Frequenzbänder des Masters (zwischen L und R von MAIN, wenn Platz ist).
@@ -90,7 +96,8 @@ pub fn show_mixer(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerActi
     m.meters[2].paint_with_bands(&p, led_m, (!theme::lite()).then_some(m.bands), main_base);
     m.meters[1].paint(&p, led_b);
     for (deck, r) in [(0usize, fad_a), (1, fad_b)] {
-        if let (_, Some(v)) = hw::vertical_fader(ui, r, ("chfader", deck), m.volume[deck], settings::DEFAULT_CHANNEL_VOLUME, false) {
+        let (resp, new) = hw::vertical_fader(ui, r, ("chfader", deck), m.volume[deck], settings::DEFAULT_CHANNEL_VOLUME, false);
+        if let Some(v) = hw::nudge(ui, &resp, m.volume[deck], VOLUME_STEP, 0.0, 1.0).or(new) {
             out.push(MixerAction::Volume(deck, v));
         }
     }
@@ -102,7 +109,8 @@ pub fn show_mixer(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerActi
     ui.add_space(2.0);
     ui.horizontal(|ui| {
         ui.label(small("MASTER"));
-        if let (_, Some(v)) = hw::mini_fader(ui, "master", m.master_volume, settings::DEFAULT_MASTER_VOLUME, 0.0, 1.0, ui.available_width() - 4.0) {
+        let (resp, new) = hw::mini_fader(ui, "master", m.master_volume, settings::DEFAULT_MASTER_VOLUME, 0.0, 1.0, ui.available_width() - 4.0);
+        if let Some(v) = hw::nudge(ui, &resp, m.master_volume, VOLUME_STEP, 0.0, 1.0).or(new) {
             out.push(MixerAction::MasterVolume(v));
         }
     });
@@ -113,6 +121,7 @@ pub fn show_mixer(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerActi
     ui.horizontal(|ui| {
         ui.label(small("CUE"));
         let (resp, new) = hw::mini_fader(ui, "headmix", m.head_mix, settings::DEFAULT_HEAD_MIX, 0.0, 1.0, ui.available_width() - 34.0);
+        let new = hw::nudge(ui, &resp, m.head_mix, VOLUME_STEP, 0.0, 1.0).or(new);
         resp.on_hover_text(tr("Mischung Vorhören ↔ Master"));
         if let Some(v) = new {
             out.push(MixerAction::HeadMix(v));
@@ -121,7 +130,8 @@ pub fn show_mixer(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerActi
     });
     ui.horizontal(|ui| {
         ui.label(small("PEGEL"));
-        if let (_, Some(v)) = hw::mini_fader(ui, "headvol", m.head_volume, settings::DEFAULT_HEAD_VOLUME, 0.0, 1.0, ui.available_width() - 4.0) {
+        let (resp, new) = hw::mini_fader(ui, "headvol", m.head_volume, settings::DEFAULT_HEAD_VOLUME, 0.0, 1.0, ui.available_width() - 4.0);
+        if let Some(v) = hw::nudge(ui, &resp, m.head_volume, VOLUME_STEP, 0.0, 1.0).or(new) {
             out.push(MixerAction::HeadVolume(v));
         }
     });
@@ -187,8 +197,12 @@ fn eq_strip(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerAction>) {
             // Ein abgeschaltetes Band zeigt seinen Bogen in Rot
             let color = if killed { theme::cue() } else { theme::deck_color(deck) };
             let (resp, new) = hw::knob(ui, kr, ("eq", deck, band), to_norm(db), to_norm(0.0), color);
+            // Pfeiltasten in ganzen dB (die Skala ist links und rechts von 0 dB verschieden gestaucht)
+            let keyed = hw::nudge(ui, &resp, db.round(), 1.0, settings::EQ_MIN_DB, settings::EQ_MAX_DB);
             resp.on_hover_text(format!("{} {:+.1} dB", tr(name), db));
-            if let Some(n) = new {
+            if let Some(db) = keyed {
+                out.push(MixerAction::Eq { deck, band, db });
+            } else if let Some(n) = new {
                 // Nahe 0 dB einrasten, damit die Mitte leicht zu treffen ist
                 let v = to_db(n);
                 out.push(MixerAction::Eq { deck, band, db: if v.abs() < 0.6 { 0.0 } else { v } });
@@ -258,6 +272,7 @@ pub fn show_fade(ui: &mut egui::Ui, m: &FadeModel<'_>, out: &mut Vec<FadeAction>
     let label_w = 16.0;
     let rect = Rect::from_min_max(pos2(row.left() + label_w, row.top()), pos2(row.right() - label_w, row.bottom()));
     let (resp, new) = hw::horizontal_fader(ui, rect, "crossfader", m.crossfader, 0.0);
+    let new = hw::nudge(ui, &resp, m.crossfader, 0.05, -1.0, 1.0).or(new);
     resp.on_hover_text(tr("Crossfader"));
     if let Some(x) = new {
         out.push(FadeAction::Crossfader(x));
@@ -321,14 +336,17 @@ pub fn show_fade(ui: &mut egui::Ui, m: &FadeModel<'_>, out: &mut Vec<FadeAction>
     ui.label(small("AUTO-FADE"));
     ui.horizontal(|ui| {
         let scale = (ui.available_width() / 230.0).clamp(1.0, 1.5);
-        let (lcd, _) = ui.allocate_exact_size(vec2(52.0, 22.0) * scale, Sense::hover());
+        let (lcd, lcd_resp) = ui.allocate_exact_size(vec2(52.0, 22.0) * scale, Sense::click());
         hw::well(ui.painter(), lcd, 4.0);
-        hw::lcd_text(ui.painter(), lcd.right_center() - vec2(6.0, 0.0), Align2::RIGHT_CENTER, &format!("{:4.1}", m.fade_secs), 13.0 * scale, theme::well_ink());
+        if let Some(v) = fade_secs_lcd(ui, lcd, lcd_resp, m.fade_secs, 13.0 * scale) {
+            out.push(FadeAction::FadeSecs(v));
+        }
         ui.label(small("SEK."));
-        let (resp, new) = hw::mini_fader(ui, "fadesecs", m.fade_secs, settings::DEFAULT_FADE_SECS, 1.0, 20.0, ui.available_width() - 4.0);
+        let (resp, new) = hw::mini_fader(ui, "fadesecs", m.fade_secs, settings::DEFAULT_FADE_SECS, FADE_MIN_SECS, FADE_MAX_SECS, ui.available_width() - 4.0);
+        let keyed = hw::nudge(ui, &resp, (m.fade_secs * 2.0).round() / 2.0, 0.5, FADE_MIN_SECS, FADE_MAX_SECS);
         resp.on_hover_text(tr("Überblendzeit"));
-        if let Some(v) = new {
-            out.push(FadeAction::FadeSecs((v * 2.0).round() / 2.0));
+        if let Some(v) = keyed.or(new.map(|v| (v * 2.0).round() / 2.0)) {
+            out.push(FadeAction::FadeSecs(v));
         }
     });
 
@@ -387,4 +405,50 @@ fn curve_editor(ui: &egui::Ui, resp: &egui::Response, rect: Rect, curve: Curve) 
     let lower = if idx == 3 { 0.0 } else { pts[idx + 1] };
     pts[idx] = target.clamp(lower, upper);
     Some(Curve::Custom(pts))
+}
+
+/// LCD der Überblendzeit. Klick öffnet die Eingabe direkt im Display: Enter oder Wegklicken übernimmt,
+/// Esc bricht ab. Komma oder Punkt, auf 0,1 s gerundet und auf den Reglerbereich begrenzt.
+fn fade_secs_lcd(ui: &mut egui::Ui, lcd: Rect, resp: egui::Response, secs: f32, size: f32) -> Option<f32> {
+    let edit_id = ui.id().with("fadesecs-edit");
+    let mut text: Option<String> = ui.data(|d| d.get_temp(edit_id));
+    if text.is_none() && resp.clicked() {
+        text = Some(format!("{secs:.1}"));
+    }
+    let Some(mut buf) = text else {
+        hw::lcd_text(ui.painter(), lcd.right_center() - vec2(6.0, 0.0), Align2::RIGHT_CENTER, &format!("{secs:4.1}"), size, theme::well_ink());
+        resp.on_hover_cursor(egui::CursorIcon::Text).on_hover_text(tr("Klicken, um die Überblendzeit einzugeben"));
+        return None;
+    };
+    let field = egui::TextEdit::singleline(&mut buf)
+        .id(edit_id.with("field"))
+        .font(fonts::lcd(size))
+        .text_color(theme::well_ink())
+        .horizontal_align(egui::Align::RIGHT)
+        .vertical_align(egui::Align::Center)
+        .frame(egui::Frame::NONE)
+        .margin(vec2(6.0, 0.0))
+        .char_limit(5);
+    let r = ui.put(lcd, field);
+    if !r.has_focus() && !r.lost_focus() {
+        // Erstes Bild: Fokus holen und alles markieren, damit man gleich überschreiben kann
+        r.request_focus();
+        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), r.id) {
+            state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                egui::text::CCursor::new(0),
+                egui::text::CCursor::new(buf.chars().count()),
+            )));
+            state.store(ui.ctx(), r.id);
+        }
+    }
+    if r.lost_focus() {
+        ui.data_mut(|d| d.remove::<String>(edit_id));
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            return None;
+        }
+        let v: f32 = buf.trim().trim_end_matches(['s', 'S']).trim().replace(',', ".").parse().ok()?;
+        return v.is_finite().then(|| ((v * 10.0).round() / 10.0).clamp(FADE_MIN_SECS, FADE_MAX_SECS));
+    }
+    ui.data_mut(|d| d.insert_temp(edit_id, buf));
+    None
 }

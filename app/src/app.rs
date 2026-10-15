@@ -85,6 +85,35 @@ struct DeckView {
     scratching: bool,
     scratch_pos: f64,
     ended_seen: u64,
+    /// Geglättete Position für die Anzeige (Teller, Wellenform, Tonarm), siehe [`DeckView::smooth_position`].
+    shown_pos: f64,
+    /// Zuletzt von der Engine gemeldete Position und wann sie sich zuletzt geändert hat.
+    raw_pos: (f64, f64),
+}
+
+/// Weicht die angezeigte Position mehr ab (Sprung, Spulen), springt sie direkt mit.
+const POS_SNAP_SECS: f64 = 0.05;
+/// So weit wird über die letzte Meldung der Engine hinaus höchstens vorausgerechnet (Sekunden).
+const POS_PREDICT_MAX: f64 = 0.06;
+
+impl DeckView {
+    /// Die Engine meldet die Position nur einmal je Audiopuffer (etwa alle 10 ms, je nach Gerät auch
+    /// seltener). Bei 60–120 Bildern/s liefe der Teller damit stoßweise. Darum läuft die Anzeige mit der
+    /// gemeldeten Geschwindigkeit weiter und wird sanft auf die Meldungen nachgezogen.
+    fn smooth_position(&mut self, raw: f64, rate: f64, now: f64, dt: f64) -> f64 {
+        if raw != self.raw_pos.0 {
+            self.raw_pos = (raw, now);
+        }
+        let predicted = raw + rate * (now - self.raw_pos.1).min(POS_PREDICT_MAX);
+        self.shown_pos += rate * dt;
+        let err = predicted - self.shown_pos;
+        if err.abs() > POS_SNAP_SECS {
+            self.shown_pos = predicted;
+        } else {
+            self.shown_pos += err * (dt * 10.0).min(1.0);
+        }
+        self.shown_pos
+    }
 }
 
 impl Default for DeckView {
@@ -109,6 +138,8 @@ impl Default for DeckView {
             scratching: false,
             scratch_pos: 0.0,
             ended_seen: 0,
+            shown_pos: 0.0,
+            raw_pos: (0.0, 0.0),
         }
     }
 }
@@ -129,6 +160,8 @@ pub struct FadeWerkDjApp {
     playlists: [Playlist; 2],
     browser: Browser,
     metas: HashMap<PathBuf, TrackMeta>,
+    /// Zählt Änderungen an `metas` und `bpms` (die Titelliste filtert dann neu).
+    data_gen: u64,
     meta_requested: HashSet<PathBuf>,
     bpms: HashMap<PathBuf, f32>,
     /// Gemerkte BPM aus der Tempo-Erkennung (`bpm.json`).
@@ -235,10 +268,11 @@ impl FadeWerkDjApp {
                 let mut b = Browser::new(start_dir, &settings.folders, settings.tree_width, &settings.folder_recursion);
                 b.set_columns(&settings.track_columns, &settings.column_widths);
                 b.set_sort(settings.track_sort.as_ref());
-                b.set_search_memory(settings.remember_search, &settings.advanced_search);
+                b.set_search_memory(settings.remember_search, settings.hide_duplicates, &settings.advanced_search);
                 b
             },
             metas: HashMap::new(),
+            data_gen: 0,
             meta_requested: HashSet::new(),
             bpms: HashMap::new(),
             bpm_cache: Default::default(),
@@ -713,6 +747,7 @@ impl FadeWerkDjApp {
 
     /// Gemerkte BPM für einen Titel prüfen: geänderte Datei → verwerfen, umgezogene Datei → übernehmen.
     fn resolve_bpm(&mut self, path: &Path) {
+        self.data_gen += 1;
         match self.bpm_cache.resolve(path) {
             crate::bpm_cache::Resolved::Bpm(b) => {
                 self.bpms.insert(path.to_path_buf(), b);
@@ -943,7 +978,7 @@ impl FadeWerkDjApp {
         let st = &self.ctl.shared.decks[d];
         let (ga, gb) = self.curve.gains(self.crossfader);
         let g = if d == 0 { ga } else { gb };
-        self.has_track(d) && (st.is_playing() || st.speed() > 0.0) && g * self.decks[d].volume > 0.05
+        self.has_track(d) && (st.is_playing() || st.speed() != 0.0) && g * self.decks[d].volume > 0.05
     }
 
     fn set_crossfader(&mut self, x: f32) {
@@ -983,6 +1018,9 @@ impl FadeWerkDjApp {
 
     fn poll_library(&mut self, ctx: &egui::Context, now: f64) {
         let responses: Vec<Response> = self.lib.poll().collect();
+        if !responses.is_empty() {
+            self.data_gen += 1;
+        }
         for resp in responses {
             match resp {
                 Response::Meta(path, meta) => {
@@ -1037,7 +1075,12 @@ impl FadeWerkDjApp {
                     v.bpm = l.bpm;
                     v.cover = l.cover.map(|c| {
                         let img = egui::ColorImage::from_rgba_unmultiplied([c.size as usize; 2], &c.rgba);
-                        ctx.load_texture(format!("cover-{d}"), img, egui::TextureOptions::LINEAR)
+                        ctx.load_texture(
+                            format!("cover-{d}"),
+                            img,
+                            // Mit Mipmaps flimmert das verkleinerte, sich drehende Bild nicht
+                            egui::TextureOptions { mipmap_mode: Some(egui::TextureFilter::Linear), ..egui::TextureOptions::LINEAR },
+                        )
                     });
                     v.loaded_id = l.token;
                     v.audio = Some(audio);
@@ -1520,8 +1563,9 @@ impl FadeWerkDjApp {
                 self.save_settings();
             }
             BrowserAction::EditTags(path) => self.tag_editor = Some(TagEditor::open(path)),
-            BrowserAction::SearchMemory(remember, search) => {
+            BrowserAction::SearchMemory(remember, hide_duplicates, search) => {
                 self.settings.remember_search = remember;
+                self.settings.hide_duplicates = hide_duplicates;
                 self.settings.advanced_search = search;
                 self.save_settings();
             }
@@ -1689,6 +1733,7 @@ impl eframe::App for FadeWerkDjApp {
             fullscreen: ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)),
             history: &self.history,
             importing: self.import_rx.is_some(),
+            data_gen: self.data_gen,
         };
         // Höhe merken; ohne gespeicherten Wert 240 pt, auf hohen Monitoren mehr (bei 1400 pt Höhe etwa 450),
         // auf niedrigen weniger (ein gutes Viertel der Höhe)
@@ -1723,6 +1768,13 @@ impl eframe::App for FadeWerkDjApp {
         }
         self.last_heights = heights;
 
+        let shown: Vec<f64> = (0..2)
+            .map(|d| {
+                let st = &self.ctl.shared.decks[d];
+                let duration = st.duration_secs();
+                self.decks[d].smooth_position(st.position_secs(), st.rate() as f64, now, dt as f64).clamp(0.0, duration.max(0.0))
+            })
+            .collect();
         let decks_models: Vec<DeckModel<'_>> = (0..2)
             .map(|d| {
                 let v = &self.decks[d];
@@ -1735,7 +1787,7 @@ impl eframe::App for FadeWerkDjApp {
                     bpm: v.bpm,
                     pitch_pct: v.pitch_pct,
                     auto_synced: v.sync.is_some(),
-                    position: if in_sync { st.position_secs() } else { 0.0 },
+                    position: if in_sync { shown[d] } else { 0.0 },
                     duration: if in_sync { st.duration_secs() } else { v.meta.as_ref().map_or(0.0, |m| m.duration_secs) },
                     playing: in_sync && st.is_playing(),
                     speed: if in_sync { st.speed() } else { 0.0 },
@@ -2008,6 +2060,8 @@ impl eframe::App for FadeWerkDjApp {
         }
 
         self.dev.on_frame(&ctx);
+        // Rad-Ereignisse, die kein Regler genommen hat: dort läuft gerade ein Scrollen
+        crate::hw::note_foreign_scroll(&ctx);
         self.ctl.collect_garbage();
         // Teller, Wellenform und Pegel laufen, solange etwas spielt (sparsam mit höchstens 30 Bildern/s);
         // im Stillstand nur bei Eingaben und gelegentlich zum Abholen des Engine-Zustands
@@ -2095,4 +2149,31 @@ fn deck_drop_zone(ui: &egui::Ui, rect: egui::Rect, d: usize) -> Option<DragItem>
         return egui::DragAndDrop::take_payload::<DragItem>(ctx).map(|a| (*a).clone());
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Engine meldet alle 10,7 ms (512 Frames bei 48 kHz), die Oberfläche zeichnet alle 8,3 ms (120 Hz):
+    /// die angezeigte Position soll trotzdem in gleichmäßigen Schritten laufen.
+    #[test]
+    fn shown_position_moves_evenly_between_engine_updates() {
+        let mut v = DeckView::default();
+        let (block, frame) = (512.0 / 48000.0, 1.0 / 120.0);
+        let mut steps = Vec::new();
+        let mut last = 0.0;
+        for i in 1..240 {
+            let now = i as f64 * frame;
+            let raw = (now / block).floor() * block;
+            let shown = v.smooth_position(raw, 1.0, now, frame);
+            if i > 60 {
+                steps.push(shown - last);
+            }
+            last = shown;
+        }
+        let (min, max) = steps.iter().fold((f64::MAX, f64::MIN), |(a, b), &s| (a.min(s), b.max(s)));
+        // Roh wären es 0, 1 oder 2 Blöcke je Bild (0 bis 21 ms); geglättet bleibt es nahe 8,3 ms
+        assert!(min > frame * 0.7 && max < frame * 1.3, "Schritte {min:.4}…{max:.4}");
+    }
 }

@@ -50,7 +50,24 @@ pub fn show(
     let color = theme::deck_color(list);
     ui.horizontal(|ui| {
         ui.label(RichText::new(trf("PLAYLIST {}", &[&theme::deck_letter(list)])).font(fonts::bold(16.0)).color(color).extra_letter_spacing(1.2));
-        let total: f64 = pl.entries.iter().filter_map(|p| metas.get(p)).map(|m| m.duration_secs).sum();
+        // Gesamtdauer und fehlende Tags nur neu durchgehen, wenn sich Länge der Liste oder Tag-Bestand ändern
+        // (lange Playlists kosten sonst in jedem Bild Zeit)
+        let sum_id = egui::Id::new(("pl_total", list));
+        let sig = (pl.entries.len(), metas.len());
+        let total = match ui.data(|d| d.get_temp::<((usize, usize), f64)>(sum_id)) {
+            Some((s, t)) if s == sig => t,
+            _ => {
+                let mut t = 0.0;
+                for p in &pl.entries {
+                    match metas.get(p) {
+                        Some(m) => t += m.duration_secs,
+                        None => out.push(PlaylistAction::NeedMeta(p.clone())),
+                    }
+                }
+                ui.data_mut(|d| d.insert_temp(sum_id, (sig, t)));
+                t
+            }
+        };
         ui.label(RichText::new(count_tracks(pl.entries.len(), &fmt_time(total))).color(theme::dim()));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.add_enabled(!pl.entries.is_empty(), egui::Button::new(tr("Leeren"))).clicked() {
@@ -82,22 +99,35 @@ pub fn show(
         let width = ui.available_width();
         let mut insert_line: Option<f32> = None;
 
-        for (i, path) in pl.entries.iter().enumerate() {
+        // Nur die sichtbaren Zeilen bauen; die übrigen sind ein leerer Block gleicher Höhe
+        let spacing = ui.spacing().item_spacing.y;
+        let stride = ROW_H + spacing;
+        let n = pl.entries.len();
+        let top = ui.cursor().top();
+        let clip = ui.clip_rect();
+        let first = (((clip.top() - top) / stride).floor().max(0.0) as usize).min(n);
+        let last = ((((clip.bottom() - top) / stride).ceil().max(0.0)) as usize + 1).min(n);
+        if let Some(c) = pl.current.filter(|&c| c < n) {
+            let rect = Rect::from_min_size(pos2(ui.cursor().left(), top + c as f32 * stride), vec2(width, ROW_H));
+            current_top = Some(rect.top());
+            if scroll_to_current {
+                // egui lässt beim Scrollen einen Zeilenabstand frei; ohne Ausgleich lugt die vorige Zeile hervor
+                ui.scroll_to_rect(rect.translate(vec2(0.0, spacing)), Some(egui::Align::TOP));
+            }
+        }
+        if first > 0 {
+            ui.allocate_space(vec2(width, first as f32 * stride - spacing));
+        }
+        for (i, path) in pl.entries.iter().enumerate().take(last).skip(first) {
             let (rect, resp) = ui.allocate_exact_size(vec2(width, ROW_H), Sense::click_and_drag());
-            let meta = metas.get(path);
-            if meta.is_none() {
-                out.push(PlaylistAction::NeedMeta(path.clone()));
-            }
-            let fallback = TrackMeta::from_filename(path);
-            let m = meta.unwrap_or(&fallback);
-
-            if pl.current == Some(i) {
-                current_top = Some(rect.top());
-                if scroll_to_current {
-                    // egui lässt beim Scrollen einen Zeilenabstand frei; ohne Ausgleich lugt die vorige Zeile hervor
-                    ui.scroll_to_rect(rect.translate(vec2(0.0, ui.spacing().item_spacing.y)), Some(egui::Align::TOP));
+            let fallback;
+            let m = match metas.get(path) {
+                Some(m) => m,
+                None => {
+                    fallback = TrackMeta::from_filename(path);
+                    &fallback
                 }
-            }
+            };
             let is_now = current == Some(i);
             let done = pl.current.is_some_and(|c| i < c);
             let p = ui.painter();
@@ -176,6 +206,10 @@ pub fn show(
                     ui.close();
                 }
             });
+        }
+
+        if last < n {
+            ui.allocate_space(vec2(width, (n - last) as f32 * stride - spacing));
         }
 
         // Freie Fläche unter den Titeln: Ablegen ans Ende

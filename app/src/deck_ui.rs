@@ -681,10 +681,11 @@ fn pitch(ui: &mut egui::Ui, m: &DeckModel<'_>, out: &mut Vec<DeckAction>) {
     let fader = Rect::from_min_max(pos2(area.left() + 4.0, area.top() + 18.0), pos2(area.right() - 4.0, area.bottom() - 26.0));
     // Grundwert 0,5 = Mitte = 0 %
     let (resp, new) = hw::vertical_fader(ui, fader, ("pitch", m.deck), value, 0.5, true);
+    // Pfeiltasten über dem Fader: 0,1 % je Druck
+    let keyed = hw::nudge(ui, &resp, (m.pitch_pct * 10.0).round() / 10.0, 0.1, -PITCH_RANGE, PITCH_RANGE);
     resp.on_hover_text(tr("Rechtsklick oder Doppelklick setzt auf 0"));
-    if let Some(v) = new {
-        let pct = ((v * 2.0 - 1.0) * PITCH_RANGE * 10.0).round() / 10.0;
-        out.push(DeckAction::Pitch(pct));
+    if let Some(pct) = keyed.or(new.map(|v| ((v * 2.0 - 1.0) * PITCH_RANGE * 10.0).round() / 10.0)) {
+        out.push(DeckAction::Pitch((pct * 10.0).round() / 10.0));
     }
     let lcd = Rect::from_min_max(pos2(area.left(), area.bottom() - 20.0), pos2(area.right(), area.bottom()));
     hw::well(&p, lcd, 3.0);
