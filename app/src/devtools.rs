@@ -10,11 +10,12 @@
 //! - `FW_HISTORY=1` legt in der Demo zwei Beispieltage der Historie an (einer mit fehlender Datei) und öffnet den neueren.
 //! - `FW_BPM=1` ermittelt in der Demo die fehlenden BPM des Startordners (Ergebnis in `bpm.json`, mit `FW_PERSIST=1`).
 //! - `FW_SEARCH="genre=Rock,year=1980-1989"` öffnet die erweiterte Suche mit diesen Feldern.
+//! - `FW_TAB=kopfhoerer|fade|motor|zu` öffnet diesen Reiter unter dem Crossfader (`zu` = alle zugeklappt).
 //! - `FW_COLUMNS=artist,album,genre,year,…` zeigt diese Spalten in der Titelliste des Browsers.
 //! - `FW_AUTOSYNC=1` schaltet Auto-Sync ein (ohne zu speichern).
 //! - `FW_STEEL=1` schaltet gebürsteten Stahl ein (ohne zu speichern).
 //! - `FW_LITE=1` schaltet die sparsame Darstellung ein (ohne zu speichern).
-//! - `FW_SETTINGS=allgemein|audio|sprache|aussehen|ueber` öffnet das Einstellungsfenster auf dieser Seite.
+//! - `FW_SETTINGS=allgemein|audio|effekte|sprache|aussehen|ueber` öffnet das Einstellungsfenster auf dieser Seite.
 //! - `FW_POINTER=x,y` bewegt die Maus (in Punkten) nach Bild 100 dorthin, etwa um Tooltips zu sehen;
 //!   `FW_POINTER=x,y,2` klickt dort rechts (Kontextmenü), `FW_POINTER=x,y,1` links;
 //!   `FW_POINTER=x1,y1,x2,y2` zieht mit gedrückter Taste von x1,y1 nach x2,y2 und bleibt dort stehen.

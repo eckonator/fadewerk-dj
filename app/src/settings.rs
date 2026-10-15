@@ -14,6 +14,7 @@ use crate::theme::SkinId;
 /// Grundwerte der Regler: Startwerte und Ziel von Rechts- bzw. Doppelklick auf einen Fader.
 pub const DEFAULT_CHANNEL_VOLUME: f32 = 0.85;
 pub const DEFAULT_MASTER_VOLUME: f32 = 0.9;
+pub const DEFAULT_FX_VOLUME: f32 = 0.8;
 pub const DEFAULT_HEAD_VOLUME: f32 = 0.8;
 pub const DEFAULT_HEAD_MIX: f32 = 0.0;
 pub const DEFAULT_FADE_SECS: f32 = 8.0;
@@ -38,6 +39,12 @@ pub struct Settings {
     pub column_widths: Vec<(String, f32)>,
     /// Sortierung der Titelliste: (Spaltenschlüssel, absteigend), `None` = Reihenfolge der Ordner.
     pub track_sort: Option<(String, bool)>,
+    /// Effekt-Pads: eigene Namen und Dateien (fehlende Einträge = mitgeliefert).
+    pub fx_slots: Vec<crate::fx::FxSlot>,
+    /// Lautstärke der Effekt-Pads.
+    pub fx_volume: f32,
+    /// Offener Reiter unter dem Crossfader (`mixer_ui::CenterTab::key`), `None` = alle zugeklappt.
+    pub center_tab: Option<String>,
     /// Erweiterte Suche beim Schließen und Beenden behalten.
     pub remember_search: bool,
     /// Beim Suchen Kopien desselben Titels ausblenden.
@@ -100,6 +107,9 @@ impl Default for Settings {
             track_columns: crate::browser::TrackColumn::DEFAULT.iter().map(|c| c.key().to_owned()).collect(),
             column_widths: Vec::new(),
             track_sort: None,
+            center_tab: Some("pads".into()),
+            fx_slots: Vec::new(),
+            fx_volume: DEFAULT_FX_VOLUME,
             remember_search: true,
             hide_duplicates: true,
             advanced_search: Default::default(),
@@ -179,6 +189,19 @@ pub fn migrate_old_dir() {
 }
 
 impl Settings {
+    /// Einstellung eines Effekt-Pads (Standard, wenn noch nichts eingetragen ist).
+    pub fn fx_slot(&self, slot: usize) -> crate::fx::FxSlot {
+        self.fx_slots.get(slot).cloned().unwrap_or_default()
+    }
+
+    /// Effekt-Pad ändern; die Liste wächst bei Bedarf mit Standard-Einträgen.
+    pub fn fx_slot_mut(&mut self, slot: usize) -> &mut crate::fx::FxSlot {
+        if self.fx_slots.len() <= slot {
+            self.fx_slots.resize(slot + 1, Default::default());
+        }
+        &mut self.fx_slots[slot]
+    }
+
     pub fn load() -> Self {
         migrate_old_dir();
         let Some(p) = path() else { return Self::default() };

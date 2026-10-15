@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use crate::atomic::{AtomicF32, AtomicF64};
 use crate::deck::Deck;
@@ -8,6 +8,7 @@ use crate::eq::Eq;
 use crate::headlink::HeadSink;
 use crate::mixer::{Curve, HeadMode};
 use crate::motor::Motor;
+use crate::sampler::Sampler;
 use crate::spectrum::{BANDS, Spectrum};
 use crate::track::TrackAudio;
 
@@ -54,6 +55,12 @@ pub enum Command {
     SetMotor(Motor),
     /// Verbindung zum eigenen Kopfhörergerät setzen oder lösen.
     SetHeadSink(Option<HeadSink>),
+    /// Klang auf ein Effekt-Pad legen.
+    LoadFx { slot: usize, sound: Arc<TrackAudio> },
+    /// Effekt-Pad von vorn abspielen: über Master oder (`to_master` = false) nur auf dem Kopfhörer.
+    TriggerFx { slot: usize, to_master: bool },
+    StopFx { slot: usize },
+    SetFxVolume(f32),
 }
 
 /// Zustand eines Players, wie ihn die Oberfläche sieht.
@@ -96,6 +103,8 @@ pub struct Shared {
     /// Frequenzbänder berechnen (aus, wenn die Oberfläche sie nicht zeigt).
     spectrum_on: AtomicBool,
     crossfader: AtomicF32,
+    /// Bitmaske der Effekt-Pads, die gerade klingen.
+    fx_playing: AtomicU32,
 }
 
 impl Shared {
@@ -113,6 +122,11 @@ impl Shared {
     /// Schaltet die Berechnung der Frequenzbänder im Audio-Thread an oder aus.
     pub fn set_spectrum(&self, on: bool) {
         self.spectrum_on.store(on, Ordering::Relaxed);
+    }
+
+    /// Bitmaske der Effekt-Pads, die gerade klingen (Bit 0 = Pad 1).
+    pub fn fx_playing(&self) -> u32 {
+        self.fx_playing.load(Ordering::Relaxed)
     }
 
     /// Aktuelle (geglättete) Crossfader-Stellung im Audio-Thread.
@@ -168,6 +182,9 @@ pub struct Engine {
     master_volume: f32,
     head_sink: Option<HeadSink>,
     spectrum: Spectrum,
+    sampler: Sampler,
+    /// Effekte dieses Blocks: über Master und nur auf dem Kopfhörer.
+    fx_bufs: [Vec<[f32; 2]>; 2],
 }
 
 impl Engine {
@@ -183,6 +200,7 @@ impl Engine {
             bands: Default::default(),
             spectrum_on: AtomicBool::new(true),
             crossfader: AtomicF32::new(-1.0),
+            fx_playing: AtomicU32::new(0),
         });
         let engine = Engine {
             rx,
@@ -204,6 +222,8 @@ impl Engine {
             head_volume: 0.8,
             master_volume: 0.9,
             head_sink: None,
+            sampler: Sampler::default(),
+            fx_bufs: std::array::from_fn(|_| vec![[0.0; 2]; CHUNK]),
         };
         (engine, Controller { tx, garbage: grx, shared })
     }
@@ -265,6 +285,13 @@ impl Engine {
             SetMasterVolume(v) => self.master_volume = v.clamp(0.0, 1.0),
             SetMotor(m) => self.motor = m,
             SetHeadSink(s) => self.head_sink = s,
+            LoadFx { slot, sound } => {
+                let old = self.sampler.load(slot, sound);
+                self.discard(old);
+            }
+            TriggerFx { slot, to_master } => self.sampler.trigger(slot, to_master),
+            StopFx { slot } => self.sampler.stop(slot),
+            SetFxVolume(v) => self.sampler.set_volume(v),
             _ => {}
         }
     }
@@ -293,6 +320,11 @@ impl Engine {
             for (eq, buf) in self.eq.iter_mut().zip(self.bufs.iter_mut()) {
                 eq.process(&mut buf[..n]);
             }
+            // Effekt-Pads: hinter dem Crossfader in den Master bzw. direkt auf den Kopfhörer
+            let [fx_master, fx_cue] = &mut self.fx_bufs;
+            fx_master[..n].fill([0.0; 2]);
+            fx_cue[..n].fill([0.0; 2]);
+            self.sampler.render_add(rate, &mut fx_master[..n], &mut fx_cue[..n]);
 
             // Crossfader gegen Knacksen glätten: höchstens ein voller Weg in 20 ms
             let max_step = 2.0 * n as f32 / (0.02 * rate);
@@ -311,10 +343,11 @@ impl Engine {
                 let p = self.bufs[PREVIEW][i];
                 let ca = [a[0] * self.volume[0], a[1] * self.volume[0]];
                 let cb = [b[0] * self.volume[1], b[1] * self.volume[1]];
+                let (fxm, fxc) = (self.fx_bufs[0][i], self.fx_bufs[1][i]);
                 let mut master = [0.0f32; 2];
-                let mut cue = [p[0], p[1]];
+                let mut cue = [p[0] + fxc[0], p[1] + fxc[1]];
                 for c in 0..2 {
-                    master[c] = (ca[c] * ga + cb[c] * gb) * self.master_volume;
+                    master[c] = (ca[c] * ga + cb[c] * gb + fxm[c]) * self.master_volume;
                     // Vorhören greift vor Kanalfader und Crossfader ab
                     if self.pfl[0] { cue[c] += a[c]; }
                     if self.pfl[1] { cue[c] += b[c]; }
@@ -366,6 +399,7 @@ impl Engine {
             b.fetch_max_positive(pk);
         }
         s.crossfader.store(self.xf);
+        s.fx_playing.store(self.sampler.playing_mask(), Ordering::Relaxed);
     }
 }
 

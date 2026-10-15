@@ -187,6 +187,9 @@ pub struct FadeWerkDjApp {
     head_mix: f32,
     head_volume: f32,
     master_volume: f32,
+    /// Klänge der Effekt-Pads.
+    fx: crate::fx::FxBank,
+    fx_volume: f32,
     /// EQ je Player in dB und Kill-Tasten (Bässe, Mitten, Höhen).
     eq_db: [[f32; 3]; 2],
     eq_kill: [[bool; 3]; 2],
@@ -295,6 +298,14 @@ impl FadeWerkDjApp {
             head_mix: settings.head_mix,
             head_volume: settings.head_volume,
             master_volume: settings.master_volume,
+            fx: {
+                let bank = crate::fx::FxBank::new();
+                for slot in 0..fw_engine::FX_SLOTS {
+                    bank.load(slot, settings.fx_slot(slot).file);
+                }
+                bank
+            },
+            fx_volume: settings.fx_volume,
             eq_db: settings.eq_db,
             eq_kill: [[false; 3]; 2],
             eq_sent: [[f32::NAN; 3]; 2],
@@ -415,6 +426,10 @@ impl FadeWerkDjApp {
             if let Ok(spec) = std::env::var("FW_SEARCH") {
                 app.browser.demo_search(&spec);
             }
+            // FW_TAB=kopfhoerer|fade|motor|zu: Reiter unter dem Crossfader
+            if let Ok(tab) = std::env::var("FW_TAB") {
+                app.settings.center_tab = (tab != "zu").then_some(tab);
+            }
             // FW_COLUMNS=album,genre,year: andere Spalten der Titelliste zeigen
             if let Ok(cols) = std::env::var("FW_COLUMNS") {
                 let keys: Vec<String> = cols.split(',').map(|k| k.trim().to_owned()).collect();
@@ -452,6 +467,12 @@ impl FadeWerkDjApp {
         self.ctl.send(Command::SetRepeatFade(self.autofade.fade_secs));
         self.ctl.send(Command::SetMotor(self.motor));
         self.ctl.send(Command::SetMasterVolume(self.master_volume));
+        self.ctl.send(Command::SetFxVolume(self.fx_volume));
+        for (slot, sound) in self.fx.sounds.iter().enumerate() {
+            if let Some(sound) = sound {
+                self.ctl.send(Command::LoadFx { slot, sound: sound.clone() });
+            }
+        }
         self.ctl.send(Command::SetHeadVolume(self.head_volume));
         self.ctl.send(Command::SetHeadMix(self.head_mix));
         self.ctl.send(Command::SetHeadMode(self.head_mode));
@@ -620,6 +641,33 @@ impl FadeWerkDjApp {
             SettingsAction::OpenGl(on) => self.settings.opengl = on,
             SettingsAction::RecordHistory(on) => self.settings.record_history = on,
             SettingsAction::KeepAwake(on) => self.settings.keep_awake = on,
+            SettingsAction::FxName(slot, name) => {
+                self.settings.fx_slot_mut(slot).name = name;
+                self.save_due = Some(now + 1.0);
+            }
+            SettingsAction::FxPickFile(slot) => {
+                let mut dialog = rfd::FileDialog::new()
+                    .set_title(trf("Effekt für Pad {}", &[&(slot + 1)]))
+                    .add_filter(tr("Audiodateien"), &["mp3", "wav", "flac", "ogg", "m4a", "aac", "aif", "aiff"]);
+                if let Some(dir) = self.settings.fx_slot(slot).file.as_ref().and_then(|f| f.parent()) {
+                    dialog = dialog.set_directory(dir);
+                }
+                if let Some(file) = dialog.pick_file() {
+                    self.settings.fx_slot_mut(slot).file = Some(file.clone());
+                    self.fx.load(slot, Some(file));
+                    self.save_settings();
+                }
+            }
+            SettingsAction::FxReset(slot) => {
+                *self.settings.fx_slot_mut(slot) = Default::default();
+                self.fx.load(slot, None);
+                self.save_settings();
+            }
+            SettingsAction::FxPreview(slot) => self.trigger_fx(slot, false, now),
+            SettingsAction::FxIcon(slot, key) => {
+                self.settings.fx_slot_mut(slot).icon = Some(key);
+                self.save_settings();
+            }
             SettingsAction::UpdateCheck(on) => {
                 self.settings.update_check = Some(on);
                 self.ask_update = false;
@@ -652,6 +700,7 @@ impl FadeWerkDjApp {
             }
         };
         s.master_volume = self.master_volume;
+        s.fx_volume = self.fx_volume;
         s.head_volume = self.head_volume;
         s.head_mix = self.head_mix;
         s.eq_db = self.eq_db;
@@ -954,6 +1003,7 @@ impl FadeWerkDjApp {
             || self.autofade.fade().is_some()
             || !self.meters.iter().all(Meter::is_dark)
             || !self.bands.is_dark()
+            || self.ctl.shared.fx_playing() != 0
     }
 
     /// Hält Bildschirm und Rechner wach, solange ein Player oder das Vorhören spielt (und kurz danach).
@@ -1423,6 +1473,54 @@ impl FadeWerkDjApp {
             }
             MixerAction::Eq { deck, band, db } => self.eq_db[deck][band] = db,
             MixerAction::EqKill { deck, band, on } => self.eq_kill[deck][band] = on,
+            MixerAction::Fx { slot, to_master } => self.trigger_fx(slot, to_master, now),
+            MixerAction::FxVolume(v) => {
+                self.fx_volume = v;
+                self.ctl.send(Command::SetFxVolume(v));
+            }
+        }
+    }
+
+    /// Effekt-Pad auslösen: über Master, oder zum Vorhören nur auf dem Kopfhörer.
+    fn trigger_fx(&mut self, slot: usize, to_master: bool, now: f64) {
+        if !to_master {
+            self.enable_headphones(now);
+        }
+        self.ctl.send(Command::TriggerFx { slot, to_master });
+    }
+
+    /// Geladene Effekt-Klänge an die Engine geben.
+    fn poll_fx(&mut self, now: f64) {
+        for (slot, sound, err) in self.fx.poll() {
+            self.ctl.send(Command::LoadFx { slot, sound });
+            if err.is_some() {
+                self.notify(trf("Effekt {}: Datei nicht lesbar, es klingt der mitgelieferte Effekt", &[&(slot + 1)]), now);
+            }
+        }
+    }
+
+    /// Tasten 1 bis 8 lösen die Effekt-Pads aus (nicht beim Tippen, nicht mit ⌘/Strg/⌥, ohne Tastenwiederholung).
+    fn fx_keys(&mut self, ctx: &egui::Context, now: f64) {
+        if ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        const KEYS: [egui::Key; fw_engine::FX_SLOTS] =
+            [egui::Key::Num1, egui::Key::Num2, egui::Key::Num3, egui::Key::Num4, egui::Key::Num5, egui::Key::Num6, egui::Key::Num7, egui::Key::Num8];
+        let pressed: Vec<usize> = ctx.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. }
+                        if !(modifiers.command || modifiers.ctrl || modifiers.alt) =>
+                    {
+                        KEYS.iter().position(|k| k == key)
+                    }
+                    _ => None,
+                })
+                .collect()
+        });
+        for slot in pressed {
+            self.trigger_fx(slot, true, now);
         }
     }
 
@@ -1716,6 +1814,8 @@ impl eframe::App for FadeWerkDjApp {
         self.last_time = now;
 
         self.poll_library(&ctx, now);
+        self.poll_fx(now);
+        self.fx_keys(&ctx, now);
         self.poll_import(now);
         self.record_plays();
         self.keep_awake(now);
@@ -1837,6 +1937,7 @@ impl eframe::App for FadeWerkDjApp {
                 }
             })
             .collect();
+        let fx_labels: [String; fw_engine::FX_SLOTS] = std::array::from_fn(|i| self.settings.fx_slot(i).label(i));
         let mixer_model = MixerModel {
             meters: &self.meters,
             bands: &self.bands,
@@ -1849,6 +1950,10 @@ impl eframe::App for FadeWerkDjApp {
             head_device: self.head_audio.is_some(),
             eq_db: self.eq_db,
             eq_kill: self.eq_kill,
+            fx_labels: &fx_labels,
+            fx_icons: std::array::from_fn(|i| self.settings.fx_slot(i).icon(i)),
+            fx_playing: self.ctl.shared.fx_playing(),
+            fx_volume: self.fx_volume,
         };
         let status = self.fade_status();
         let fade_model = FadeModel {
@@ -1868,6 +1973,8 @@ impl eframe::App for FadeWerkDjApp {
         let playing = [self.ctl.shared.decks[0].is_playing(), self.ctl.shared.decks[1].is_playing()];
         let preview_path = self.preview.as_ref().map(|p| p.path.as_path());
         let deck_height_setting = self.settings.deck_height;
+        let center_tab = self.settings.center_tab.clone();
+        let mut new_center_tab: Option<Option<mixer_ui::CenterTab>> = None;
         // Je Seite: Zelle des Players und Oberkante der Playlist, für den Griff dazwischen
         let mut split_bounds = [(Rect::NOTHING, 0.0f32); 2];
         let mut split_change: Option<f32> = None;
@@ -1898,6 +2005,10 @@ impl eframe::App for FadeWerkDjApp {
                                     mixer_ui::show_mixer(ui, &mixer_model, &mut mixer_actions);
                                     ui.separator();
                                     mixer_ui::show_fade(ui, &fade_model, &mut fade_actions);
+                                    let open = center_tab.as_deref().and_then(mixer_ui::CenterTab::from_key);
+                                    if let Some(t) = mixer_ui::show_tabs(ui, open, &mixer_model, &mut mixer_actions, &fade_model, &mut fade_actions) {
+                                        new_center_tab = Some(t);
+                                    }
                                 });
                             });
                         });
@@ -1960,6 +2071,10 @@ impl eframe::App for FadeWerkDjApp {
         }
         for a in mixer_actions {
             self.mixer_action(a, now);
+        }
+        if let Some(t) = new_center_tab {
+            self.settings.center_tab = t.map(|t| t.key().to_owned());
+            self.save_settings();
         }
         for a in fade_actions {
             self.fade_action(a, now);
