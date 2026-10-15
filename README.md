@@ -156,7 +156,7 @@ Code comments are in German; issues and contributions in English are welcome.
 | `FW_COLUMNS=artist,album,genre,…` | Shows these columns in the track list. |
 | `FW_SORT=artist` / `FW_SORT=bpm:desc` | Sorts the track list by this column. |
 | `FW_POINTER=x,y` | Moves the mouse there (points); `x,y,1` clicks, `x,y,2` right-clicks, `x1,y1,x2,y2` drags. |
-| `FW_SETTINGS=audio\|sprache\|aussehen\|ueber` | Opens the settings window. |
+| `FW_SETTINGS=allgemein\|audio\|sprache\|aussehen\|ueber` | Opens the settings window. |
 | `FW_UPDATE_ASK=1` | Shows the question whether to check for updates. |
 | `FW_UPDATE_URL=file:///path/release.json` | Checks for updates against your own release JSON (`tag_name`, `html_url`). |
 

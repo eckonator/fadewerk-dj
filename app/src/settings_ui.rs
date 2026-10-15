@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Einstellungsfenster: Audio, Sprache, Aussehen, Über (Copyright und Lizenzen).
+//! Einstellungsfenster: Allgemein, Audio, Sprache, Aussehen, Über (Copyright und Lizenzen).
 
 use eframe::egui::{self, Align2, Color32, CornerRadius, Frame, Margin, RichText, Sense, Stroke, vec2};
 
@@ -11,6 +11,7 @@ use crate::theme::{self, SKINS, SkinId};
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum Tab {
     #[default]
+    General,
     Audio,
     Language,
     Look,
@@ -69,7 +70,8 @@ impl SettingsUi {
             "sprache" => Tab::Language,
             "aussehen" => Tab::Look,
             "ueber" => Tab::About,
-            _ => Tab::Audio,
+            "audio" => Tab::Audio,
+            _ => Tab::General,
         };
     }
 
@@ -97,11 +99,11 @@ impl SettingsUi {
             .show(ctx, |ui| {
                 ui.set_width(520.0);
                 ui.horizontal(|ui| {
-                    for (tab, label) in [(Tab::Audio, "Audio"), (Tab::Language, "Sprache"), (Tab::Look, "Aussehen"), (Tab::About, "Über")] {
+                    for (tab, label) in [(Tab::General, "Allgemein"), (Tab::Audio, "Audio"), (Tab::Language, "Sprache"), (Tab::Look, "Aussehen"), (Tab::About, "Über")] {
                         let on = self.tab == tab;
                         let b = egui::Button::new(RichText::new(tr(label)).size(14.0).color(if on { theme::ground() } else { theme::dim() }))
                             .fill(if on { theme::ink() } else { theme::panel2() })
-                            .min_size(vec2(110.0, 28.0));
+                            .min_size(vec2(96.0, 28.0));
                         if ui.add(b).clicked() {
                             self.tab = tab;
                         }
@@ -111,10 +113,11 @@ impl SettingsUi {
                 ui.separator();
                 ui.add_space(8.0);
                 match self.tab {
+                    Tab::General => general_tab(ui, c, out),
                     Tab::Audio => self.audio_tab(ui, c, out),
                     Tab::Language => language_tab(ui, c, out),
                     Tab::Look => look_tab(ui, c, out),
-                    Tab::About => self.about_tab(ui, c, out),
+                    Tab::About => self.about_tab(ui, out),
                 }
                 if self.tab != Tab::About {
                     ui.add_space(10.0);
@@ -125,7 +128,7 @@ impl SettingsUi {
     }
 
     /// Copyright, Lizenz und Fremdbestandteile („Appropriate Legal Notices“ nach GPL-3.0 Abschnitt 0).
-    fn about_tab(&mut self, ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction>) {
+    fn about_tab(&mut self, ui: &mut egui::Ui, out: &mut Vec<SettingsAction>) {
         ui.horizontal(|ui| {
             ui.label(RichText::new("FadeWerk DJ").font(crate::fonts::bold(22.0)));
             ui.label(RichText::new(trf("Version {}", &[&env!("CARGO_PKG_VERSION")])).color(theme::dim()));
@@ -152,13 +155,6 @@ impl SettingsUi {
             ui.add(egui::Label::new(RichText::new(log.display().to_string()).size(11.5).color(theme::dim())).wrap());
         }
 
-        ui.add_space(10.0);
-        ui.label(RichText::new(tr("Updates")).strong());
-        let mut check = c.settings.update_check.unwrap_or(false);
-        if ui.checkbox(&mut check, RichText::new(tr("Beim Start bei GitHub nach einer neuen Version suchen")).size(14.0)).changed() {
-            out.push(SettingsAction::UpdateCheck(check));
-        }
-        ui.label(RichText::new(tr("Gesendet wird nur die Frage nach der neuesten Version, keine Daten über Titel oder Ordner. GitHub sieht dabei wie bei jedem Webseitenaufruf deine IP-Adresse.")).size(11.5).color(theme::dim()));
 
         ui.add_space(10.0);
         ui.label(RichText::new(tr("Verwendete Fremdbestandteile")).strong());
@@ -263,31 +259,41 @@ impl SettingsUi {
                 .size(12.0)
                 .color(theme::dim()),
         );
-
-        ui.add_space(10.0);
-        ui.label(RichText::new(tr("Historie")).strong());
-        let mut record = s.record_history;
-        if ui.checkbox(&mut record, RichText::new(tr("Gespielte Titel aufzeichnen")).size(14.0)).changed() {
-            out.push(SettingsAction::RecordHistory(record));
-        }
-        ui.label(
-            RichText::new(tr("Ein Titel zählt, sobald er 30 Sekunden über Master zu hören war. Zu finden im Ordnerbrowser unter „Historie“."))
-                .size(12.0)
-                .color(theme::dim()),
-        );
-
-        ui.add_space(10.0);
-        ui.label(RichText::new(tr("Ruhezustand")).strong());
-        let mut awake = s.keep_awake;
-        if ui.checkbox(&mut awake, RichText::new(tr("Ruhezustand verhindern, solange Musik spielt")).size(14.0)).changed() {
-            out.push(SettingsAction::KeepAwake(awake));
-        }
-        ui.label(
-            RichText::new(tr("Bildschirm und Rechner bleiben an, solange ein Player oder das Vorhören läuft. Danach gilt wieder die Einstellung des Systems."))
-                .size(12.0)
-                .color(theme::dim()),
-        );
     }
+}
+
+/// Was zu keinem Gerät und keiner Optik gehört: Historie, Ruhezustand, Updates.
+fn general_tab(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction>) {
+    ui.label(RichText::new(tr("Historie")).strong());
+    let mut record = c.settings.record_history;
+    if ui.checkbox(&mut record, RichText::new(tr("Gespielte Titel aufzeichnen")).size(14.0)).changed() {
+        out.push(SettingsAction::RecordHistory(record));
+    }
+    ui.label(
+        RichText::new(tr("Ein Titel zählt, sobald er 30 Sekunden über Master zu hören war. Zu finden im Ordnerbrowser unter „Historie“."))
+            .size(12.0)
+            .color(theme::dim()),
+    );
+
+    ui.add_space(10.0);
+    ui.label(RichText::new(tr("Ruhezustand")).strong());
+    let mut awake = c.settings.keep_awake;
+    if ui.checkbox(&mut awake, RichText::new(tr("Ruhezustand verhindern, solange Musik spielt")).size(14.0)).changed() {
+        out.push(SettingsAction::KeepAwake(awake));
+    }
+    ui.label(
+        RichText::new(tr("Bildschirm und Rechner bleiben an, solange ein Player oder das Vorhören läuft. Danach gilt wieder die Einstellung des Systems."))
+            .size(12.0)
+            .color(theme::dim()),
+    );
+
+    ui.add_space(10.0);
+    ui.label(RichText::new(tr("Updates")).strong());
+    let mut check = c.settings.update_check.unwrap_or(false);
+    if ui.checkbox(&mut check, RichText::new(tr("Beim Start bei GitHub nach einer neuen Version suchen")).size(14.0)).changed() {
+        out.push(SettingsAction::UpdateCheck(check));
+    }
+    ui.label(RichText::new(tr("Gesendet wird nur die Frage nach der neuesten Version, keine Daten über Titel oder Ordner. GitHub sieht dabei wie bei jedem Webseitenaufruf deine IP-Adresse.")).size(11.5).color(theme::dim()));
 }
 
 fn language_tab(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction>) {
