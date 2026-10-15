@@ -38,6 +38,11 @@ impl Meter {
         }
     }
 
+    /// Nichts leuchtet mehr (auch keine Spitzen-LED): Die Anzeige muss nicht neu gezeichnet werden.
+    pub fn is_dark(&self) -> bool {
+        self.shown.iter().chain(&self.hold).all(|&v| v <= 0.0)
+    }
+
     /// Zeichnet zwei LED-Ketten (links/rechts) nebeneinander in `rect`.
     pub fn paint(&self, painter: &Painter, rect: Rect) {
         self.paint_with_bands(painter, rect, None, rect.width());
@@ -116,6 +121,11 @@ pub struct Bands {
 }
 
 impl Bands {
+    /// Wie [`Meter::is_dark`].
+    pub fn is_dark(&self) -> bool {
+        self.shown.iter().chain(&self.hold).all(|&v| v <= 0.0)
+    }
+
     pub fn update(&mut self, peaks: [f32; BANDS], dt: f32, now: f64) {
         for (b, &peak) in peaks.iter().enumerate() {
             let tilt = 10f32.powf(TILT_DB_PER_OCTAVE * (BAND_HZ[b] / 1000.0).log2() / 20.0);

@@ -168,7 +168,19 @@ pub fn set_brushed(on: bool) {
 }
 
 pub fn brushed() -> bool {
-    BRUSHED.load(Ordering::Relaxed)
+    BRUSHED.load(Ordering::Relaxed) && !lite()
+}
+
+static LITE: AtomicBool = AtomicBool::new(false);
+
+/// Sparsame Darstellung für ältere oder langsame Rechner: ohne Schatten, Verläufe, Leuchten und Stahl,
+/// weniger Bilder pro Sekunde (siehe `app::FadeWerkDjApp::ui`).
+pub fn set_lite(on: bool) {
+    LITE.store(on, Ordering::Relaxed);
+}
+
+pub fn lite() -> bool {
+    LITE.load(Ordering::Relaxed)
 }
 
 /// Farbe der Auswahl in Listen (Rahmen). Gelb wie die Modus-Tasten, damit sie sich von A und B abhebt.
@@ -254,6 +266,11 @@ pub fn apply(ctx: &egui::Context) {
         // Auf Stahl keine deckenden Flächen: Zebra-Zeilen und Auswahl lassen die Schleifspuren durchscheinen
         v.faint_bg_color = Color32::from_black_alpha(if s.dark { 60 } else { 26 });
         v.selection.bg_fill = s.ink.gamma_multiply(if s.dark { 0.16 } else { 0.12 });
+    }
+    if lite() {
+        // Weiche Schatten unter Fenstern und Menüs kosten viel Zeichenarbeit
+        v.window_shadow = egui::Shadow::NONE;
+        v.popup_shadow = egui::Shadow::NONE;
     }
     ctx.set_visuals(v);
 

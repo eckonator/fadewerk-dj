@@ -42,6 +42,12 @@ const END_WARNING_SECS: f64 = 15.0;
 const END_WARNING_FAST_SECS: f64 = 5.0;
 /// So schnell (Prozent Pitch pro Sekunde) läuft Auto-Sync nach der Überblendung auf 0 % zurück, unhörbar langsam.
 const AUTO_SYNC_RATE: f32 = 0.1;
+/// Bildabstand der sparsamen Darstellung (30 Bilder pro Sekunde), solange sich etwas bewegt.
+const LITE_FRAME: std::time::Duration = std::time::Duration::from_millis(33);
+/// Im Ruhezustand nur so oft neu zeichnen (ohne Eingaben), damit Zustände aus dem Audio-Thread ankommen.
+const IDLE_FRAME: std::time::Duration = std::time::Duration::from_millis(250);
+/// So lange nach dem letzten Ton bleibt der Ruhezustand noch gesperrt (kein Flattern beim Titelwechsel).
+const AWAKE_HOLD_SECS: f64 = 10.0;
 /// Breite der Mittelspalte: wächst mit dem Fenster, damit die Player auf großen Monitoren nicht ausufern.
 fn center_width(total: f32) -> f32 {
     (total * 0.2).clamp(250.0, 440.0)
@@ -184,6 +190,12 @@ pub struct FadeWerkDjApp {
     history_dialog: Option<HistoryDialog>,
     /// Zum Neuzeichnen aus Hintergrund-Threads.
     repaint_ctx: egui::Context,
+    /// Sperre gegen den Ruhezustand des Rechners, solange Musik spielt (`keep_awake`).
+    awake: Option<keepawake::KeepAwake>,
+    /// Zeitpunkt, zu dem zuletzt etwas spielte.
+    last_sound: f64,
+    /// Das System hat die Sperre verweigert; nicht jedes Bild erneut versuchen.
+    awake_failed: bool,
 }
 
 impl FadeWerkDjApp {
@@ -191,6 +203,7 @@ impl FadeWerkDjApp {
         i18n::set_lang(settings.language);
         theme::set_skin(settings.skin);
         theme::set_brushed(settings.brushed_steel);
+        theme::set_lite(settings.lite_ui);
         // Für die Fehlersuche: welche Grafikkarte und welcher Treiber tatsächlich zeichnen
         if let Some(rs) = &cc.wgpu_render_state {
             let a = rs.adapter.get_info();
@@ -271,6 +284,9 @@ impl FadeWerkDjApp {
             import_rx: None,
             history_dialog: None,
             repaint_ctx: cc.egui_ctx.clone(),
+            awake: None,
+            last_sound: 0.0,
+            awake_failed: false,
         };
         app.persist = !app.dev.isolated();
         // Update-Prüfung: beim ersten Start fragen, danach nur wenn erlaubt (nicht bei Entwicklerläufen,
@@ -321,6 +337,11 @@ impl FadeWerkDjApp {
         }
         if app.dev.steel {
             theme::set_brushed(true);
+            theme::apply(&cc.egui_ctx);
+        }
+        if app.dev.lite {
+            app.settings.lite_ui = true;
+            theme::set_lite(true);
             theme::apply(&cc.egui_ctx);
         }
         if let Some(l) = app.dev.lang {
@@ -545,10 +566,16 @@ impl FadeWerkDjApp {
                 theme::set_brushed(on);
                 theme::apply(ctx);
             }
+            SettingsAction::Lite(on) => {
+                self.settings.lite_ui = on;
+                theme::set_lite(on);
+                theme::apply(ctx);
+            }
             SettingsAction::Zoom(z) => self.set_zoom(ctx, z),
             // Wirkt erst beim nächsten Start
             SettingsAction::OpenGl(on) => self.settings.opengl = on,
             SettingsAction::RecordHistory(on) => self.settings.record_history = on,
+            SettingsAction::KeepAwake(on) => self.settings.keep_awake = on,
             SettingsAction::UpdateCheck(on) => {
                 self.settings.update_check = Some(on);
                 self.ask_update = false;
@@ -874,6 +901,44 @@ impl FadeWerkDjApp {
     }
 
     /// Ist der Player gerade über Master zu hören?
+    /// Bewegt sich gerade etwas auf dem Bildschirm (Teller, Wellenform, Pegel, Überblendung)?
+    /// Sonst braucht die Oberfläche nicht ständig neu gezeichnet zu werden.
+    fn is_moving(&self) -> bool {
+        self.ctl.shared.decks.iter().any(|s| s.is_playing() || s.speed() != 0.0)
+            || self.decks.iter().any(|v| v.scratching)
+            || self.autofade.fade().is_some()
+            || !self.meters.iter().all(Meter::is_dark)
+            || !self.bands.is_dark()
+    }
+
+    /// Hält Bildschirm und Rechner wach, solange ein Player oder das Vorhören spielt (und kurz danach).
+    fn keep_awake(&mut self, now: f64) {
+        if self.ctl.shared.decks.iter().any(|s| s.is_playing()) {
+            self.last_sound = now;
+        }
+        let want = self.settings.keep_awake && now - self.last_sound < AWAKE_HOLD_SECS && self.last_sound > 0.0;
+        if !want {
+            // Freigeben gibt die Sperre beim System zurück
+            self.awake = None;
+            self.awake_failed = false;
+        } else if self.awake.is_none() && !self.awake_failed {
+            let created = keepawake::Builder::default()
+                .display(true)
+                .idle(true)
+                .reason(tr("Musik spielt"))
+                .app_name("FadeWerk DJ")
+                .app_reverse_domain("de.eckonator.fadewerkdj")
+                .create();
+            match created {
+                Ok(a) => self.awake = Some(a),
+                Err(e) => {
+                    log::warn!("Ruhezustand ließ sich nicht verhindern: {e}");
+                    self.awake_failed = true;
+                }
+            }
+        }
+    }
+
     fn on_air(&self, d: usize) -> bool {
         let st = &self.ctl.shared.decks[d];
         let (ga, gb) = self.curve.gains(self.crossfader);
@@ -1584,6 +1649,7 @@ impl eframe::App for FadeWerkDjApp {
         self.poll_library(&ctx, now);
         self.poll_import(now);
         self.record_plays();
+        self.keep_awake(now);
         self.handle_track_ends();
         self.step_autofade(dt);
         self.step_auto_sync(dt, now);
@@ -1592,6 +1658,8 @@ impl eframe::App for FadeWerkDjApp {
         for (m, l) in self.meters.iter_mut().zip(levels) {
             m.update(l, dt, now);
         }
+        // Ohne Anzeige der Bänder (sparsame Darstellung) rechnet der Audio-Thread sie auch nicht
+        self.ctl.shared.set_spectrum(!theme::lite());
         self.bands.update(self.ctl.shared.take_bands(), dt, now);
 
         let mut deck_actions: [Vec<DeckAction>; 2] = Default::default();
@@ -1941,8 +2009,17 @@ impl eframe::App for FadeWerkDjApp {
 
         self.dev.on_frame(&ctx);
         self.ctl.collect_garbage();
-        // DJ-Software: Teller, Wellenform und Pegel laufen ständig
-        ctx.request_repaint();
+        // Teller, Wellenform und Pegel laufen, solange etwas spielt (sparsam mit höchstens 30 Bildern/s);
+        // im Stillstand nur bei Eingaben und gelegentlich zum Abholen des Engine-Zustands
+        if !self.is_moving() {
+            ctx.request_repaint_after(IDLE_FRAME);
+        } else if theme::lite() {
+            // egui zieht die Dauer eines Monitorbilds ab, damit es nicht zu spät kommt; hier soll es nicht früher kommen
+            let monitor_frame = std::time::Duration::from_secs_f32(ctx.input(|i| i.predicted_dt).clamp(0.0, 0.05));
+            ctx.request_repaint_after(LITE_FRAME + monitor_frame);
+        } else {
+            ctx.request_repaint();
+        }
     }
 }
 

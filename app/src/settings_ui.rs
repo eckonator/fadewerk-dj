@@ -31,9 +31,11 @@ pub enum SettingsAction {
     Language(Lang),
     Skin(SkinId),
     Brushed(bool),
+    Lite(bool),
     OpenGl(bool),
     UpdateCheck(bool),
     RecordHistory(bool),
+    KeepAwake(bool),
     Zoom(f32),
     RevealLog,
 }
@@ -273,6 +275,18 @@ impl SettingsUi {
                 .size(12.0)
                 .color(theme::dim()),
         );
+
+        ui.add_space(10.0);
+        ui.label(RichText::new(tr("Ruhezustand")).strong());
+        let mut awake = s.keep_awake;
+        if ui.checkbox(&mut awake, RichText::new(tr("Ruhezustand verhindern, solange Musik spielt")).size(14.0)).changed() {
+            out.push(SettingsAction::KeepAwake(awake));
+        }
+        ui.label(
+            RichText::new(tr("Bildschirm und Rechner bleiben an, solange ein Player oder das Vorhören läuft. Danach gilt wieder die Einstellung des Systems."))
+                .size(12.0)
+                .color(theme::dim()),
+        );
     }
 }
 
@@ -301,7 +315,7 @@ fn look_tab(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction
             let inner = rect.shrink(10.0);
             let panel = egui::Rect::from_min_size(inner.min, vec2(inner.width(), 32.0));
             p.rect_filled(panel, CornerRadius::same(4), s.panel);
-            if c.settings.brushed_steel {
+            if theme::brushed() {
                 crate::hw::brushed_overlay(p, panel, 4.0, s.dark);
             }
             let swatches: [Color32; 5] = [s.deck_a, s.deck_b, s.cue, s.play, s.well];
@@ -323,7 +337,8 @@ fn look_tab(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction
     });
     ui.add_space(10.0);
     let mut brushed = c.settings.brushed_steel;
-    if ui.checkbox(&mut brushed, RichText::new(tr("Gebürsteter Stahl")).size(14.0)).changed() {
+    // In der sparsamen Darstellung gibt es keinen Stahl
+    if ui.add_enabled(!c.settings.lite_ui, egui::Checkbox::new(&mut brushed, RichText::new(tr("Gebürsteter Stahl")).size(14.0))).changed() {
         out.push(SettingsAction::Brushed(brushed));
     }
     ui.label(RichText::new(tr("Gehäuseflächen wirken wie gebürstetes Metall in den Farben des Skins.")).size(11.5).color(theme::dim()));
@@ -346,6 +361,16 @@ fn look_tab(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction
     });
     let tip = if cfg!(target_os = "macos") { tr("Ganze Oberfläche kleiner oder größer, auch mit ⌘ + und ⌘ − (⌘ 0 = 100 %).") } else { tr("Ganze Oberfläche kleiner oder größer, auch mit Strg + und Strg − (Strg 0 = 100 %).") };
     ui.label(RichText::new(tip).size(11.5).color(theme::dim()));
+    ui.add_space(10.0);
+    let mut lite = c.settings.lite_ui;
+    if ui.checkbox(&mut lite, RichText::new(tr("Sparsame Darstellung (für ältere oder langsame Rechner)")).size(14.0)).changed() {
+        out.push(SettingsAction::Lite(lite));
+    }
+    ui.label(
+        RichText::new(tr("Ohne Schatten, Verläufe, Leuchten und Frequenzbänder, höchstens 30 Bilder pro Sekunde. Spart Rechenzeit, der Ton bleibt gleich."))
+            .size(11.5)
+            .color(theme::dim()),
+    );
     ui.add_space(10.0);
     let mut opengl = c.settings.opengl;
     if ui.checkbox(&mut opengl, RichText::new(tr("Grafik über OpenGL")).size(14.0)).changed() {

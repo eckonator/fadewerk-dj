@@ -86,7 +86,8 @@ pub fn show_mixer(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerActi
         hw::well(&p, r.expand(2.0), 3.0);
     }
     m.meters[0].paint(&p, led_a);
-    m.meters[2].paint_with_bands(&p, led_m, Some(m.bands), main_base);
+    // Sparsame Darstellung: MAIN nur mit L/R, die Bänder werden dann auch nicht berechnet
+    m.meters[2].paint_with_bands(&p, led_m, (!theme::lite()).then_some(m.bands), main_base);
     m.meters[1].paint(&p, led_b);
     for (deck, r) in [(0usize, fad_a), (1, fad_b)] {
         if let (_, Some(v)) = hw::vertical_fader(ui, r, ("chfader", deck), m.volume[deck], settings::DEFAULT_CHANNEL_VOLUME, false) {

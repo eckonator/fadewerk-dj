@@ -71,6 +71,8 @@ pub struct Settings {
     pub folders: Vec<PathBuf>,
     /// Fenster beim Start im Vollbild öffnen (zuletzt so verlassen).
     pub fullscreen: bool,
+    /// Sparsame Darstellung für ältere oder langsame Rechner (ohne Effekte, weniger Bilder pro Sekunde).
+    pub lite_ui: bool,
     /// Grafik über OpenGL statt wgpu (für Rechner, auf denen wgpu nicht zuverlässig startet).
     pub opengl: bool,
     /// Zoom der ganzen Oberfläche (⌘/Strg + Plus/Minus), 1 = normal.
@@ -81,6 +83,8 @@ pub struct Settings {
     pub update_check: Option<bool>,
     /// Gespielte Titel in der Historie aufzeichnen.
     pub record_history: bool,
+    /// Bildschirm und Rechner nicht in den Ruhezustand gehen lassen, solange Musik spielt.
+    pub keep_awake: bool,
 }
 
 impl Default for Settings {
@@ -114,11 +118,13 @@ impl Default for Settings {
             auto_sync: false,
             folders: Vec::new(),
             fullscreen: false,
+            lite_ui: false,
             opengl: false,
             ui_zoom: 1.0,
             deck_height: 0.0,
             update_check: None,
             record_history: true,
+            keep_awake: true,
         }
     }
 }
