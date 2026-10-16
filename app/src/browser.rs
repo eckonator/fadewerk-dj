@@ -34,6 +34,8 @@ pub enum BrowserAction {
     EditTags(PathBuf),
     /// Der Nutzer hat die Breite des Ordnerbaums geändert.
     TreeWidth(f32),
+    /// Höhe des Ordnerbaums, wenn er über der Titelliste steht (Browser rechts).
+    TreeHeight(f32),
     /// Erweiterte Suche zum Speichern: „Suchfilter merken“ an/aus, „Doppelte Titel ausblenden“
     /// und die Suche (leer, wenn nicht gemerkt).
     SearchMemory(bool, bool, AdvancedSearch),
@@ -65,6 +67,8 @@ pub enum BrowserAction {
     RemoveRoot(PathBuf),
     OpenSettings,
     ToggleFullscreen,
+    /// Browser zwischen unten und rechts umsetzen.
+    ToggleSide,
 }
 
 /// Spalten der Titelliste mit veränderbarer Breite. Der Titel ist immer da, die übrigen sind wählbar;
@@ -174,6 +178,9 @@ pub struct BrowserCtx<'a> {
     pub deck_playing: [bool; 2],
     /// Läuft das Fenster im Vollbild?
     pub fullscreen: bool,
+    /// Steht der Browser rechts neben den Playern? Und ist das Fenster breit genug dafür?
+    pub side: bool,
+    pub side_possible: bool,
     pub history: &'a History,
     /// Ein Import der Historie läuft gerade.
     pub importing: bool,
@@ -251,7 +258,11 @@ enum FolderOp {
 
 /// Breite des Ordnerbaums ohne gespeicherten Wert und Grenzen beim Ziehen.
 pub const DEFAULT_TREE_W: f32 = 250.0;
+/// Ab dieser Breite passt die Kopfzeile des Browsers in eine Zeile.
+const HEADER_ONE_ROW_W: f32 = 1000.0;
 const TREE_MIN_W: f32 = 140.0;
+/// Kleinste Höhe des Baums, wenn er über der Titelliste steht.
+const TREE_MIN_H: f32 = 90.0;
 /// Breite des Griffs zwischen Baum und Titelliste.
 const SPLIT_W: f32 = 9.0;
 
@@ -280,6 +291,8 @@ pub struct Browser {
     selected: Vec<PathBuf>,
     /// Alle Titel in den Ordnern und ihren Unterordnern, kommen nach und nach aus der Hintergrundsuche.
     tracks: Vec<PathBuf>,
+    /// Höhe des Baums über der Titelliste (Browser rechts) in Punkten, 0 = automatisch.
+    pub tree_height: f32,
     /// Ausgewählte Titel in der Liste.
     picked: Selection<Row>,
     /// Statt der Ordner ist die Historie gewählt.
@@ -371,6 +384,7 @@ impl Browser {
             expand_history: false,
             queued: None,
             tree_width: if tree_width > 0.0 { tree_width } else { DEFAULT_TREE_W },
+            tree_height: 0.0,
             columns: TrackColumn::DEFAULT.to_vec(),
             widths: HashMap::new(),
             table_gen: 0,
@@ -788,7 +802,9 @@ impl Browser {
             });
         }
 
-        // Kopfzeile
+        // Kopfzeile. Ist sie zu schmal (Browser rechts neben den Playern), kommen Suche, Fortschritt und Pfad
+        // in eine zweite Zeile, und der Hinweis „Live gelesen“ entfällt.
+        let compact = ctx.side || ui.available_width() < HEADER_ONE_ROW_W;
         ui.horizontal(|ui| {
             ui.label(RichText::new(tr("ORDNER")).font(fonts::bold(16.0)).extra_letter_spacing(1.5));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -798,6 +814,9 @@ impl Browser {
                 if fullscreen_button(ui, ctx.fullscreen).clicked() {
                     out.push(BrowserAction::ToggleFullscreen);
                 }
+                if layout_button(ui, ctx.side, ctx.side_possible).clicked() {
+                    out.push(BrowserAction::ToggleSide);
+                }
                 let tip = if cfg!(target_os = "macos") { tr("Ordner neu einlesen (⌘R)") } else { tr("Ordner neu einlesen (F5)") };
                 if ui.button(RichText::new("🔄").size(14.0)).on_hover_text(tip).clicked() {
                     self.refresh();
@@ -805,33 +824,20 @@ impl Browser {
                 if ui.button(tr("Ordner hinzufügen …")).clicked() {
                     out.push(BrowserAction::AddRoot);
                 }
-                // Rechts neben der Schnellsuche (das Layout läuft hier von rechts nach links)
-                if search_button(ui, self.adv_open || !self.adv.is_empty()).clicked() {
-                    self.toggle_search();
-                }
-                ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(tr("Suchen")).desired_width(200.0));
-                ui.label(RichText::new(tr("⏺ Live gelesen, keine Datenbank")).size(12.0).color(theme::play()));
-                if let Some((done, total)) = ctx.bpm_progress {
-                    if ui.small_button(tr("Stopp")).on_hover_text(tr("Wartende BPM-Analysen verwerfen")).clicked() {
-                        out.push(BrowserAction::StopBpm);
-                    }
-                    ui.label(RichText::new(trf("BPM-Analyse {} von {}", &[&done, &total])).size(12.0).color(theme::dim()));
-                    ui.add(egui::Spinner::new().size(14.0));
-                }
-                if !self.selected.is_empty() && self.hist.is_none() {
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        // Pfade im Home-Ordner kurz als „~/…“; mehrere Ordner nur mit Namen
-                        let shown = match self.selected.as_slice() {
-                            [one] => dirs::home_dir()
-                                .and_then(|h| one.strip_prefix(h).ok().map(|r| format!("~/{}", r.display())))
-                                .unwrap_or_else(|| one.display().to_string()),
-                            many => many.iter().map(|p| dir_name(p)).collect::<Vec<_>>().join(" · "),
-                        };
-                        ui.add(egui::Label::new(RichText::new(shown).monospace().size(12.0).color(theme::dim())).truncate());
-                    });
+                if compact {
+                    self.header_path(ui);
+                } else {
+                    self.header_tools(ui, ctx, out, false);
                 }
             });
         });
+        if compact {
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    self.header_tools(ui, ctx, out, true);
+                });
+            });
+        }
         ui.separator();
 
         // Feste Aufteilung: Liste oben, Vorhör-Leiste unten. Die Kinder dürfen das Panel nicht vergrößern,
@@ -846,31 +852,81 @@ impl Browser {
         let ui = &mut list_ui;
         ui.set_clip_rect(list_rect.intersect(ui.clip_rect()));
         crate::hw::calm_plate(ui.painter(), list_rect);
-        ui.horizontal_top(|ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            // Baum
-            let max_w = (ui.available_width() * 0.6).max(TREE_MIN_W);
-            let tree_w = self.tree_width.clamp(TREE_MIN_W, max_w);
-            ui.allocate_ui_with_layout(vec2(tree_w, avail), egui::Layout::top_down(egui::Align::Min), |ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                egui::ScrollArea::vertical().id_salt("tree").auto_shrink([false, false]).min_scrolled_height(0.0).show(ui, |ui| {
-                    for root in self.roots.clone() {
-                        self.tree_node(ui, &root.name(), &root.path, 0, root.user, out);
-                    }
-                    // Virtueller Ordner unter den echten
-                    self.history_tree(ui, ctx, out);
-                });
+        if ctx.side {
+            // Browser rechts: hohe, schmale Spalte, darum Baum über der Titelliste
+            let auto_h = (avail * 0.3).max(TREE_MIN_H);
+            let max_h = (avail * 0.6).max(TREE_MIN_H);
+            let tree_h = if self.tree_height > 0.0 { self.tree_height } else { auto_h }.clamp(TREE_MIN_H, max_h);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.allocate_ui_with_layout(vec2(ui.available_width(), tree_h), egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
+                self.tree(ui, ctx, out);
             });
-            self.splitter(ui, avail, tree_w, max_w, out);
-            ui.allocate_ui_with_layout(vec2(ui.available_width(), avail), egui::Layout::top_down(egui::Align::Min), |ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
+            self.row_splitter(ui, tree_h, max_h, out);
+            let list_h = ui.available_height();
+            ui.allocate_ui_with_layout(vec2(ui.available_width(), list_h), egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
                 self.track_list(ui, ctx, out);
             });
-        });
+        } else {
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let max_w = (ui.available_width() * 0.6).max(TREE_MIN_W);
+                let tree_w = self.tree_width.clamp(TREE_MIN_W, max_w);
+                ui.allocate_ui_with_layout(vec2(tree_w, avail), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    self.tree(ui, ctx, out);
+                });
+                self.splitter(ui, avail, tree_w, max_w, out);
+                ui.allocate_ui_with_layout(vec2(ui.available_width(), avail), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    self.track_list(ui, ctx, out);
+                });
+            });
+        }
 
         if let Some(p) = ctx.preview {
             let bar = egui::Rect::from_min_max(egui::pos2(full.left(), full.bottom() - PREVIEW_BAR_H + 4.0), full.max);
             preview_bar(&mut bar_ui, bar, p, ctx, out);
+        }
+    }
+
+    /// Ordnerbaum samt Historie, scrollbar.
+    fn tree(&mut self, ui: &mut egui::Ui, ctx: &BrowserCtx<'_>, out: &mut Vec<BrowserAction>) {
+        egui::ScrollArea::vertical().id_salt("tree").auto_shrink([false, false]).min_scrolled_height(0.0).show(ui, |ui| {
+            for root in self.roots.clone() {
+                self.tree_node(ui, &root.name(), &root.path, 0, root.user, out);
+            }
+            // Virtueller Ordner unter den echten
+            self.history_tree(ui, ctx, out);
+        });
+    }
+
+    /// Griff zwischen Baum und Titelliste, wenn der Baum darüber steht: ziehen ändert die Höhe,
+    /// Doppelklick stellt sie wieder automatisch ein.
+    fn row_splitter(&mut self, ui: &mut egui::Ui, tree_h: f32, max_h: f32, out: &mut Vec<BrowserAction>) {
+        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), SPLIT_W), Sense::click_and_drag());
+        let resp = resp.on_hover_cursor(CursorIcon::ResizeVertical);
+        if resp.dragged() {
+            ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical);
+            self.tree_height = (tree_h + resp.drag_delta().y).clamp(TREE_MIN_H, max_h);
+        }
+        if resp.drag_stopped() {
+            out.push(BrowserAction::TreeHeight(self.tree_height.round()));
+        }
+        if resp.double_clicked() {
+            self.tree_height = 0.0;
+            out.push(BrowserAction::TreeHeight(0.0));
+        }
+        let active = resp.hovered() || resp.dragged();
+        let (w, color) = if active { (2.0, theme::ink().gamma_multiply(0.5)) } else { (1.0, theme::line()) };
+        let y = rect.center().y;
+        ui.painter().hline(rect.x_range(), y, egui::Stroke::new(w, color));
+        if active {
+            for dx in [-6.0, 0.0, 6.0] {
+                let x = rect.center().x + dx;
+                ui.painter().vline(x, y - 3.0..=y + 3.0, egui::Stroke::new(1.0, color));
+            }
         }
     }
 
@@ -2117,6 +2173,78 @@ fn search_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
     p.circle_stroke(c, r, stroke);
     let d = egui::vec2(1.0, 1.0).normalized();
     p.line_segment([c + d * (r + 0.5), c + d * (r + 5.0)], egui::Stroke::new(2.2, color));
+    resp
+}
+
+impl Browser {
+    /// Schnellsuche, erweiterte Suche, BPM-Fortschritt und (in der langen Kopfzeile) Hinweis und Pfad,
+    /// in einem Layout von rechts nach links.
+    fn header_tools(&mut self, ui: &mut egui::Ui, ctx: &BrowserCtx<'_>, out: &mut Vec<BrowserAction>, compact: bool) {
+        // Rechts neben der Schnellsuche (das Layout läuft hier von rechts nach links)
+        if search_button(ui, self.adv_open || !self.adv.is_empty()).clicked() {
+            self.toggle_search();
+        }
+        let search_w = if compact { (ui.available_width() * 0.5).clamp(140.0, 260.0) } else { 200.0 };
+        ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(tr("Suchen")).desired_width(search_w));
+        if !compact {
+            ui.label(RichText::new(tr("⏺ Live gelesen, keine Datenbank")).size(12.0).color(theme::play()));
+        }
+        if let Some((done, total)) = ctx.bpm_progress {
+            if ui.small_button(tr("Stopp")).on_hover_text(tr("Wartende BPM-Analysen verwerfen")).clicked() {
+                out.push(BrowserAction::StopBpm);
+            }
+            ui.label(RichText::new(trf("BPM-Analyse {} von {}", &[&done, &total])).size(12.0).color(theme::dim()));
+            ui.add(egui::Spinner::new().size(14.0));
+        }
+        if !compact {
+            self.header_path(ui);
+        }
+    }
+
+    /// Gewählte Ordner, gekürzt auf den restlichen Platz links.
+    fn header_path(&self, ui: &mut egui::Ui) {
+        if self.selected.is_empty() || self.hist.is_some() {
+            return;
+        }
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            // Pfade im Home-Ordner kurz als „~/…“; mehrere Ordner nur mit Namen
+            let shown = match self.selected.as_slice() {
+                [one] => dirs::home_dir()
+                    .and_then(|h| one.strip_prefix(h).ok().map(|r| format!("~/{}", r.display())))
+                    .unwrap_or_else(|| one.display().to_string()),
+                many => many.iter().map(|p| dir_name(p)).collect::<Vec<_>>().join(" · "),
+            };
+            ui.add(egui::Label::new(RichText::new(shown).monospace().size(12.0).color(theme::dim())).truncate());
+        });
+    }
+}
+
+/// Zeigt, wohin der Browser wandert: ein Fensterchen mit Player-Fläche und hervorgehobenem Browser
+/// unten bzw. rechts (das Ziel des Klicks).
+fn layout_button(ui: &mut egui::Ui, side: bool, possible: bool) -> egui::Response {
+    let tip = if side {
+        tr("Ordner unter die Player setzen")
+    } else if possible {
+        tr("Ordner rechts neben die Player setzen (für breite Monitore)")
+    } else {
+        tr("Ordner rechts neben die Player setzen – dafür ist das Fenster zu schmal")
+    };
+    let h = ui.spacing().interact_size.y;
+    let resp = ui
+        .add_enabled(side || possible, egui::Button::new("").min_size(egui::vec2(h + 6.0, h)))
+        .on_hover_text(tip)
+        .on_disabled_hover_text(tip);
+    let color = ui.style().interact(&resp).fg_stroke.color;
+    let color = if resp.enabled() { color } else { color.gamma_multiply(0.4) };
+    let frame = egui::Rect::from_center_size(resp.rect.center(), egui::vec2(16.0, 11.0));
+    let p = ui.painter();
+    p.rect_stroke(frame, 1.5, egui::Stroke::new(1.4, color), egui::StrokeKind::Middle);
+    let target = if side {
+        egui::Rect::from_min_max(egui::pos2(frame.left(), frame.bottom() - 4.0), frame.max)
+    } else {
+        egui::Rect::from_min_max(egui::pos2(frame.right() - 5.0, frame.top()), frame.max)
+    };
+    p.rect_filled(target, 1.0, color);
     resp
 }
 

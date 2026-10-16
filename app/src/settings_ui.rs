@@ -34,6 +34,7 @@ pub enum SettingsAction {
     Skin(SkinId),
     Brushed(bool),
     Lite(bool),
+    Platters(bool),
     OpenGl(bool),
     UpdateCheck(bool),
     RecordHistory(bool),
@@ -469,6 +470,16 @@ fn look_tab(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction
         out.push(SettingsAction::Brushed(brushed));
     }
     ui.label(RichText::new(tr("Gehäuseflächen wirken wie gebürstetes Metall in den Farben des Skins.")).size(11.5).color(theme::dim()));
+    ui.add_space(10.0);
+    let mut platters = c.settings.platters;
+    if ui.checkbox(&mut platters, RichText::new(tr("Plattenspieler zeigen")).size(14.0)).changed() {
+        out.push(SettingsAction::Platters(platters));
+    }
+    ui.label(
+        RichText::new(tr("Ohne Plattenteller bekommen die Bedienelemente mehr Platz. Scratchen geht weiter in der Wellenform."))
+            .size(11.5)
+            .color(theme::dim()),
+    );
     ui.add_space(10.0);
     ui.horizontal(|ui| {
         ui.label(RichText::new(tr("Zoom")).size(14.0));

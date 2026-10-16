@@ -49,6 +49,10 @@ const IDLE_FRAME: std::time::Duration = std::time::Duration::from_millis(250);
 /// So lange nach dem letzten Ton bleibt der Ruhezustand noch gesperrt (kein Flattern beim Titelwechsel).
 const AWAKE_HOLD_SECS: f64 = 10.0;
 /// Breite der Mittelspalte: wächst mit dem Fenster, damit die Player auf großen Monitoren nicht ausufern.
+/// Ordnerbrowser rechts: So breit bleibt die Fläche für Player und Playlists mindestens (wie das kleinste
+/// Fenster), und so schmal wird der Browser höchstens. Ist das Fenster schmaler als beides, steht er unten.
+const SIDE_MAIN_MIN: f32 = 1100.0;
+const SIDE_BROWSER_MIN: f32 = 420.0;
 fn center_width(total: f32) -> f32 {
     (total * 0.2).clamp(250.0, 440.0)
 }
@@ -215,8 +219,8 @@ pub struct FadeWerkDjApp {
     persist: bool,
     session_saved: u64,
     session_checked: f64,
-    /// Fensterhöhe und Browserhöhe im letzten Bild: ändert sich nur der Browser, hat der Nutzer ihn gezogen.
-    last_heights: (f32, f32),
+    /// Ordnerbrowser im letzten Bild (ändert sich nur der Browser, hat der Nutzer ihn gezogen): (rechts, Fensterhöhe bzw. -breite, Höhe bzw. Breite des Browsers).
+    last_sizes: (bool, f32, f32),
     update_rx: Option<std::sync::mpsc::Receiver<Option<crate::update::NewVersion>>>,
     /// Gefundene neue Version (Hinweisleiste), bis der Nutzer sie wegklickt.
     new_version: Option<crate::update::NewVersion>,
@@ -279,6 +283,7 @@ impl FadeWerkDjApp {
                 let mut b = Browser::new(start_dir, &settings.folders, settings.tree_width, &settings.folder_recursion);
                 b.set_columns(&settings.track_columns, &settings.column_widths);
                 b.set_sort(settings.track_sort.as_ref());
+                b.tree_height = settings.tree_height;
                 b.set_search_memory(settings.remember_search, settings.hide_duplicates, &settings.advanced_search);
                 b
             },
@@ -326,7 +331,7 @@ impl FadeWerkDjApp {
             persist: true,
             session_saved: 0,
             session_checked: 0.0,
-            last_heights: (0.0, 0.0),
+            last_sizes: (false, 0.0, 0.0),
             update_rx: None,
             new_version: None,
             ask_update: false,
@@ -425,6 +430,14 @@ impl FadeWerkDjApp {
             // FW_SEARCH="genre=Rock,year=1980-1989": erweiterte Suche vorbelegt öffnen
             if let Ok(spec) = std::env::var("FW_SEARCH") {
                 app.browser.demo_search(&spec);
+            }
+            // FW_PLATTERS=0: Player ohne Plattenteller
+            if std::env::var("FW_PLATTERS").is_ok_and(|v| v == "0") {
+                app.settings.platters = false;
+            }
+            // FW_BROWSER=rechts: Ordnerbrowser rechts neben den Playern
+            if std::env::var("FW_BROWSER").is_ok_and(|v| v == "rechts") {
+                app.settings.browser_side = true;
             }
             // FW_TAB=kopfhoerer|fade|motor|zu: Reiter unter dem Crossfader
             if let Ok(tab) = std::env::var("FW_TAB") {
@@ -636,6 +649,7 @@ impl FadeWerkDjApp {
                 theme::set_lite(on);
                 theme::apply(ctx);
             }
+            SettingsAction::Platters(on) => self.settings.platters = on,
             SettingsAction::Zoom(z) => self.set_zoom(ctx, z),
             // Wirkt erst beim nächsten Start
             SettingsAction::OpenGl(on) => self.settings.opengl = on,
@@ -1712,6 +1726,10 @@ impl FadeWerkDjApp {
                 self.settings.tree_width = w;
                 self.save_settings();
             }
+            BrowserAction::TreeHeight(h) => {
+                self.settings.tree_height = h;
+                self.save_settings();
+            }
             BrowserAction::Preview(path) => {
                 let token = self.token();
                 self.preview = Some(PreviewView { path: path.clone(), token, ended_seen: 0 });
@@ -1780,6 +1798,10 @@ impl FadeWerkDjApp {
             }
             BrowserAction::OpenSettings => self.settings_ui.toggle(),
             BrowserAction::ToggleFullscreen => self.toggle_fullscreen = true,
+            BrowserAction::ToggleSide => {
+                self.settings.browser_side = !self.settings.browser_side;
+                self.save_due = Some(now + 1.0);
+            }
         }
     }
 }
@@ -1852,7 +1874,7 @@ impl eframe::App for FadeWerkDjApp {
             self.lib.scan(token, dirs);
         }
 
-        // Ordnerbrowser unten
+        // Ordnerbrowser unten oder rechts
         let preview_st = &self.ctl.shared.decks[PREVIEW];
         let bctx = BrowserCtx {
             metas: &self.metas,
@@ -1863,6 +1885,8 @@ impl eframe::App for FadeWerkDjApp {
             preview_dur: preview_st.duration_secs(),
             deck_playing: [self.ctl.shared.decks[0].is_playing(), self.ctl.shared.decks[1].is_playing()],
             fullscreen: ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)),
+            side: false,
+            side_possible: false,
             history: &self.history,
             importing: self.import_rx.is_some(),
             data_gen: self.data_gen,
@@ -1870,35 +1894,65 @@ impl eframe::App for FadeWerkDjApp {
         // Höhe merken; ohne gespeicherten Wert 240 pt, auf hohen Monitoren mehr (bei 1400 pt Höhe etwa 450),
         // auf niedrigen weniger (ein gutes Viertel der Höhe)
         let total_h = ui.available_height();
-        let browser_h = if self.settings.browser_height > 0.0 {
-            self.settings.browser_height
-        } else if total_h >= 920.0 {
-            240.0 + (total_h - 920.0) * 0.44
-        } else {
-            (total_h * 0.26).max(160.0)
+        let total_w = ui.available_width();
+        let side = self.settings.browser_side && total_w >= SIDE_MAIN_MIN + SIDE_BROWSER_MIN;
+        let bctx = BrowserCtx { side, side_possible: total_w >= SIDE_MAIN_MIN + SIDE_BROWSER_MIN, ..bctx };
+        let browser_frame = Frame::new().fill(theme::panel()).stroke(Stroke::new(1.0, theme::line())).inner_margin(Margin::same(10));
+        let browser = &mut self.browser;
+        let show_browser = |ui: &mut egui::Ui| {
+            if theme::brushed() {
+                let p = ui.ctx().layer_painter(ui.layer_id());
+                let face = crate::hw::steel_face(theme::panel(), theme::skin().dark);
+                crate::hw::surface(&p, ui.max_rect().expand(10.0), 0.0, crate::hw::lighten(face, 0.04), crate::hw::darken(face, 0.18));
+            }
+            browser.show(ui, &bctx, &mut browser_actions)
         };
-        let browser_resp = egui::Panel::bottom("browser")
-            .resizable(true)
-            .default_size(browser_h)
-            .min_size(160.0)
-            .max_size((total_h - DECK_ROW_MIN - PLAYLIST_MIN - 30.0).max(160.0))
-            .frame(Frame::new().fill(theme::panel()).stroke(Stroke::new(1.0, theme::line())).inner_margin(Margin::same(10)))
-            .show(ui, |ui| {
-                if theme::brushed() {
-                    let p = ui.ctx().layer_painter(ui.layer_id());
-                    let face = crate::hw::steel_face(theme::panel(), theme::skin().dark);
-                    crate::hw::surface(&p, ui.max_rect().expand(10.0), 0.0, crate::hw::lighten(face, 0.04), crate::hw::darken(face, 0.18));
-                }
-                self.browser.show(ui, &bctx, &mut browser_actions)
-            });
-        let heights = (ctx.content_rect().height().round(), browser_resp.response.rect.height().round());
+        // Rechts: ohne gespeicherten Wert gut ein Viertel der Breite (bei 2560 pt etwa 680)
+        let size = if side {
+            let browser_w = if self.settings.browser_width > 0.0 { self.settings.browser_width } else { (total_w * 0.27).max(SIDE_BROWSER_MIN) };
+            egui::Panel::right("browser_side")
+                .resizable(true)
+                .default_size(browser_w)
+                .min_size(SIDE_BROWSER_MIN)
+                .max_size(total_w - SIDE_MAIN_MIN)
+                .frame(browser_frame)
+                .show(ui, show_browser)
+                .response
+                .rect
+                .width()
+        } else {
+            let browser_h = if self.settings.browser_height > 0.0 {
+                self.settings.browser_height
+            } else if total_h >= 920.0 {
+                240.0 + (total_h - 920.0) * 0.44
+            } else {
+                (total_h * 0.26).max(160.0)
+            };
+            egui::Panel::bottom("browser")
+                .resizable(true)
+                .default_size(browser_h)
+                .min_size(160.0)
+                .max_size((total_h - DECK_ROW_MIN - PLAYLIST_MIN - 30.0).max(160.0))
+                .frame(browser_frame)
+                .show(ui, show_browser)
+                .response
+                .rect
+                .height()
+        };
+        let content = ctx.content_rect();
+        let sizes = (side, if side { content.width() } else { content.height() }.round(), size.round());
         // Nur bei gedrückter Maustaste: dann zieht der Nutzer die Kante, sonst hat sich der Inhalt geändert
         let dragging = ctx.input(|i| i.pointer.primary_down());
-        if dragging && self.last_heights.0 == heights.0 && self.last_heights.1 > 0.0 && (self.last_heights.1 - heights.1).abs() >= 1.0 {
-            self.settings.browser_height = heights.1;
+        let last = self.last_sizes;
+        if dragging && last.0 == sizes.0 && last.1 == sizes.1 && last.2 > 0.0 && (last.2 - sizes.2).abs() >= 1.0 {
+            if side {
+                self.settings.browser_width = sizes.2;
+            } else {
+                self.settings.browser_height = sizes.2;
+            }
             self.save_due = Some(now + 1.0);
         }
-        self.last_heights = heights;
+        self.last_sizes = sizes;
 
         // Ausgeworfene Platte ist hinausgeglitten (oder schon eine neue geladen)
         for v in &mut self.decks {
@@ -1941,6 +1995,7 @@ impl eframe::App for FadeWerkDjApp {
                     loop_range: v.loop_range,
                     on_air: self.on_air(d),
                     scratching: v.scratching,
+                    platter: self.settings.platters,
                 }
             })
             .collect();

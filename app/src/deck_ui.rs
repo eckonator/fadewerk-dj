@@ -72,6 +72,8 @@ pub struct DeckModel<'a> {
     pub loop_range: Option<(f64, f64)>,
     pub on_air: bool,
     pub scratching: bool,
+    /// Plattenteller und Tonarm zeigen (Einstellung); ohne sie bekommt das Bedienfeld den Platz.
+    pub platter: bool,
     /// Gerade ausgeworfene Platte, die noch aus dem Player gleitet.
     pub leaving: Option<Leaving<'a>>,
 }
@@ -127,6 +129,8 @@ pub fn deck_scale(content_width: f32) -> f32 {
 
 /// Größte Breite des Bedienfelds zwischen Teller und Pitch; überschüssiger Platz bleibt links und rechts frei.
 const CONTROLS_MAX_W: f32 = 330.0;
+/// Ohne Plattenteller darf das Bedienfeld breiter werden.
+const CONTROLS_MAX_W_NO_PLATTER: f32 = 440.0;
 
 /// Kleinste Vergrößerung: so weit schrumpft ein Player auf niedrigen Bildschirmen.
 const MIN_SCALE: f32 = 0.75;
@@ -143,6 +147,26 @@ pub fn show(ui: &mut egui::Ui, m: &DeckModel<'_>, out: &mut Vec<DeckAction>) {
     waveform(ui, m, color, out);
     overview(ui, m, color, out);
     ui.add_space(6.0);
+
+    if !m.platter {
+        // Ohne Teller: Bedienung | Pitch, Pitch außen (bei B links), Bedienfeld mittig und etwas breiter
+        let avail = ui.available_rect_before_wrap();
+        let pitch_w = 54.0 * k();
+        let h = avail.height().clamp(120.0, 240.0 * k());
+        let (ctrl_rect, pitch_rect) = if !mirrored {
+            let pr = Rect::from_min_max(pos2(avail.right() - pitch_w, avail.top()), pos2(avail.right(), avail.top() + h));
+            (Rect::from_min_max(avail.min, pos2(pr.left() - 12.0, avail.top() + h)), pr)
+        } else {
+            let pr = Rect::from_min_size(avail.min, vec2(pitch_w, h));
+            (Rect::from_min_max(pos2(pr.right() + 12.0, avail.top()), pos2(avail.right(), avail.top() + h)), pr)
+        };
+        let max_w = CONTROLS_MAX_W_NO_PLATTER * k();
+        let ctrl_rect = if ctrl_rect.width() > max_w { Rect::from_center_size(ctrl_rect.center(), vec2(max_w, ctrl_rect.height())) } else { ctrl_rect };
+        ui.allocate_rect(Rect::from_min_max(avail.min, pos2(avail.right(), avail.top() + h)), Sense::hover());
+        ui.scope_builder(UiBuilder::new().max_rect(ctrl_rect), |ui| controls(ui, m, color, out));
+        ui.scope_builder(UiBuilder::new().max_rect(pitch_rect), |ui| pitch(ui, m, out));
+        return;
+    }
 
     // Teller | Bedienung | Pitch, bei Player B gespiegelt
     let avail = ui.available_rect_before_wrap();
