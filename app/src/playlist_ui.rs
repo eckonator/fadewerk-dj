@@ -10,6 +10,7 @@ use fw_library::TrackMeta;
 use crate::deck_ui::fmt_time;
 use crate::playlist::{DragItem, Playlist};
 use crate::i18n::{count_tracks, tr, trf};
+use crate::keynav::{self, KeyList};
 use crate::theme;
 use crate::{fonts, hw};
 
@@ -32,7 +33,8 @@ pub enum PlaylistAction {
     MoveToOther(usize),
 }
 
-const ROW_H: f32 = 48.0;
+const ROW_H: f32 = 44.0;
+const ROW_GAP: f32 = 2.0;
 
 #[allow(clippy::too_many_arguments)]
 pub fn show(
@@ -95,10 +97,31 @@ pub fn show(
     let scroll_to_current = seen != Some(pl.current);
     ui.data_mut(|d| d.insert_temp(seen_id, pl.current));
     let mut current_top: Option<f32> = None;
+    // Markierter Titel für Pfeiltasten und Eingabetaste (nach Klick auf eine Zeile dieser Liste)
+    let me = KeyList::Playlist(list);
+    let cursor_id = egui::Id::new(("pl_cursor", list));
+    let mut cursor: Option<usize> = ui.data(|d| d.get_temp::<usize>(cursor_id)).filter(|&c| c < pl.entries.len());
+    let keys = keynav::take(ui.ctx(), me);
+    let mut scroll_to_cursor = false;
+    if let Some(k) = keys {
+        if k.steps != 0 {
+            // Ohne Markierung beginnt sie beim geladenen Titel
+            cursor = keynav::step(cursor.or(pl.current), k.steps, pl.entries.len());
+            scroll_to_cursor = true;
+        }
+        if k.enter
+            && let Some(c) = cursor
+        {
+            out.push(PlaylistAction::Load(c));
+        }
+    }
+    let show_cursor = keynav::focused(ui.ctx()) == Some(me);
     egui::ScrollArea::vertical().id_salt(("pl", list)).auto_shrink([false, false]).show(ui, |ui| {
         let width = ui.available_width();
         let mut insert_line: Option<f32> = None;
 
+        // Zeilen dicht untereinander, nur ein schmaler Spalt zwischen den Hinterlegungen
+        ui.spacing_mut().item_spacing.y = ROW_GAP;
         // Nur die sichtbaren Zeilen bauen; die übrigen sind ein leerer Block gleicher Höhe
         let spacing = ui.spacing().item_spacing.y;
         let stride = ROW_H + spacing;
@@ -114,6 +137,10 @@ pub fn show(
                 // egui lässt beim Scrollen einen Zeilenabstand frei; ohne Ausgleich lugt die vorige Zeile hervor
                 ui.scroll_to_rect(rect.translate(vec2(0.0, spacing)), Some(egui::Align::TOP));
             }
+        }
+        if let Some(c) = cursor.filter(|_| scroll_to_cursor) {
+            // Nur so weit, dass die markierte Zeile ganz zu sehen ist
+            ui.scroll_to_rect(Rect::from_min_size(pos2(ui.cursor().left(), top + c as f32 * stride), vec2(width, ROW_H)), None);
         }
         if first > 0 {
             ui.allocate_space(vec2(width, first as f32 * stride - spacing));
@@ -144,8 +171,8 @@ pub fn show(
             let text_right = rect.right() - 140.0;
             let clip = Rect::from_min_max(pos2(text_left, rect.top()), pos2(text_right, rect.bottom()));
             let pc = p.with_clip_rect(clip);
-            pc.text(pos2(text_left, rect.top() + 7.0), Align2::LEFT_TOP, &m.title, fonts::bold(14.0), theme::ink().gamma_multiply(alpha));
-            pc.text(pos2(text_left, rect.bottom() - 7.0), Align2::LEFT_BOTTOM, &m.artist, fonts::list(12.0), theme::dim().gamma_multiply(alpha));
+            pc.text(pos2(text_left, rect.top() + 5.0), Align2::LEFT_TOP, &m.title, fonts::bold(14.0), theme::ink().gamma_multiply(alpha));
+            pc.text(pos2(text_left, rect.bottom() - 5.0), Align2::LEFT_BOTTOM, &m.artist, fonts::list(12.0), theme::dim().gamma_multiply(alpha));
             let bpm = bpms.get(path).copied().or(m.bpm).map(|b| format!("{b:.0}")).unwrap_or_default();
             p.text(pos2(rect.right() - 60.0, rect.center().y), Align2::RIGHT_CENTER, bpm, FontId::monospace(12.0), theme::dim().gamma_multiply(alpha));
             let dur = if m.duration_secs > 0.0 { fmt_time(m.duration_secs) } else { String::new() };
@@ -154,7 +181,7 @@ pub fn show(
             // Vorhören: Kopfhörertaste vor BPM und Länge, leuchtet, solange dieser Titel vorgehört wird
             let previewing = preview == Some(path.as_path());
             let head = Rect::from_center_size(pos2(rect.right() - 118.0, rect.center().y), vec2(30.0, 24.0));
-            if ui.put(head, |ui: &mut egui::Ui| hw::preview_button(ui, head.size(), previewing)).clicked() {
+            if ui.place(head, |ui: &mut egui::Ui| hw::preview_button(ui, head.size(), previewing)).clicked() {
                 out.push(if previewing { PlaylistAction::StopPreview } else { PlaylistAction::Preview(path.clone()) });
             }
 
@@ -166,6 +193,13 @@ pub fn show(
             if let Some(item) = resp.dnd_release_payload::<DragItem>() {
                 let before = if upper(&resp) { i } else { i + 1 };
                 out.push(PlaylistAction::Drop { item: (*item).clone(), before });
+            }
+            if show_cursor && cursor == Some(i) {
+                ui.painter().rect_stroke(rect.shrink(0.75), 4.0, Stroke::new(1.5, theme::select_accent()), egui::StrokeKind::Inside);
+            }
+            if resp.clicked() || resp.secondary_clicked() {
+                cursor = Some(i);
+                keynav::focus(ui.ctx(), me);
             }
             if resp.double_clicked() {
                 out.push(PlaylistAction::Load(i));
@@ -231,4 +265,10 @@ pub fn show(
             ui.painter().line_segment([pos2(ui.min_rect().left(), y), pos2(ui.min_rect().left() + width, y)], Stroke::new(2.0, color));
         }
     });
+    match cursor {
+        Some(c) => ui.data_mut(|d| {
+            d.insert_temp(cursor_id, c);
+        }),
+        None => ui.data_mut(|d| d.remove::<usize>(cursor_id)),
+    }
 }

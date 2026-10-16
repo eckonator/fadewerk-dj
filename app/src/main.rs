@@ -18,6 +18,7 @@ mod hw;
 mod devtools;
 mod diagnose;
 mod i18n;
+mod keynav;
 mod meter;
 mod mixer_ui;
 mod playlist;

@@ -10,11 +10,13 @@ pub struct Selection<T> {
     items: HashSet<T>,
     /// Ausgangspunkt für ⇧-Klick.
     anchor: Option<T>,
+    /// Zuletzt angeklickter oder per Pfeiltaste erreichter Eintrag, von hier aus gehen die Pfeiltasten weiter.
+    cursor: Option<T>,
 }
 
 impl<T> Default for Selection<T> {
     fn default() -> Self {
-        Self { items: HashSet::new(), anchor: None }
+        Self { items: HashSet::new(), anchor: None, cursor: None }
     }
 }
 
@@ -26,16 +28,19 @@ impl<T: Clone + Eq + Hash> Selection<T> {
     pub fn clear(&mut self) {
         self.items.clear();
         self.anchor = None;
+        self.cursor = None;
     }
 
     pub fn select_only(&mut self, item: &T) {
         self.items.clear();
         self.items.insert(item.clone());
         self.anchor = Some(item.clone());
+        self.cursor = Some(item.clone());
     }
 
     /// Klick auf `item` in der sichtbaren Liste `rows`. `toggle` = ⌘/Strg, `range` = ⇧.
     pub fn click(&mut self, rows: &[T], item: &T, toggle: bool, range: bool) {
+        self.cursor = Some(item.clone());
         let anchor_pos = self.anchor.as_ref().and_then(|a| rows.iter().position(|r| r == a));
         match (range, anchor_pos, rows.iter().position(|r| r == item)) {
             (true, Some(a), Some(b)) => {
@@ -53,6 +58,25 @@ impl<T: Clone + Eq + Hash> Selection<T> {
             }
             _ => self.select_only(item),
         }
+    }
+
+    /// Pfeiltasten: `steps` Zeilen weiter (↓ positiv), mit `extend` (⇧) wird der Bereich ab dem Anker gewählt.
+    /// Liefert die neue Zeile, damit die Liste dorthin scrollen kann.
+    pub fn step(&mut self, rows: &[T], steps: i32, extend: bool) -> Option<usize> {
+        let from = self.cursor.as_ref().and_then(|c| rows.iter().position(|r| r == c));
+        let to = crate::keynav::step(from, steps, rows.len())?;
+        let item = rows[to].clone();
+        if extend && from.is_some() {
+            self.click(rows, &item, false, true);
+        } else {
+            self.select_only(&item);
+        }
+        Some(to)
+    }
+
+    /// Zuletzt angeklickter oder per Pfeiltaste erreichter Eintrag.
+    pub fn cursor(&self) -> Option<&T> {
+        self.cursor.as_ref()
     }
 
     pub fn select_all(&mut self, rows: &[T]) {
@@ -94,6 +118,23 @@ mod tests {
         assert_eq!(s.ordered(&ROWS), [0, 1, 2, 3, 4, 5]);
         s.click(&ROWS, &3, false, false);
         assert_eq!(s.ordered(&ROWS), [3]);
+    }
+
+    #[test]
+    fn arrow_keys_move_and_extend() {
+        let mut s = Selection::default();
+        assert_eq!(s.step(&ROWS, 1, false), Some(0));
+        s.click(&ROWS, &2, false, false);
+        assert_eq!(s.step(&ROWS, 1, false), Some(3));
+        assert_eq!(s.ordered(&ROWS), [3]);
+        assert_eq!(s.step(&ROWS, 2, true), Some(5));
+        assert_eq!(s.ordered(&ROWS), [3, 4, 5]);
+        // ⇧↑ verkleinert den Bereich wieder Richtung Anker
+        assert_eq!(s.step(&ROWS, -1, true), Some(4));
+        assert_eq!(s.ordered(&ROWS), [3, 4]);
+        assert_eq!(s.step(&ROWS, -9, false), Some(0));
+        assert_eq!(s.ordered(&ROWS), [0]);
+        assert_eq!(s.step(&[], 1, false), None);
     }
 
     #[test]
