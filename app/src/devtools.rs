@@ -21,7 +21,9 @@
 //! - `FW_POINTER=x,y` bewegt die Maus (in Punkten) nach Bild 100 dorthin, etwa um Tooltips zu sehen;
 //!   `FW_POINTER=x,y,2` klickt dort rechts (Kontextmenü), `FW_POINTER=x,y,1` links;
 //!   `FW_POINTER=x1,y1,x2,y2` zieht mit gedrückter Taste von x1,y1 nach x2,y2 und bleibt dort stehen.
-//! - `FW_KEYS=ArrowDown,Enter` drückt ab Bild 120 nacheinander diese Tasten (Namen wie `egui::Key::from_name`).
+//! - `FW_KEYS=ArrowDown,Enter` drückt ab Bild 120 nacheinander diese Tasten (Namen wie `egui::Key::from_name`),
+//!   `text:abc` tippt Text.
+//! - `FW_MINIMIZE=1` minimiert das Fenster kurz nach dem Start (Abspiel-Logik ohne sichtbares Fenster prüfen).
 //! - `FW_SIZE=2400x1350` setzt die Fenstergröße (in `main.rs`).
 //! - `FW_UPDATE_ASK=1` zeigt die Frage nach der Update-Prüfung; `FW_UPDATE_URL=file:///…json` prüft gegen eine
 //!   eigene Release-Antwort (in `app.rs` bzw. `update.rs`).
@@ -54,8 +56,10 @@ pub struct DevTools {
     requested: bool,
     /// Vorgetäuschte Maus aus `FW_POINTER`.
     pointer: Vec<f32>,
-    /// Vorgetäuschte Tasten aus `FW_KEYS`.
-    keys: Vec<egui::Key>,
+    /// Vorgetäuschte Tasten aus `FW_KEYS`: eine Taste oder ein getippter Text.
+    keys: Vec<Result<egui::Key, String>>,
+    /// `FW_MINIMIZE`: Fenster nach dem Start minimieren (ist es schon geschehen?).
+    minimize: Option<bool>,
 }
 
 impl DevTools {
@@ -83,8 +87,16 @@ impl DevTools {
                 .unwrap_or_default(),
             keys: std::env::var("FW_KEYS")
                 .ok()
-                .map(|s| s.split(',').filter_map(|k| egui::Key::from_name(k.trim())).collect())
+                .map(|s| {
+                    s.split(',')
+                        .filter_map(|k| match k.trim().strip_prefix("text:") {
+                            Some(t) => Some(Err(t.to_owned())),
+                            None => egui::Key::from_name(k.trim()).map(Ok),
+                        })
+                        .collect()
+                })
                 .unwrap_or_default(),
+            minimize: std::env::var_os("FW_MINIMIZE").map(|_| false),
             frame: 0,
             started: None,
             requested: false,
@@ -103,10 +115,15 @@ impl DevTools {
     pub fn raw_input(&self, raw: &mut egui::RawInput) {
         // FW_KEYS: ab Bild 120 alle 5 Bilder eine Taste (nach einem Klick aus FW_POINTER)
         if let Some(n) = self.frame.checked_sub(120).filter(|n| n % 5 == 0).map(|n| (n / 5) as usize)
-            && let Some(&key) = self.keys.get(n)
+            && let Some(k) = self.keys.get(n)
         {
-            for pressed in [true, false] {
-                raw.events.push(Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: Default::default() });
+            match k {
+                Ok(key) => {
+                    for pressed in [true, false] {
+                        raw.events.push(Event::Key { key: *key, physical_key: None, pressed, repeat: false, modifiers: Default::default() });
+                    }
+                }
+                Err(text) => raw.events.push(Event::Text(text.clone())),
             }
         }
         let p = &self.pointer;
@@ -156,6 +173,10 @@ impl DevTools {
     }
 
     pub fn on_frame(&mut self, ctx: &egui::Context) {
+        if self.minimize == Some(false) && ctx.cumulative_frame_nr() >= 60 {
+            ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
+            self.minimize = Some(true);
+        }
         let Some(path) = self.screenshot.clone() else { return };
         self.frame += 1;
         // Auch nach Zeit: Hinweise (3 s) sollen verschwunden sein, egal wie schnell gezeichnet wird

@@ -65,6 +65,7 @@ written in Rust. Click a folder and start playing: no database, no library impor
   played ones stay above it. Playlists and settings are kept when you quit.
   After clicking into a playlist or the folder track list, ↑/↓ move through the tracks; Enter loads
   the marked track into the deck (playlists) or pre-listens to it (folder browser).
+  Each playlist has a quick search that jumps to the matching track (Enter: next match).
 - **Skins** Night, Classic, Day and Neon, optionally with a brushed steel look.
   The layout adapts to the window size, including 4K monitors. **Full screen** via the button
   in the folder browser, F11 or ⌃⌘F on macOS. On wide monitors, the button next to it moves the
@@ -72,6 +73,8 @@ written in Rust. Click a folder and start playing: no database, no library impor
 - **Light on resources**: when nothing is playing, the interface only redraws on input. A
   **lightweight display** for older or slower computers drops shadows, gradients, glow and the
   spectrum and limits drawing to 30 frames per second.
+- **Keeps playing in the background**: auto-fade and the next track also work while the window is
+  minimised or covered by another app. When one playlist runs out, the other deck plays on alone.
 - **No sleep while playing**: display and computer stay awake as long as a deck or pre-listen is
   playing (can be switched off).
 - User interface in **English and German**.

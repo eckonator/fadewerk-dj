@@ -1745,7 +1745,7 @@ fn without_duplicates<'a>(rows: Vec<Row>, meta: impl Fn(&Path) -> Option<&'a Tra
 }
 
 /// Kleinbuchstaben, Umlaute wie ihr Grundbuchstabe („Ärzte“ bei A), führende Artikel bleiben.
-fn fold(t: &str) -> String {
+pub fn fold(t: &str) -> String {
     t.trim()
         .chars()
         .flat_map(char::to_lowercase)

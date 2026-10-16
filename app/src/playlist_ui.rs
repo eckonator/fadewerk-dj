@@ -50,6 +50,13 @@ pub fn show(
     out: &mut Vec<PlaylistAction>,
 ) {
     let color = theme::deck_color(list);
+    // Markierter Titel für Pfeiltasten und Eingabetaste (nach Klick auf eine Zeile dieser Liste)
+    let me = KeyList::Playlist(list);
+    let cursor_id = egui::Id::new(("pl_cursor", list));
+    let mut cursor: Option<usize> = ui.data(|d| d.get_temp::<usize>(cursor_id)).filter(|&c| c < pl.entries.len());
+    let keys = keynav::take(ui.ctx(), me);
+    // Ausrichtung beim Scrollen zur Markierung: Pfeiltasten nur bis sichtbar, Suchtreffer in die Mitte
+    let mut scroll_to_cursor: Option<Option<egui::Align>> = None;
     ui.horizontal(|ui| {
         ui.label(RichText::new(trf("PLAYLIST {}", &[&theme::deck_letter(list)])).font(fonts::bold(16.0)).color(color).extra_letter_spacing(1.2));
         // Gesamtdauer und fehlende Tags nur neu durchgehen, wenn sich Länge der Liste oder Tag-Bestand ändern
@@ -81,6 +88,12 @@ pub fn show(
             if shuffle.clicked() {
                 out.push(PlaylistAction::Shuffle);
             }
+            // Schnellsuche: springt zum ersten Treffer ab dem geladenen Titel, Enter zum nächsten, ⇧Enter zurück
+            if let Some(hit) = quick_search(ui, list, pl, metas, cursor) {
+                cursor = Some(hit);
+                scroll_to_cursor = Some(Some(egui::Align::Center));
+                keynav::focus(ui.ctx(), me);
+            }
         });
     });
     ui.separator();
@@ -97,17 +110,11 @@ pub fn show(
     let scroll_to_current = seen != Some(pl.current);
     ui.data_mut(|d| d.insert_temp(seen_id, pl.current));
     let mut current_top: Option<f32> = None;
-    // Markierter Titel für Pfeiltasten und Eingabetaste (nach Klick auf eine Zeile dieser Liste)
-    let me = KeyList::Playlist(list);
-    let cursor_id = egui::Id::new(("pl_cursor", list));
-    let mut cursor: Option<usize> = ui.data(|d| d.get_temp::<usize>(cursor_id)).filter(|&c| c < pl.entries.len());
-    let keys = keynav::take(ui.ctx(), me);
-    let mut scroll_to_cursor = false;
     if let Some(k) = keys {
         if k.steps != 0 {
             // Ohne Markierung beginnt sie beim geladenen Titel
             cursor = keynav::step(cursor.or(pl.current), k.steps, pl.entries.len());
-            scroll_to_cursor = true;
+            scroll_to_cursor = Some(None);
         }
         if k.enter
             && let Some(c) = cursor
@@ -138,9 +145,8 @@ pub fn show(
                 ui.scroll_to_rect(rect.translate(vec2(0.0, spacing)), Some(egui::Align::TOP));
             }
         }
-        if let Some(c) = cursor.filter(|_| scroll_to_cursor) {
-            // Nur so weit, dass die markierte Zeile ganz zu sehen ist
-            ui.scroll_to_rect(Rect::from_min_size(pos2(ui.cursor().left(), top + c as f32 * stride), vec2(width, ROW_H)), None);
+        if let (Some(c), Some(align)) = (cursor, scroll_to_cursor) {
+            ui.scroll_to_rect(Rect::from_min_size(pos2(ui.cursor().left(), top + c as f32 * stride), vec2(width, ROW_H)), align);
         }
         if first > 0 {
             ui.allocate_space(vec2(width, first as f32 * stride - spacing));
@@ -271,4 +277,64 @@ pub fn show(
         }),
         None => ui.data_mut(|d| d.remove::<usize>(cursor_id)),
     }
+}
+
+/// Schnellsuche in der Kopfzeile einer Playlist. Liefert den Titel, zu dem gesprungen werden soll: beim Tippen
+/// der erste Treffer ab dem geladenen Titel (die kommenden zuerst), mit Enter der nächste, mit ⇧Enter der vorige.
+/// Esc leert das Feld. Gesucht wird mit allen Wörtern in Titel, Interpret, Album und Dateiname.
+fn quick_search(ui: &mut egui::Ui, list: usize, pl: &Playlist, metas: &HashMap<PathBuf, TrackMeta>, cursor: Option<usize>) -> Option<usize> {
+    let id = egui::Id::new(("pl_search", list));
+    let mut query: String = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+    // Trefferzahl der letzten Suche, als (Stelle, Anzahl)
+    let hits_id = id.with("hits");
+    let w = (ui.available_width() * 0.45).clamp(80.0, 200.0);
+    let resp = ui.add(egui::TextEdit::singleline(&mut query).hint_text(tr("Suchen")).desired_width(w));
+    let (enter, shift, esc) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.modifiers.shift, i.key_pressed(egui::Key::Escape)));
+    let mut jump = None;
+    if resp.lost_focus() && esc {
+        query.clear();
+    } else if resp.changed() || (resp.lost_focus() && enter) {
+        let next = !resp.changed();
+        if next {
+            // Feld behalten, damit man weiter Enter drücken oder nachtippen kann
+            resp.request_focus();
+        }
+        let words: Vec<String> = query.split_whitespace().map(crate::browser::fold).collect();
+        let hits: Vec<usize> = if words.is_empty() {
+            Vec::new()
+        } else {
+            pl.entries
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| {
+                    let file = p.file_name().unwrap_or_default().to_string_lossy();
+                    let hay = match metas.get(*p) {
+                        Some(m) => crate::browser::fold(&format!("{} {} {} {}", m.title, m.artist, m.album, file)),
+                        None => crate::browser::fold(&file),
+                    };
+                    words.iter().all(|w| hay.contains(w.as_str()))
+                })
+                .map(|(i, _)| i)
+                .collect()
+        };
+        let from = if next { cursor } else { pl.current };
+        jump = match (next, from) {
+            _ if hits.is_empty() => None,
+            (true, Some(c)) if shift => Some(hits.iter().rev().find(|&&h| h < c).copied().unwrap_or(hits[hits.len() - 1])),
+            (true, Some(c)) => Some(hits.iter().find(|&&h| h > c).copied().unwrap_or(hits[0])),
+            (false, Some(c)) => Some(hits.iter().find(|&&h| h >= c).copied().unwrap_or(hits[0])),
+            (_, None) => Some(hits[0]),
+        };
+        let pos = jump.and_then(|j| hits.iter().position(|&h| h == j)).map_or(0, |p| p + 1);
+        ui.data_mut(|d| d.insert_temp(hits_id, (pos, hits.len())));
+    }
+    if query.trim().is_empty() {
+        ui.data_mut(|d| d.remove::<(usize, usize)>(hits_id));
+    } else if let Some((pos, n)) = ui.data(|d| d.get_temp::<(usize, usize)>(hits_id)) {
+        let text = if n == 0 { tr("kein Treffer").to_owned() } else { format!("{pos}/{n}") };
+        ui.label(RichText::new(text).size(11.5).color(if n == 0 { theme::cue() } else { theme::dim() }));
+    }
+    resp.on_hover_text(tr("Springt zum passenden Titel. Enter: nächster Treffer, ⇧Enter: voriger, Esc: leeren"));
+    ui.data_mut(|d| d.insert_temp(id, query));
+    jump
 }
