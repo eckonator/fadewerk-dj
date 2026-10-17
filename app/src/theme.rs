@@ -221,6 +221,28 @@ pub fn deck_color(deck: usize) -> Color32 {
     if deck == 0 { skin().deck_a } else { skin().deck_b }
 }
 
+/// Farbe einer Tonart nach dem Camelot-Rad: gleiche Zahl gleicher Farbton, Nachbarn ähnlich. Auf hellen
+/// Skins dunkler, damit sie auf dem Grund lesbar bleibt.
+pub fn key_color(key: fw_library::Camelot) -> Color32 {
+    key_hue(key, skin().dark)
+}
+
+/// Dasselbe in den Displays (Wells), die in jedem Skin dunkel sind.
+pub fn key_well_color(key: fw_library::Camelot) -> Color32 {
+    key_hue(key, true)
+}
+
+fn key_hue(key: fw_library::Camelot, on_dark: bool) -> Color32 {
+    let hue = (key.number() as f32 - 1.0) / 12.0;
+    let (sat, val) = if on_dark { (0.5, 0.95) } else { (0.8, 0.55) };
+    egui::ecolor::Hsva::new(hue, sat, val, 1.0).into()
+}
+
+/// Harmonisch passend (Rahmen und „PASST“).
+pub fn key_match() -> Color32 {
+    skin().play
+}
+
 pub fn deck_letter(deck: usize) -> &'static str {
     if deck == 0 { "A" } else { "B" }
 }

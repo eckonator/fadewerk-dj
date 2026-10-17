@@ -9,6 +9,7 @@ use crossbeam_channel::{Receiver, Sender, unbounded};
 use fw_engine::TrackAudio;
 
 use crate::bpm::estimate_bpm;
+use crate::key::{Camelot, estimate_key};
 use crate::decode::decode_file;
 use crate::meta::{Cover, TrackMeta, read_cover, read_meta};
 use crate::scan::{list_dir, walk_audio_progress};
@@ -29,6 +30,10 @@ pub struct Loaded {
     pub bpm: Option<f32>,
     /// `bpm` stammt aus der Tempo-Erkennung, nicht aus dem Tag (dann lohnt es sich, ihn zu merken).
     pub bpm_analyzed: bool,
+    /// Tonart aus dem Tag oder der Erkennung (`None` = unsicher).
+    pub key: Option<Camelot>,
+    /// `key` stammt aus der Erkennung (dann wird es gemerkt, auch ein „unsicher“).
+    pub key_analyzed: bool,
     /// Eingebettetes Cover für den Plattenteller.
     pub cover: Option<Cover>,
 }
@@ -47,9 +52,10 @@ pub enum Response {
     Scan { token: u64, tracks: Vec<PathBuf>, progress: f32, done: bool, limited: bool },
     Loaded(Box<Loaded>),
     Failed { path: PathBuf, deck: Option<usize>, error: String },
-    /// Ergebnis von [`Library::analyze_bpm`]. `analyzed` = aus der Tempo-Erkennung, sonst aus dem Tag.
-    /// `bpm` ist `None`, wenn die Datei nicht lesbar ist oder kein Beat erkennbar war.
-    Bpm { path: PathBuf, bpm: Option<f32>, analyzed: bool },
+    /// Ergebnis von [`Library::analyze`]: BPM und Tonart, je aus dem Tag oder (`*_analyzed`) aus der Erkennung.
+    /// `None`, wenn die Datei nicht lesbar ist, kein Beat erkennbar war bzw. die Tonart unsicher ist.
+    /// `readable` = die Datei ließ sich dekodieren (sonst nichts merken).
+    Analysis { path: PathBuf, bpm: Option<f32>, bpm_analyzed: bool, key: Option<Camelot>, key_analyzed: bool, readable: bool },
     /// Ergebnis von [`Library::request_sketches`], `None` wenn die Datei nicht lesbar ist.
     Sketch { path: PathBuf, sketch: Option<Arc<WaveSketch>> },
 }
@@ -109,7 +115,7 @@ pub struct Library {
     scan_current: Arc<AtomicU64>,
     load_tx: Sender<LoadJob>,
     bpm_tx: Sender<BpmJob>,
-    /// Aufträge älterer Generationen werden übersprungen ([`Library::cancel_bpm`]).
+    /// Aufträge älterer Generationen werden übersprungen ([`Library::cancel_analysis`]).
     bpm_generation: Arc<AtomicU64>,
     sketches: Arc<SketchQueue>,
     /// Ordner des Wellenform-Caches (`None` = nichts auf der Platte merken).
@@ -140,8 +146,9 @@ impl Library {
                         if generation.load(Ordering::Relaxed) != job.generation {
                             continue;
                         }
-                        let (bpm, analyzed) = analyze(&job);
-                        if tx.send(Response::Bpm { path: job.path, bpm, analyzed }).is_err() {
+                        let a = analyze(&job);
+                        let resp = Response::Analysis { path: job.path, bpm: a.bpm, bpm_analyzed: a.bpm_analyzed, key: a.key, key_analyzed: a.key_analyzed, readable: a.readable };
+                        if tx.send(resp).is_err() {
                             break;
                         }
                         wake();
@@ -329,15 +336,15 @@ impl Library {
         self.sketches.ready.notify_one();
     }
 
-    /// Ermittelt die BPM im Hintergrund, Ergebnis als [`Response::Bpm`]. Ohne `force` gilt eine
-    /// BPM-Angabe im Tag, und es wird nur analysiert, wo keine steht.
-    pub fn analyze_bpm(&self, path: PathBuf, force: bool) {
+    /// Ermittelt BPM und Tonart im Hintergrund, Ergebnis als [`Response::Analysis`]. Ohne `force` gelten
+    /// Angaben im Tag, und es wird nur analysiert, was dort fehlt.
+    pub fn analyze(&self, path: PathBuf, force: bool) {
         let generation = self.bpm_generation.load(Ordering::Relaxed);
         let _ = self.bpm_tx.send(BpmJob { generation, path, force });
     }
 
-    /// Verwirft alle wartenden BPM-Aufträge. Gerade laufende Analysen liefern noch ihr Ergebnis.
-    pub fn cancel_bpm(&self) {
+    /// Verwirft alle wartenden Analyse-Aufträge. Gerade laufende Analysen liefern noch ihr Ergebnis.
+    pub fn cancel_analysis(&self) {
         self.bpm_generation.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -357,11 +364,13 @@ fn load(job: &LoadJob) -> anyhow::Result<Loaded> {
     }
     let bpm_analyzed = meta.bpm.is_none();
     let bpm = meta.bpm.or_else(|| estimate_bpm(&audio));
+    let key_analyzed = meta.key.is_none();
+    let key = meta.key.or_else(|| estimate_key(&audio));
     let mut meta = meta;
     meta.duration_secs = audio.duration_secs();
     // Beim Vorhören dreht keine Platte
     let cover = if job.deck != fw_engine::PREVIEW { read_cover(&job.path) } else { None };
-    Ok(Loaded { deck: job.deck, token: job.token, path: job.path.clone(), meta, audio: Arc::new(audio), waveform, sketch, bpm, bpm_analyzed, cover })
+    Ok(Loaded { deck: job.deck, token: job.token, path: job.path.clone(), meta, audio: Arc::new(audio), waveform, sketch, bpm, bpm_analyzed, key, key_analyzed, cover })
 }
 
 /// Skizze aus dem Cache oder neu berechnet (dann gemerkt). Das dekodierte Audio wird gleich wieder freigegeben.
@@ -384,18 +393,33 @@ fn make_sketch(path: &std::path::Path, cache: Option<&std::path::Path>) -> Optio
     }
 }
 
-/// BPM eines Titels: aus dem Tag (ohne `force`) oder aus der Tempo-Erkennung. Liefert (BPM, analysiert).
-fn analyze(job: &BpmJob) -> (Option<f32>, bool) {
-    if !job.force
-        && let Some(bpm) = read_meta(&job.path).ok().and_then(|m| m.bpm)
-    {
-        return (Some(bpm), false);
+struct Analysis {
+    bpm: Option<f32>,
+    bpm_analyzed: bool,
+    key: Option<Camelot>,
+    key_analyzed: bool,
+    readable: bool,
+}
+
+/// BPM und Tonart eines Titels: aus dem Tag (ohne `force`), sonst aus der Erkennung. Dekodiert wird nur,
+/// wenn einer der beiden Werte fehlt, und dann nur einmal für beide.
+fn analyze(job: &BpmJob) -> Analysis {
+    let meta = if job.force { None } else { read_meta(&job.path).ok() };
+    let (tag_bpm, tag_key) = meta.map_or((None, None), |m| (m.bpm, m.key));
+    if let (Some(bpm), Some(key)) = (tag_bpm, tag_key) {
+        return Analysis { bpm: Some(bpm), bpm_analyzed: false, key: Some(key), key_analyzed: false, readable: true };
     }
     match decode_file(&job.path) {
-        Ok(audio) => (estimate_bpm(&audio), true),
+        Ok(audio) => Analysis {
+            bpm: tag_bpm.or_else(|| estimate_bpm(&audio)),
+            bpm_analyzed: tag_bpm.is_none(),
+            key: tag_key.or_else(|| estimate_key(&audio)),
+            key_analyzed: tag_key.is_none(),
+            readable: true,
+        },
         Err(e) => {
-            log::debug!("BPM-Analyse von {}: {e:#}", job.path.display());
-            (None, true)
+            log::debug!("Analyse von {}: {e:#}", job.path.display());
+            Analysis { bpm: tag_bpm, bpm_analyzed: false, key: tag_key, key_analyzed: false, readable: false }
         }
     }
 }

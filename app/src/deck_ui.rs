@@ -52,6 +52,11 @@ pub struct DeckModel<'a> {
     pub title: &'a str,
     pub artist: &'a str,
     pub bpm: Option<f32>,
+    /// Klingende Tonart (mit Pitch verschoben, solange kein Keylock) und die Verschiebung in Halbtönen.
+    pub key: Option<fw_library::Camelot>,
+    pub key_shift: i32,
+    /// Passt harmonisch zum Titel, der gerade auf Sendung ist (Display zeigt „PASST“).
+    pub key_fits: bool,
     pub pitch_pct: f32,
     /// Auto-Sync steuert gerade den Pitch (SYNC-Taste leuchtet).
     pub auto_synced: bool,
@@ -223,7 +228,33 @@ fn header(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, out: &mut Vec<De
     let bpm = m.bpm.map(|b| format!("{:5.1}", b * (1.0 + m.pitch_pct / 100.0))).unwrap_or_else(|| "  -.-".into());
     hw::lcd_text(&p, pos2(lcd.right() - 7.0, lcd.top() + 6.0), Align2::RIGHT_TOP, &bpm, 17.0 * k(), color);
     p.text(pos2(lcd.left() + 6.0, lcd.bottom() - 4.0), Align2::LEFT_BOTTOM, "BPM", fonts::bold(9.0 * k()), theme::well_ink().gamma_multiply(0.55));
-    let mut text_right = lcd.left() - 10.0;
+    // Tonart als zweites Display; „PASST“ in Grün, wenn sie zum Titel auf Sendung passt
+    let klcd = Rect::from_min_max(pos2(lcd.left() - 62.0 * k(), rect.top()), pos2(lcd.left() - 8.0, rect.bottom()));
+    hw::well(&p, klcd, 4.0);
+    if let Some(key) = m.key.filter(|_| m.has_track) {
+        p.text(pos2(klcd.right() - 7.0, klcd.top() + 4.0), Align2::RIGHT_TOP, key.label(), fonts::bold(18.0 * k()), theme::key_well_color(key));
+        // Durch Pitch verschoben: kleines Dreieck nach oben bzw. unten neben dem Wert
+        if m.key_shift != 0 {
+            let c = pos2(klcd.right() - 7.0 - 34.0 * k(), klcd.top() + 13.0 * k());
+            let (w, h) = (3.5 * k(), 3.0 * k() * m.key_shift.signum() as f32);
+            let col = theme::well_ink().gamma_multiply(0.7);
+            p.add(egui::Shape::convex_polygon(vec![c + vec2(-w, h), c + vec2(w, h), c + vec2(0.0, -h)], col, Stroke::NONE));
+        }
+    }
+    let (klabel, kcol) = if m.key_fits { (tr("PASST"), theme::key_match()) } else { (tr("TONART"), theme::well_ink().gamma_multiply(0.55)) };
+    p.text(pos2(klcd.left() + 6.0, klcd.bottom() - 4.0), Align2::LEFT_BOTTOM, klabel, fonts::bold(8.0 * k()), kcol);
+    let key_tip = match m.key.filter(|_| m.has_track) {
+        None if m.has_track => tr("Tonart unbekannt (im Tag steht keine, die Analyse läuft noch oder war unsicher)").to_owned(),
+        None => String::new(),
+        Some(key) if m.key_shift != 0 => {
+            trf("Klingt in {}, original {} (Pitch verschiebt die Tonhöhe um {} Halbton)", &[&key.label(), &key.shifted(-m.key_shift).label(), &format!("{:+}", m.key_shift)])
+        }
+        Some(key) => trf("Tonart {} (Camelot)", &[&key.label()]),
+    };
+    if !key_tip.is_empty() {
+        ui.interact(klcd, ui.id().with("key_lcd"), Sense::hover()).on_hover_text(key_tip);
+    }
+    let mut text_right = klcd.left() - 10.0;
 
     if m.on_air {
         let badge = Rect::from_min_size(pos2(text_right - 56.0 * k(), rect.top() + 3.0), vec2(54.0, 17.0) * k());

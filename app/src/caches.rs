@@ -12,6 +12,7 @@ use crate::settings::config_dir;
 const TAGS: &str = "tags.json";
 const FOLDERS: &str = "ordner.json";
 const BPM: &str = "bpm.json";
+const KEYS: &str = "tonart.json";
 pub const WAVES: &str = "wellenformen";
 
 /// Belegter Platz der Caches in Bytes.
@@ -20,6 +21,7 @@ pub struct CacheSizes {
     pub tags: u64,
     pub folders: u64,
     pub waves: u64,
+    /// Ermittelte BPM und Tonarten.
     pub bpm: u64,
 }
 
@@ -40,7 +42,7 @@ pub fn measure() -> Receiver<CacheSizes> {
             tags: size_of(&dir.join(TAGS)),
             folders: size_of(&dir.join(FOLDERS)),
             waves: size_of(&dir.join(WAVES)),
-            bpm: size_of(&dir.join(BPM)),
+            bpm: size_of(&dir.join(BPM)) + size_of(&dir.join(KEYS)),
         });
     });
     if let Err(e) = spawned {
@@ -49,13 +51,14 @@ pub fn measure() -> Receiver<CacheSizes> {
     rx
 }
 
-/// Löscht die Cache-Dateien (mit `bpm` auch die ermittelten BPM). Der Wellenform-Ordner wird im
+/// Löscht die Cache-Dateien (mit `bpm` auch die ermittelten BPM und Tonarten). Der Wellenform-Ordner wird im
 /// Hintergrund geleert. Die Caches im Speicher leert der Aufrufer.
 pub fn clear(bpm: bool) {
     let Some(dir) = config_dir() else { return };
     let mut files = vec![TAGS, FOLDERS];
     if bpm {
         files.push(BPM);
+        files.push(KEYS);
     }
     for name in files {
         remove(&dir.join(name));

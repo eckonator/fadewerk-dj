@@ -6,7 +6,7 @@
 
 mod app;
 mod audio;
-mod bpm_cache;
+mod analysis_cache;
 mod caches;
 mod crossdrag;
 mod browser;

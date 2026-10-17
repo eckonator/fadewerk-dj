@@ -35,17 +35,23 @@ written in Rust. Click a folder and start playing: no database, no library impor
   with the neighbouring track from the other playlist.
 - **No import**: click a folder and all its tracks are there instantly, including subfolders
   (switchable per folder; off by default for drives and the home folder). Refresh with 🔄, ⌘R or F5.
-  BPM detected by the tempo analysis is remembered; “Analyse BPM” (tracks) and “Detect missing BPM”
-  (folders) run it in the background.
+  BPM and musical key found by the analysis are remembered; “Analyze” (above the track list and in the
+  track menu) and “Detect missing BPM and keys” (folders) run it in the background, decoding each track once for both.
   Quick search across title, artist, album and path; the advanced search (magnifier, ⇧⌘F) filters
-  by title, artist, album, file name, folder, genre, year range and BPM range, shown as removable filter chips; duplicate copies of a track are hidden while searching (can be turned off). Tags, BPM and waveform are analysed in the background.
+  by title, artist, album, file name, folder, genre, year range and BPM range, shown as removable filter chips; “Whole words only” makes “Cro” find “Cro & Bausa” but not “Crosby”; duplicate copies of a track are hidden while searching (can be turned off). Tags, BPM and waveform are analysed in the background.
   Select several tracks or folders (⌘/Ctrl-click, Shift-click) and drag them into a playlist, or use
   the right-click menu: append, play next, shuffle in, spread across A and B, show in Finder.
   Choose the track list columns (artist, album, genre, year, comment, subfolder, file name, format,
-  BPM, time) and drag their widths; click a column header to sort ascending or descending. All of
+  BPM, key, time) and drag their widths; click a column header to sort ascending or descending. All of
   this is remembered.
   Folders show as a tree or, like a column browser, as columns side by side (two buttons next to
   “FOLDERS”); below the decks the columns take 40 % of the width.
+- **Musical key in Camelot notation** (8A, 9B …): taken from the tag (any common notation, e.g. “Am”,
+  “F#m”, “8A”, Open Key) or detected by FadeWerk DJ itself, never written into your files. Each deck shows
+  it next to the BPM, coloured like the Camelot wheel, with **MATCH** when it fits the track on air.
+  Playlist rows carry a key badge, and tracks that mix harmonically with the track on air are framed in green
+  (same number, or ±1 with the same letter). Without keylock, pitch shifts the key; the deck then shows the
+  key you actually hear (a small arrow marks it). Uncertain results (rap, drums only) show “–” rather than a guess.
 - **Fast with large collections and network drives**: tags that were read once and the track lists
   of slow folders are remembered (no database: the folder is still read live in the background and
   its result wins, changed files are re-read). Tags are read with four threads. The caches can be
@@ -72,7 +78,8 @@ written in Rust. Click a folder and start playing: no database, no library impor
   The frame of a playing deck flashes red in the last 15 seconds of its track.
 - **Pre-listening** per deck, in the playlists and right in the folder browser. Headphones via
   split output (left master, right headphones), on outputs 3/4 of a multichannel interface,
-  or on a separate second audio device.
+  or on a separate second audio device. A **test tone** next to each device under Settings → Audio checks
+  that the right output is chosen.
 - **Mixer** with LED meters (A, main, B; on wider windows the main meter adds a spectrum of up to
   ten octave bands between left and right), channel faders, master and headphone mix, and a
   **3-band EQ per deck** (isolator, −26 to +6 dB) with kill buttons. Below the crossfader, tabs for
@@ -94,6 +101,9 @@ written in Rust. Click a folder and start playing: no database, no library impor
   playlists to share the height, and zoom with ⌘/Ctrl +, − and 0 (70 to 150 %). **Full screen** via the button
   in the folder browser, F11 or ⌃⌘F on macOS. On wide monitors, the button next to it moves the
   folder browser from below the decks to their right (folder tree above the track list).
+  For two monitors, **detach the folder browser into a window of its own**: its position and size are
+  remembered, folders sit above or to the left of the tracks, and tracks can be dragged from there onto
+  the playlists and decks in the main window (not on Wayland). Closing the window docks it again.
   The version number sits next to the MIXER heading; clicking it opens “About”.
 - **Light on resources**: when nothing is playing, the interface only redraws on input. A
   **lightweight display** for older or slower computers drops shadows, gradients, glow and the
@@ -102,6 +112,10 @@ written in Rust. Click a folder and start playing: no database, no library impor
   minimised or covered by another app. When one playlist runs out, the other deck plays on alone.
 - **No sleep while playing**: display and computer stay awake as long as a deck or pre-listen is
   playing (can be switched off).
+- **Quiet while you play** (optional, Settings → Audio): mutes system alert sounds while FadeWerk DJ is
+  running, and on Windows and Linux other programs too (as in the volume mixer). On macOS, the master
+  device can instead be used exclusively, so no other program plays on it. Everything comes back when you
+  quit, even after a crash (on the next start).
 - User interface in **English and German**.
 - **No telemetry, no account.** The only network request is an optional check for new versions on
   GitHub. FadeWerk DJ asks once before enabling it (switch it on or off under *Settings → General*);
@@ -208,11 +222,12 @@ Code comments are in German; issues and contributions in English are welcome.
 | `FW_SELECT=1` | Selects tracks 2 to 4 in the folder browser. |
 | `FW_HISTORY=1` | Creates two example days in the history (one with a missing file) and opens the newer one. |
 | `FW_TAGS=1` | Opens “Track info & tags” for the first track. |
-| `FW_BPM=1` | Detects the missing BPM of the start folder. |
+| `FW_BPM=1` | Analyzes the missing BPM and keys of the start folder. |
 | `FW_SEARCH="genre=rock,year=1980-1989"` | Opens the advanced search with these fields. |
 | `FW_COLUMNS=artist,album,genre,…` | Shows these columns in the track list. |
 | `FW_SORT=artist` / `FW_SORT=bpm:desc` | Sorts the track list by this column. |
-| `FW_BROWSER=rechts`, `FW_FOLDERS=spalten` | Folder browser to the right of the decks; folders as columns. |
+| `FW_BROWSER=rechts\|fenster`, `FW_FOLDERS=spalten` | Folder browser to the right of the decks or in its own window; folders as columns. |
+| `FW_QUIET=1` | Lets a debug build mute other sounds (normally only installed builds touch the system). |
 | `FW_POINTER=x,y` | Moves the mouse there (points); `x,y,1` clicks, `x,y,2` right-clicks, `x1,y1,x2,y2` drags. |
 | `FW_SETTINGS=allgemein\|audio\|effekte\|sprache\|aussehen\|ueber` | Opens the settings window. |
 | `FW_TAB=pads\|kopfhoerer\|fade\|motor\|zu` | Opens this tab below the crossfader (`zu` = all closed). |
@@ -224,7 +239,9 @@ With these switches FadeWerk DJ saves nothing (`FW_PERSIST=1` forces saving, bes
 ## Roadmap
 
 - Cache for the deck waveform, so it shows up right away (the small playlist waveforms are cached already)
-- Beat grid with phase, hot cues, key detection, keylock
+- Keylock (tempo changes without changing the key; next step)
+- Beat grid with phase, hot cues
+- Suggesting the next track by key and BPM
 - MIDI controllers (jog wheels as turntables)
 - Mix recording
 - Importing playlists from other DJ software

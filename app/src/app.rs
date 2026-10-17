@@ -8,7 +8,7 @@ use std::sync::Arc;
 use eframe::egui::{self, Align2, CornerRadius, Frame, Margin, Rect, RichText, Sense, Stroke, pos2, vec2};
 use egui_extras::{Size, StripBuilder};
 use fw_engine::{AutoFade, Command, Controller, Curve, HeadMode, Motor, PREVIEW, TrackAudio, db_to_gain, eq};
-use fw_library::{Library, Response, TrackMeta, WaveSketch, Waveform};
+use fw_library::{Camelot, Library, Response, TrackMeta, WaveSketch, Waveform};
 
 use crate::audio::{self, AudioOut, HeadOut};
 use crate::fade_preview;
@@ -200,7 +200,12 @@ pub struct FadeWerkDjApp {
     meta_urgent: HashSet<PathBuf>,
     bpms: HashMap<PathBuf, f32>,
     /// Gemerkte BPM aus der Tempo-Erkennung (`bpm.json`).
-    bpm_cache: crate::bpm_cache::BpmCache,
+    bpm_cache: crate::analysis_cache::BpmCache,
+    /// Ermittelte Tonarten, `None` = Analyse war unsicher (nicht erneut analysieren). Tonarten aus Tags stehen
+    /// in `metas`; [`Self::key_of`] fragt beide ab.
+    keys: HashMap<PathBuf, Option<Camelot>>,
+    /// Gemerkte Tonarten aus der Erkennung (`tonart.json`).
+    key_cache: crate::analysis_cache::KeyCache,
     /// Gemerkte Tags (große Sammlungen, Netzlaufwerke): sofort gezeigt, im Hintergrund geprüft.
     tag_cache: crate::tag_cache::TagCache,
     /// Gemerkte Titellisten langsamer Ordner, gezeigt während der Live-Suche.
@@ -215,6 +220,7 @@ pub struct FadeWerkDjApp {
     bpm_total: usize,
     /// Ergebnis der Hintergrundprüfung des BPM-Caches beim Start (welche Dateien es noch gibt).
     bpm_check: Option<std::sync::mpsc::Receiver<Vec<(PathBuf, bool)>>>,
+    key_check: Option<std::sync::mpsc::Receiver<Vec<(PathBuf, bool)>>>,
     /// Kleine Wellenformen für die Playlist-Zeilen (`None` = Datei nicht lesbar).
     sketches: HashMap<PathBuf, Option<Arc<WaveSketch>>>,
     sketch_requested: HashSet<PathBuf>,
@@ -356,6 +362,8 @@ impl FadeWerkDjApp {
             meta_requested: HashSet::new(),
             meta_urgent: HashSet::new(),
             bpms: HashMap::new(),
+            keys: HashMap::new(),
+            key_cache: Default::default(),
             bpm_cache: Default::default(),
             tag_cache: Default::default(),
             folder_cache: Default::default(),
@@ -369,6 +377,7 @@ impl FadeWerkDjApp {
             bpm_pending: HashSet::new(),
             bpm_total: 0,
             bpm_check: None,
+            key_check: None,
             fade_track: None,
             split_sent: None,
             autofade: { let mut a = AutoFade::default(); a.enabled = settings.auto_fade; a.fade_secs = settings.fade_secs; a },
@@ -457,9 +466,12 @@ impl FadeWerkDjApp {
             app.history = History::load();
         }
         if app.persist {
-            app.bpm_cache = crate::bpm_cache::BpmCache::load();
-            app.bpms.extend(app.bpm_cache.all().map(|(p, b)| (p.clone(), b)));
+            app.bpm_cache = crate::analysis_cache::BpmCache::load();
+            app.bpms.extend(app.bpm_cache.all().map(|(p, b)| (p.clone(), b.bpm)));
             app.bpm_check = Some(app.bpm_cache.start_check());
+            app.key_cache = crate::analysis_cache::KeyCache::load();
+            app.keys.extend(app.key_cache.all().map(|(p, k)| (p.clone(), k.camelot())));
+            app.key_check = Some(app.key_cache.start_check());
             app.tag_cache = crate::tag_cache::TagCache::load();
             app.folder_cache = crate::folder_cache::FolderCache::load();
             log::info!("Tag-Cache: {} Titel", app.tag_cache.len());
@@ -897,6 +909,8 @@ impl FadeWerkDjApp {
                 if bpm {
                     self.bpm_cache = Default::default();
                     self.bpms.clear();
+                    self.key_cache = Default::default();
+                    self.keys.clear();
                     self.data_gen += 1;
                 }
                 if self.persist {
@@ -1144,18 +1158,62 @@ impl FadeWerkDjApp {
         }
     }
 
-    /// Gemerkte BPM für einen Titel prüfen: geänderte Datei → verwerfen, umgezogene Datei → übernehmen.
+    /// Gemerkte BPM und Tonart für einen Titel prüfen: geänderte Datei → verwerfen, umgezogene Datei → übernehmen.
     fn resolve_bpm(&mut self, path: &Path, stamp: Option<fw_library::Stamp>) {
+        use crate::analysis_cache::Resolved;
         self.data_gen += 1;
         match self.bpm_cache.resolve_stamped(path, stamp) {
-            crate::bpm_cache::Resolved::Bpm(b) => {
-                self.bpms.insert(path.to_path_buf(), b);
+            Resolved::Value(b) => {
+                self.bpms.insert(path.to_path_buf(), b.bpm);
             }
-            crate::bpm_cache::Resolved::Stale => {
+            Resolved::Stale => {
                 self.bpms.remove(path);
             }
-            crate::bpm_cache::Resolved::Unknown => {}
+            Resolved::Unknown => {}
         }
+        match self.key_cache.resolve_stamped(path, stamp) {
+            Resolved::Value(k) => {
+                self.keys.insert(path.to_path_buf(), k.camelot());
+            }
+            Resolved::Stale => {
+                self.keys.remove(path);
+            }
+            Resolved::Unknown => {}
+        }
+    }
+
+    /// Klingende Tonart eines Players und ihre Verschiebung in Halbtönen: ohne Keylock hebt bzw. senkt Pitch die
+    /// Tonhöhe mit (ab gut ±3 % ein Halbton).
+    fn deck_key(&self, d: usize) -> (Option<Camelot>, i32) {
+        let v = &self.decks[d];
+        let Some(path) = v.path.as_deref().filter(|_| v.loaded_id != 0) else { return (None, 0) };
+        let semis = (12.0 * (1.0 + v.pitch_pct / 100.0).max(0.01).log2()).round() as i32;
+        (self.key_of(path).map(|k| k.shifted(semis)), semis)
+    }
+
+    /// Player, nach dessen klingender Tonart sich „passt“ richtet: der auf Sendung; sind beide zu hören,
+    /// der, zu dem der Crossfader neigt.
+    fn key_reference(&self, deck_keys: &[(Option<Camelot>, i32); 2]) -> Option<(usize, Camelot)> {
+        let d = match (self.on_air(0), self.on_air(1)) {
+            (true, true) => usize::from(self.crossfader > 0.0),
+            (true, false) => 0,
+            (false, true) => 1,
+            (false, false) => return None,
+        };
+        Some((d, deck_keys[d].0?))
+    }
+
+    /// Tonart eines Titels: aus dem Tag, sonst aus der Erkennung.
+    fn key_of(&self, path: &Path) -> Option<Camelot> {
+        self.metas.get(path).and_then(|m| m.key).or_else(|| self.keys.get(path).copied().flatten())
+    }
+
+    /// Fehlt dem Titel noch BPM oder Tonart (dann lohnt „Analysieren“ ohne `force`)?
+    fn needs_analysis(&self, path: &Path) -> bool {
+        let tag = self.metas.get(path);
+        let bpm_known = self.bpms.contains_key(path) || tag.is_some_and(|m| m.bpm.is_some());
+        let key_known = self.keys.contains_key(path) || tag.is_some_and(|m| m.key.is_some());
+        !(bpm_known && key_known)
     }
 
     fn token(&mut self) -> u64 {
@@ -1464,16 +1522,23 @@ impl FadeWerkDjApp {
                     self.metas.insert(path, meta);
                 }
                 Response::MetaValid { path, stamp } => self.resolve_bpm(&path, Some(stamp)),
-                Response::Bpm { path, bpm, analyzed } => {
+                Response::Analysis { path, bpm, bpm_analyzed, key, key_analyzed, readable } => {
                     self.bpm_pending.remove(&path);
                     if self.bpm_pending.is_empty() {
                         self.bpm_total = 0;
                     }
                     if let Some(bpm) = bpm {
-                        if analyzed {
-                            self.bpm_cache.insert(&path, bpm);
+                        if bpm_analyzed {
+                            self.bpm_cache.insert(&path, crate::analysis_cache::Bpm { bpm });
                         }
-                        self.bpms.insert(path, bpm);
+                        self.bpms.insert(path.clone(), bpm);
+                    }
+                    // Auch „unsicher“ merken, damit „Analysieren“ den Titel nicht jedes Mal wieder dekodiert
+                    if readable && (key_analyzed || key.is_some()) {
+                        if key_analyzed {
+                            self.key_cache.insert(&path, crate::analysis_cache::Key::new(key));
+                        }
+                        self.keys.insert(path, key);
                     }
                 }
                 Response::Sketch { path, sketch } => {
@@ -1498,9 +1563,13 @@ impl FadeWerkDjApp {
                     if let Some(bpm) = l.bpm {
                         self.bpms.insert(l.path.clone(), bpm);
                         if l.bpm_analyzed {
-                            self.bpm_cache.insert(&l.path, bpm);
+                            self.bpm_cache.insert(&l.path, crate::analysis_cache::Bpm { bpm });
                         }
                     }
+                    if l.key_analyzed {
+                        self.key_cache.insert(&l.path, crate::analysis_cache::Key::new(l.key));
+                    }
+                    self.keys.insert(l.path.clone(), l.key);
                     if l.deck == PREVIEW {
                         if self.preview.as_ref().is_some_and(|p| p.token == l.token) {
                             let start = l.audio.duration_secs() * 0.3;
@@ -2157,7 +2226,7 @@ impl FadeWerkDjApp {
             PlaylistAction::EditTags(p) => self.browser_action(BrowserAction::EditTags(p), now),
             // Wie Ziehen ans Ende der anderen Playlist
             PlaylistAction::MoveToOther(i) => self.playlist_action(1 - d, PlaylistAction::Drop { item: DragItem::Row { list: d, index: i }, before: usize::MAX }, now),
-            PlaylistAction::AnalyzeBpm(p) => self.browser_action(BrowserAction::AnalyzeBpm { paths: vec![p], force: true }, now),
+            PlaylistAction::Analyze(p) => self.browser_action(BrowserAction::Analyze { paths: vec![p], force: true }, now),
             PlaylistAction::Drop { item, before } => match item {
                 DragItem::Files(paths) => {
                     let at = before.min(self.playlists[d].entries.len());
@@ -2320,21 +2389,21 @@ impl FadeWerkDjApp {
             BrowserAction::PreviewSeek(s) => self.ctl.send(Command::Seek { deck: PREVIEW, secs: s }),
             BrowserAction::NeedMeta(p) => self.request_meta(p),
             BrowserAction::ShowMeta(p) => self.request_meta_now(p),
-            BrowserAction::AnalyzeBpm { paths, force } => {
+            BrowserAction::Analyze { paths, force } => {
                 for p in paths {
-                    // Vielleicht nur umgezogen (Ordner umbenannt): dann ist die BPM schon bekannt
+                    // Vielleicht nur umgezogen (Ordner umbenannt): dann sind BPM und Tonart schon bekannt
                     if !force {
                         self.resolve_bpm(&p, fw_library::file_stamp(&p));
                     }
-                    // Ohne `force` nur Titel ohne bekannte BPM
-                    if (force || !self.bpms.contains_key(&p)) && self.bpm_pending.insert(p.clone()) {
+                    // Ohne `force` nur Titel, denen BPM oder Tonart fehlt
+                    if (force || self.needs_analysis(&p)) && self.bpm_pending.insert(p.clone()) {
                         self.bpm_total += 1;
-                        self.lib.analyze_bpm(p, force);
+                        self.lib.analyze(p, force);
                     }
                 }
             }
             BrowserAction::StopBpm => {
-                self.lib.cancel_bpm();
+                self.lib.cancel_analysis();
                 self.bpm_pending.clear();
                 self.bpm_total = 0;
             }
@@ -2447,6 +2516,7 @@ impl eframe::App for FadeWerkDjApp {
             self.save_session_if_changed();
             if self.persist {
                 self.bpm_cache.save_if_dirty();
+                self.key_cache.save_if_dirty();
                 self.tag_cache.save_if_dirty(false);
                 self.folder_cache.save_if_dirty();
                 self.history.save_dirty();
@@ -2459,6 +2529,15 @@ impl eframe::App for FadeWerkDjApp {
             let removed = self.bpm_cache.apply_check(results);
             if removed > 0 {
                 log::info!("BPM-Cache: {removed} Einträge ohne Datei entfernt");
+            }
+        }
+        if let Some(rx) = &self.key_check
+            && let Ok(results) = rx.try_recv()
+        {
+            self.key_check = None;
+            let removed = self.key_cache.apply_check(results);
+            if removed > 0 {
+                log::info!("Tonart-Cache: {removed} Einträge ohne Datei entfernt");
             }
         }
         self.ctl.collect_garbage();
@@ -2513,6 +2592,7 @@ impl eframe::App for FadeWerkDjApp {
         let bctx = BrowserCtx {
             metas: &self.metas,
             bpms: &self.bpms,
+            keys: &self.keys,
             bpm_progress: (self.bpm_total > 0).then(|| (self.bpm_total - self.bpm_pending.len(), self.bpm_total)),
             preview: self.preview.as_ref().filter(|p| p.clip.is_none()).map(|p| p.path.as_path()),
             preview_pos: preview_st.position_secs(),
@@ -2667,6 +2747,8 @@ impl eframe::App for FadeWerkDjApp {
                 self.decks[d].smooth_position(st.position_secs(), st.rate() as f64, now, dt as f64).clamp(0.0, duration.max(0.0))
             })
             .collect();
+        let deck_keys = [self.deck_key(0), self.deck_key(1)];
+        let key_ref = self.key_reference(&deck_keys);
         let decks_models: Vec<DeckModel<'_>> = (0..2)
             .map(|d| {
                 let v = &self.decks[d];
@@ -2694,6 +2776,9 @@ impl eframe::App for FadeWerkDjApp {
                     loop_beats: v.loop_beats,
                     loop_range: v.loop_range,
                     on_air: self.on_air(d),
+                    key: deck_keys[d].0,
+                    key_shift: deck_keys[d].1,
+                    key_fits: key_ref.is_some_and(|(r, rk)| r != d && deck_keys[d].0.is_some_and(|k| k.compatible(rk))),
                     scratching: v.scratching,
                     platter: self.settings.platters,
                 }
@@ -2729,6 +2814,8 @@ impl eframe::App for FadeWerkDjApp {
             auto_sync: self.auto_sync,
         };
         let playlists = &self.playlists;
+        let keys_map = &self.keys;
+        let key_ref_track = key_ref.and_then(|(r, k)| Some((k, self.decks[r].path.as_deref()?)));
         let metas = &self.metas;
         let bpms = &self.bpms;
         let sketches = self.fadewerk.then_some(&self.sketches);
@@ -2795,7 +2882,8 @@ impl eframe::App for FadeWerkDjApp {
                                 split_bounds[d].1 = ui.max_rect().top();
                                 panel_frame(ui).show(ui, |ui| {
                                     ui.set_min_size(ui.available_size());
-                                    playlist_ui::show(ui, d, &playlists[d], has[d], playing[d], preview_path, metas, bpms, sketches, &editor_audio, &mut pl_actions[d]);
+                                    let info = playlist_ui::TrackInfo { metas, bpms, keys: keys_map, reference: key_ref_track };
+                                    playlist_ui::show(ui, d, &playlists[d], has[d], playing[d], preview_path, &info, sketches, &editor_audio, &mut pl_actions[d]);
                                 });
                             });
                         });
@@ -3056,6 +3144,7 @@ impl Drop for FadeWerkDjApp {
         self.save_session_if_changed();
         if self.persist {
             self.bpm_cache.save_if_dirty();
+            self.key_cache.save_if_dirty();
             self.tag_cache.save_if_dirty(true);
             self.folder_cache.save_if_dirty();
             self.history.save_dirty();

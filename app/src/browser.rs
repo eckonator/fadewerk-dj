@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui::{self, Button, CursorIcon, Key, RichText, Sense, vec2};
 use egui_extras::{Column, TableBuilder};
-use fw_library::{SCAN_LIMIT, TrackMeta, is_system_dir, list_dir};
+use fw_library::{Camelot, SCAN_LIMIT, TrackMeta, is_system_dir, list_dir};
 
 use crate::deck_ui::fmt_time;
 use crate::history::{Entry, ExportFormat, History};
@@ -50,9 +50,9 @@ pub enum BrowserAction {
     TrackSort(Option<(String, bool)>),
     /// Laufende Suche abbrechen.
     StopScan,
-    /// BPM im Hintergrund ermitteln. Ohne `force` nur für Titel ohne bekannte BPM (Tag oder gemerkt).
-    AnalyzeBpm { paths: Vec<PathBuf>, force: bool },
-    /// Wartende BPM-Analysen verwerfen.
+    /// BPM und Tonart im Hintergrund ermitteln. Ohne `force` nur für Titel, denen eines davon fehlt (Tag oder gemerkt).
+    Analyze { paths: Vec<PathBuf>, force: bool },
+    /// Wartende Analysen verwerfen.
     StopBpm,
     /// Gemerkte Einstellungen „Mit Unterordnern“ je Ordner (nur Abweichungen vom Standard).
     FolderRecursion(Vec<(PathBuf, bool)>),
@@ -96,11 +96,12 @@ pub enum TrackColumn {
     FileName,
     Format,
     Bpm,
+    Key,
     Time,
 }
 
 impl TrackColumn {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Artist,
         Self::Album,
         Self::Genre,
@@ -110,9 +111,10 @@ impl TrackColumn {
         Self::FileName,
         Self::Format,
         Self::Bpm,
+        Self::Key,
         Self::Time,
     ];
-    pub const DEFAULT: [Self; 4] = [Self::Artist, Self::Subfolder, Self::Bpm, Self::Time];
+    pub const DEFAULT: [Self; 5] = [Self::Artist, Self::Subfolder, Self::Bpm, Self::Key, Self::Time];
 
     /// Schlüssel in den Einstellungen (bleibt stabil, auch wenn sich die Anzeige ändert).
     pub fn key(self) -> &'static str {
@@ -127,6 +129,7 @@ impl TrackColumn {
             Self::FileName => "file",
             Self::Format => "format",
             Self::Bpm => "bpm",
+            Self::Key => "key",
             Self::Time => "time",
         }
     }
@@ -148,6 +151,7 @@ impl TrackColumn {
             Self::FileName => "Dateiname",
             Self::Format => "Format",
             Self::Bpm => "BPM",
+            Self::Key => "Tonart",
             Self::Time => "Zeit",
         }
     }
@@ -163,7 +167,7 @@ impl TrackColumn {
             Self::Artist | Self::Album | Self::Comment => 180.0,
             Self::Genre => 110.0,
             Self::Subfolder | Self::FileName => 200.0,
-            Self::Year | Self::Format | Self::Bpm => 52.0,
+            Self::Year | Self::Format | Self::Bpm | Self::Key => 52.0,
             Self::Time => 48.0,
         }
     }
@@ -171,7 +175,7 @@ impl TrackColumn {
     fn min_width(self) -> f32 {
         match self {
             Self::Title => 120.0,
-            Self::Year | Self::Format | Self::Bpm | Self::Time => 36.0,
+            Self::Year | Self::Format | Self::Bpm | Self::Key | Self::Time => 36.0,
             _ => 60.0,
         }
     }
@@ -180,7 +184,9 @@ impl TrackColumn {
 pub struct BrowserCtx<'a> {
     pub metas: &'a HashMap<PathBuf, TrackMeta>,
     pub bpms: &'a HashMap<PathBuf, f32>,
-    /// Laufende BPM-Analyse: (fertig, gesamt).
+    /// Ermittelte Tonarten (`None` = unsicher); Tonarten aus Tags stehen in `metas`.
+    pub keys: &'a HashMap<PathBuf, Option<Camelot>>,
+    /// Laufende Analyse: (fertig, gesamt).
     pub bpm_progress: Option<(usize, usize)>,
     pub preview: Option<&'a Path>,
     pub preview_pos: f64,
@@ -219,7 +225,7 @@ struct ListData {
     has_subfolders: bool,
     hidden_dups: usize,
     /// Titel der Liste ohne bekannte BPM.
-    missing_bpm: usize,
+    missing_analysis: usize,
 }
 
 struct ListCache {
@@ -269,8 +275,8 @@ enum FolderOp {
     Add(usize),
     Shuffled(usize),
     Distribute,
-    /// BPM aller Titel ohne bekannte BPM ermitteln.
-    AnalyzeBpm,
+    /// BPM und Tonart aller Titel ermitteln, denen eines davon fehlt.
+    Analyze,
 }
 
 /// Breite des Ordnerbaums ohne gespeicherten Wert und Grenzen beim Ziehen.
@@ -945,7 +951,7 @@ impl Browser {
         }
         if self.demo_bpm && !self.scanning && !self.tracks.is_empty() {
             self.demo_bpm = false;
-            self.queued = Some(FolderOp::AnalyzeBpm);
+            self.queued = Some(FolderOp::Analyze);
         }
         // Vorgemerkte Ordner-Aktion ausführen, sobald alle Titel gefunden sind
         if !self.scanning
@@ -957,7 +963,7 @@ impl Browser {
                 FolderOp::Add(list) => BrowserAction::Add { list, paths },
                 FolderOp::Shuffled(list) => BrowserAction::AddShuffled { list, paths },
                 FolderOp::Distribute => BrowserAction::Distribute(paths),
-                FolderOp::AnalyzeBpm => BrowserAction::AnalyzeBpm { paths, force: false },
+                FolderOp::Analyze => BrowserAction::Analyze { paths, force: false },
             });
         }
 
@@ -1481,7 +1487,7 @@ impl Browser {
                 .iter()
                 .map(|r| {
                     let m = meta_for(ctx.metas, &r.path, entry_of(r));
-                    sort_key(col, &m, &r.path, dirs, ctx.bpms.get(&r.path).copied())
+                    sort_key(col, &m, &r.path, dirs, ctx.bpms.get(&r.path).copied(), key_of(ctx.metas, ctx.keys, &r.path))
                 })
                 .collect();
             let order = sort_order(&keys, desc);
@@ -1500,7 +1506,7 @@ impl Browser {
             total_secs: rows.iter().filter_map(duration).sum(),
             duration_unknown: rows.iter().any(|r| duration(r).is_none()),
             has_subfolders: hist_day.is_none() && (dirs.len() > 1 || self.tracks.iter().any(|p| p.parent() != Some(dirs[0].as_path()))),
-            missing_bpm: paths.iter().filter(|p| !bpm_known(ctx, p)).count(),
+            missing_analysis: paths.iter().filter(|p| !analyzed(ctx, p)).count(),
             hidden_dups,
             paths,
             rows,
@@ -1657,11 +1663,11 @@ impl Browser {
             });
             self.head_widths.0 = left.response.rect.width();
             if !wrap_tools {
-                tools_w = list_tools(ui, ctx, row_paths, data.missing_bpm, &sel_paths, hist_day.map(|d| d.date.as_str()), out);
+                tools_w = list_tools(ui, ctx, row_paths, data.missing_analysis, &sel_paths, hist_day.map(|d| d.date.as_str()), out);
             }
         });
         if wrap_tools {
-            ui.horizontal(|ui| tools_w = list_tools(ui, ctx, row_paths, data.missing_bpm, &sel_paths, hist_day.map(|d| d.date.as_str()), out));
+            ui.horizontal(|ui| tools_w = list_tools(ui, ctx, row_paths, data.missing_analysis, &sel_paths, hist_day.map(|d| d.date.as_str()), out));
         }
         self.head_widths.1 = tools_w;
 
@@ -1855,6 +1861,11 @@ impl Browser {
                                         let bpm = ctx.bpms.get(path).copied().or(m.bpm);
                                         number_cell(&bpm.map(|b| format!("{b:.0}")).unwrap_or_else(|| "–".into()))
                                     }
+                                    // Farbe nach dem Camelot-Rad, wie in Playlist und Player
+                                    TrackColumn::Key => match key_of(ctx.metas, ctx.keys, path) {
+                                        Some(k) => text_cell(&k.label(), 12.5, theme::key_color(k)),
+                                        None => number_cell("–"),
+                                    },
                                     TrackColumn::Time => {
                                         // „…“ = Tags werden noch gelesen; fehlende Dateien ohne bekannte Länge zeigen „–“
                                         let t = if m.duration_secs > 0.0 { fmt_time(m.duration_secs) } else if gone { "–".into() } else { "…".into() };
@@ -2000,7 +2011,7 @@ enum SortKey {
     Number(f64),
 }
 
-fn sort_key(col: TrackColumn, m: &TrackMeta, path: &Path, dirs: &[PathBuf], bpm: Option<f32>) -> Option<SortKey> {
+fn sort_key(col: TrackColumn, m: &TrackMeta, path: &Path, dirs: &[PathBuf], bpm: Option<f32>, key: Option<Camelot>) -> Option<SortKey> {
     let text = |t: &str| (!t.trim().is_empty()).then(|| SortKey::Text(fold(t)));
     match col {
         TrackColumn::Title => text(&m.title),
@@ -2013,13 +2024,21 @@ fn sort_key(col: TrackColumn, m: &TrackMeta, path: &Path, dirs: &[PathBuf], bpm:
         TrackColumn::Format => text(&path.extension().unwrap_or_default().to_string_lossy()),
         TrackColumn::Year => m.year.trim().parse::<f64>().ok().map(SortKey::Number),
         TrackColumn::Bpm => bpm.or(m.bpm).map(|b| SortKey::Number(b as f64)),
+        // Reihenfolge des Rades: 1A, 1B, 2A, …
+        TrackColumn::Key => key.map(|k| SortKey::Number(k.code() as f64)),
         TrackColumn::Time => (m.duration_secs > 0.0).then_some(SortKey::Number(m.duration_secs)),
     }
 }
 
-/// BPM bekannt? Aus der Analyse oder dem Tag; Titel mit noch ungelesenen Tags gelten als offen.
-fn bpm_known(ctx: &BrowserCtx<'_>, p: &Path) -> bool {
-    ctx.bpms.contains_key(p) || ctx.metas.get(p).is_some_and(|m| m.bpm.is_some())
+/// Sind BPM und Tonart bekannt (aus dem Tag oder gemerkt; auch „Tonart unsicher“ gilt als bekannt)?
+fn analyzed(ctx: &BrowserCtx<'_>, p: &Path) -> bool {
+    let tag = ctx.metas.get(p);
+    (ctx.bpms.contains_key(p) || tag.is_some_and(|m| m.bpm.is_some())) && (ctx.keys.contains_key(p) || tag.is_some_and(|m| m.key.is_some()))
+}
+
+/// Tonart eines Titels: aus dem Tag, sonst aus der Erkennung.
+pub fn key_of(metas: &HashMap<PathBuf, TrackMeta>, keys: &HashMap<PathBuf, Option<Camelot>>, p: &Path) -> Option<Camelot> {
+    metas.get(p).and_then(|m| m.key).or_else(|| keys.get(p).copied().flatten())
 }
 
 /// Gleich lang genug, um als derselbe Titel zu gelten (Sekunden).
@@ -2139,10 +2158,13 @@ fn elided_cell(ui: &mut egui::Ui, text: RichText, tip: &mut Option<String>) {
     ui.add(egui::Label::new(text).truncate().show_tooltip_when_elided(false).selectable(false));
 }
 
-/// Tasten über der Titelliste (BPM ermitteln, in Playlist A/B), rechtsbündig. Liefert die belegte Breite.
+/// Tooltip zu „Analysieren (BPM, Tonart)“ in den Titelmenüen von Browser und Playlist.
+pub const ANALYZE_HINT: &str = "Tempo und Tonart im Hintergrund neu ermitteln, auch wenn Angaben im Tag stehen. Die Werte werden gemerkt.";
+
+/// Tasten über der Titelliste (Analysieren, in Playlist A/B), rechtsbündig. Liefert die belegte Breite.
 /// `history` = Datum, wenn ein Tag der Historie gezeigt wird (dann gibt es „Wiederherstellen“).
-/// `rows_missing_bpm` = Titel der Liste ohne bekannte BPM (vorberechnet, die Liste kann sehr lang sein).
-fn list_tools(ui: &mut egui::Ui, ctx: &BrowserCtx<'_>, rows: &[PathBuf], rows_missing_bpm: usize, sel_rows: &[PathBuf], history: Option<&str>, out: &mut Vec<BrowserAction>) -> f32 {
+/// `rows_missing_analysis` = Titel der Liste ohne bekannte BPM oder Tonart (vorberechnet, die Liste kann sehr lang sein).
+fn list_tools(ui: &mut egui::Ui, ctx: &BrowserCtx<'_>, rows: &[PathBuf], rows_missing_analysis: usize, sel_rows: &[PathBuf], history: Option<&str>, out: &mut Vec<BrowserAction>) -> f32 {
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         // Mit Auswahl gelten die Tasten nur für die ausgewählten Titel
         let (paths, label) = match (sel_rows.is_empty(), history.is_some()) {
@@ -2159,17 +2181,17 @@ fn list_tools(ui: &mut egui::Ui, ctx: &BrowserCtx<'_>, rows: &[PathBuf], rows_mi
                 out.push(BrowserAction::Add { list, paths: paths.to_vec() });
             }
         }
-        // BPM aus dem Tag zählt als bekannt; Titel mit noch ungelesenen Tags gelten als offen
-        let missing = if sel_rows.is_empty() { rows_missing_bpm } else { sel_rows.iter().filter(|p| !bpm_known(ctx, p)).count() };
+        // Angaben aus dem Tag zählen als bekannt; Titel mit noch ungelesenen Tags gelten als offen
+        let missing = if sel_rows.is_empty() { rows_missing_analysis } else { sel_rows.iter().filter(|p| !analyzed(ctx, p)).count() };
         let tip = if missing == 0 {
-            tr("Alle BPM sind bekannt")
+            tr("BPM und Tonart sind überall bekannt")
         } else if sel_rows.is_empty() {
-            tr("Fehlende BPM der Titel in der Liste im Hintergrund ermitteln (BPM aus den Tags werden übernommen)")
+            tr("Fehlende BPM und Tonarten der Titel in der Liste im Hintergrund ermitteln (Angaben aus den Tags werden übernommen)")
         } else {
-            tr("Fehlende BPM der ausgewählten Titel im Hintergrund ermitteln (BPM aus den Tags werden übernommen)")
+            tr("Fehlende BPM und Tonarten der ausgewählten Titel im Hintergrund ermitteln (Angaben aus den Tags werden übernommen)")
         };
-        if ui.add_enabled(missing > 0, Button::new(tr("BPM ermitteln"))).on_hover_text(tip).on_disabled_hover_text(tip).clicked() {
-            out.push(BrowserAction::AnalyzeBpm { paths: paths.to_vec(), force: false });
+        if ui.add_enabled(missing > 0, Button::new(tr("Analysieren"))).on_hover_text(tip).on_disabled_hover_text(tip).clicked() {
+            out.push(BrowserAction::Analyze { paths: paths.to_vec(), force: false });
         }
         if let Some(date) = history
             && ui.add_enabled(!rows.is_empty(), Button::new(tr("Wiederherstellen"))).on_hover_text(tr(RESTORE_HINT)).clicked()
@@ -2391,9 +2413,9 @@ fn folder_menu(ui: &mut egui::Ui, count: usize, removable: bool) -> Option<Folde
         pick = Some(FolderMenu::Op(FolderOp::Distribute));
     }
     ui.separator();
-    let hint = tr("Im Hintergrund für alle Titel ohne BPM-Angabe im Tag. Die Werte werden gemerkt.");
-    if ui.button(tr("Fehlende BPM ermitteln")).on_hover_text(hint).clicked() {
-        pick = Some(FolderMenu::Op(FolderOp::AnalyzeBpm));
+    let hint = tr("Im Hintergrund für alle Titel, denen BPM oder Tonart fehlt (im Tag oder schon ermittelt). Die Werte werden gemerkt.");
+    if ui.button(tr("Fehlende BPM und Tonarten ermitteln")).on_hover_text(hint).clicked() {
+        pick = Some(FolderMenu::Op(FolderOp::Analyze));
     }
     ui.separator();
     if ui.button(reveal_label()).clicked() {
@@ -2453,9 +2475,9 @@ fn track_menu(ui: &mut egui::Ui, paths: &[PathBuf], remove: Option<(String, Vec<
         }
     }
     ui.separator();
-    let hint = tr("Tempo im Hintergrund neu ermitteln, auch wenn eine BPM-Angabe im Tag steht. Der Wert wird gemerkt.");
-    if ui.button(tr("BPM analysieren")).on_hover_text(hint).clicked() {
-        act = Some(BrowserAction::AnalyzeBpm { paths: paths.to_vec(), force: true });
+    let hint = tr(ANALYZE_HINT);
+    if ui.button(tr("Analysieren (BPM, Tonart)")).on_hover_text(hint).clicked() {
+        act = Some(BrowserAction::Analyze { paths: paths.to_vec(), force: true });
     }
     if let [path] = paths {
         ui.separator();
@@ -2616,10 +2638,10 @@ impl Browser {
             ui.label(RichText::new(tr("⏺ Live gelesen, keine Datenbank")).size(12.0).color(theme::play()));
         }
         if let Some((done, total)) = ctx.bpm_progress {
-            if ui.small_button(tr("Stopp")).on_hover_text(tr("Wartende BPM-Analysen verwerfen")).clicked() {
+            if ui.small_button(tr("Stopp")).on_hover_text(tr("Wartende Analysen verwerfen")).clicked() {
                 out.push(BrowserAction::StopBpm);
             }
-            ui.label(RichText::new(trf("BPM-Analyse {} von {}", &[&done, &total])).size(12.0).color(theme::dim()));
+            ui.label(RichText::new(trf("Analyse {} von {}", &[&done, &total])).size(12.0).color(theme::dim()));
             ui.add(egui::Spinner::new().size(14.0));
         }
         if !compact {

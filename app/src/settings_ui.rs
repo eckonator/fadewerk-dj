@@ -303,7 +303,7 @@ impl SettingsUi {
         use crate::caches::fmt_bytes;
         match c.cache_sizes {
             Some(s) => {
-                let line = trf("Tags {} · Ordnerlisten {} · Wellenformen {} · ermittelte BPM {}", &[&fmt_bytes(s.tags), &fmt_bytes(s.folders), &fmt_bytes(s.waves), &fmt_bytes(s.bpm)]);
+                let line = trf("Tags {} · Ordnerlisten {} · Wellenformen {} · ermittelte BPM und Tonarten {}", &[&fmt_bytes(s.tags), &fmt_bytes(s.folders), &fmt_bytes(s.waves), &fmt_bytes(s.bpm)]);
                 ui.label(RichText::new(line).size(12.5));
             }
             None => {
@@ -311,7 +311,7 @@ impl SettingsUi {
                 ui.label(RichText::new(tr("Wird gemessen …")).size(12.5).color(theme::dim()));
             }
         }
-        ui.checkbox(&mut self.clear_bpm, RichText::new(tr("Auch ermittelte BPM löschen")).size(14.0))
+        ui.checkbox(&mut self.clear_bpm, RichText::new(tr("Auch ermittelte BPM und Tonarten löschen")).size(14.0))
             .on_hover_text(tr("Die Tempo-Erkennung dauert lange; ohne Häkchen bleiben ermittelte BPM erhalten."));
         ui.horizontal(|ui| {
             if self.confirm_clear {

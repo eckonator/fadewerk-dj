@@ -19,6 +19,8 @@ pub struct TrackMeta {
     pub duration_secs: f64,
     /// BPM aus dem Tag, falls vorhanden. Sonst liefert die Analyse beim Laden einen Wert.
     pub bpm: Option<f32>,
+    /// Tonart aus dem Tag (`TKEY` bzw. `INITIALKEY`, jede übliche Schreibweise), sonst aus der Analyse.
+    pub key: Option<crate::key::Camelot>,
 }
 
 impl TrackMeta {
@@ -59,6 +61,7 @@ pub fn read_meta(path: &Path) -> anyhow::Result<TrackMeta> {
             .or_else(|| tag.get_string(ItemKey::Bpm))
             .and_then(|s| s.trim().replace(',', ".").parse::<f32>().ok())
             .filter(|b| (40.0..=250.0).contains(b));
+        meta.key = tag.get_string(ItemKey::InitialKey).and_then(crate::key::parse_key);
     }
     Ok(meta)
 }

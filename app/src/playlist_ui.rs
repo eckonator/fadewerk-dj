@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use eframe::egui::{self, Align2, FontId, Rect, RichText, Sense, Stroke, pos2, vec2};
 use fw_library::sketch::{EDGE_RATE, EDGE_SECS};
-use fw_library::{TrackMeta, WaveSketch};
+use fw_library::{Camelot, TrackMeta, WaveSketch};
 
 use crate::fade_preview::{EditorAudio, Kind};
 use crate::fadewerk::{Region, TrackFade, fmt_point, fmt_secs};
@@ -33,8 +33,8 @@ pub enum PlaylistAction {
     Preview(PathBuf),
     StopPreview,
     EditTags(PathBuf),
-    /// Tempo neu ermitteln (auch mit BPM im Tag), wie „BPM analysieren“ im Ordnerbrowser.
-    AnalyzeBpm(PathBuf),
+    /// Tempo und Tonart neu ermitteln (auch mit Angaben im Tag), wie im Ordnerbrowser.
+    Analyze(PathBuf),
     /// Titel direkt hinter den geladenen verschieben.
     PlayNext(usize),
     /// Titel ans Ende der anderen Playlist verschieben.
@@ -81,6 +81,15 @@ pub fn demo_open_editor(ctx: &egui::Context, list: usize, index: usize, path: Pa
 const ROW_H: f32 = 44.0;
 const ROW_GAP: f32 = 2.0;
 
+/// Angaben zu den Titeln der Zeilen: Tags, ermittelte BPM und Tonarten. `reference` = klingende Tonart und
+/// Pfad des Titels auf Sendung; dazu passende Titel bekommen einen Rahmen um ihre Tonart.
+pub struct TrackInfo<'a> {
+    pub metas: &'a HashMap<PathBuf, TrackMeta>,
+    pub bpms: &'a HashMap<PathBuf, f32>,
+    pub keys: &'a HashMap<PathBuf, Option<Camelot>>,
+    pub reference: Option<(Camelot, &'a Path)>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut egui::Ui,
@@ -90,14 +99,14 @@ pub fn show(
     // Spielt der Player dieser Playlist gerade? Dann lässt er sich nicht neu laden.
     deck_playing: bool,
     preview: Option<&Path>,
-    metas: &HashMap<PathBuf, TrackMeta>,
-    bpms: &HashMap<PathBuf, f32>,
+    key_info: &TrackInfo<'_>,
     // Im FadeWerk-Modus die Wellenformen der Titel, sonst `None`
     sketches: Option<&HashMap<PathBuf, Option<Arc<WaveSketch>>>>,
     // Nachbartitel und laufendes Vorhören für den offenen Fade-Editor
     editor_audio: &EditorAudio,
     out: &mut Vec<PlaylistAction>,
 ) {
+    let (metas, bpms) = (key_info.metas, key_info.bpms);
     let color = theme::deck_color(list);
     // Markierter Titel für Pfeiltasten und Eingabetaste (nach Klick auf eine Zeile dieser Liste)
     let me = KeyList::Playlist(list);
@@ -288,18 +297,28 @@ pub fn show(
             let text_left = rect.left() + 38.0;
             let fade = pl.fade(i);
             // Eigene Fades: zwei Dreiecke vor der Kopfhörertaste, dafür endet der Text früher
-            let text_right = rect.right() - if fade.is_empty() { 140.0 } else { 174.0 };
+            let text_right = rect.right() - if fade.is_empty() { 168.0 } else { 202.0 };
             let clip = Rect::from_min_max(pos2(text_left, rect.top()), pos2(text_right, rect.bottom()));
             let pc = p.with_clip_rect(clip);
             pc.text(pos2(text_left, rect.top() + 5.0), Align2::LEFT_TOP, &m.title, fonts::bold(14.0), theme::ink().gamma_multiply(alpha));
             pc.text(pos2(text_left, rect.bottom() - 5.0), Align2::LEFT_BOTTOM, &m.artist, fonts::list(12.0), theme::dim().gamma_multiply(alpha));
+            // Tonart als Plakette in der Farbe des Camelot-Rades; passt sie zum Titel auf Sendung, grün umrandet
+            if let Some(key) = crate::browser::key_of(key_info.metas, key_info.keys, path) {
+                let pill = Rect::from_center_size(pos2(rect.right() - 104.0, rect.center().y), vec2(32.0, 18.0));
+                let kc = theme::key_color(key);
+                p.rect_filled(pill, 4.0, kc.gamma_multiply(0.18 * alpha));
+                if key_info.reference.is_some_and(|(rk, rp)| rp != path.as_path() && rk.compatible(key)) {
+                    p.rect_stroke(pill, 4.0, Stroke::new(1.5, theme::key_match().gamma_multiply(alpha)), egui::StrokeKind::Inside);
+                }
+                p.text(pill.center(), Align2::CENTER_CENTER, key.label(), fonts::bold(11.5), kc.gamma_multiply(alpha));
+            }
             let bpm = bpms.get(path).copied().or(m.bpm).map(|b| format!("{b:.0}")).unwrap_or_default();
             p.text(pos2(rect.right() - 60.0, rect.center().y), Align2::RIGHT_CENTER, bpm, FontId::monospace(12.0), theme::dim().gamma_multiply(alpha));
             let dur = if m.duration_secs > 0.0 { fmt_time(m.duration_secs) } else { String::new() };
             p.text(pos2(rect.right() - 8.0, rect.center().y), Align2::RIGHT_CENTER, dur, FontId::monospace(12.0), theme::dim().gamma_multiply(alpha));
 
             if !fade.is_empty() {
-                let mark = Rect::from_center_size(pos2(rect.right() - 157.0, rect.center().y), vec2(24.0, 11.0));
+                let mark = Rect::from_center_size(pos2(rect.right() - 185.0, rect.center().y), vec2(24.0, 11.0));
                 let tip = fade_mark(ui.painter(), mark, fade, alpha);
                 // Tooltip über die Zeile: ein eigenes Element darüber bekäme unter der anklickbaren Zeile kein Hover
                 if resp.hover_pos().is_some_and(|pt| mark.expand(4.0).contains(pt)) {
@@ -309,7 +328,7 @@ pub fn show(
 
             // Vorhören: Kopfhörertaste vor BPM und Länge, leuchtet, solange dieser Titel vorgehört wird
             let previewing = preview == Some(path.as_path());
-            let head = Rect::from_center_size(pos2(rect.right() - 118.0, rect.center().y), vec2(30.0, 24.0));
+            let head = Rect::from_center_size(pos2(rect.right() - 146.0, rect.center().y), vec2(30.0, 24.0));
             if ui.place(head, |ui: &mut egui::Ui| hw::preview_button(ui, head.size(), previewing)).clicked() {
                 out.push(if previewing { PlaylistAction::StopPreview } else { PlaylistAction::Preview(path.clone()) });
             }
@@ -367,9 +386,9 @@ pub fn show(
                     out.push(PlaylistAction::EditTags(path.clone()));
                     ui.close();
                 }
-                let hint = tr("Tempo im Hintergrund neu ermitteln, auch wenn eine BPM-Angabe im Tag steht. Der Wert wird gemerkt.");
-                if ui.button(tr("BPM analysieren")).on_hover_text(hint).clicked() {
-                    out.push(PlaylistAction::AnalyzeBpm(path.clone()));
+                let hint = tr(crate::browser::ANALYZE_HINT);
+                if ui.button(tr("Analysieren (BPM, Tonart)")).on_hover_text(hint).clicked() {
+                    out.push(PlaylistAction::Analyze(path.clone()));
                     ui.close();
                 }
                 if sketches.is_some() || pl.has_fades() {
@@ -778,7 +797,7 @@ fn fade_mark(p: &egui::Painter, rect: Rect, fade: TrackFade, alpha: f32) -> Stri
 /// Waagerechter Bereich der Wellenform in einer Zeile: hinter Titel und Interpret, bis vor die Kopfhörertaste.
 fn wave_span(rect: Rect) -> (f32, f32) {
     // Endet vor dem Platz für das Fade-Kennzeichen, damit beide nicht übereinanderliegen
-    (rect.left() + 32.0, rect.right() - 174.0)
+    (rect.left() + 32.0, rect.right() - 202.0)
 }
 
 /// Wellenform eines Titels als Hintergrund der Zeile (wie die Übersicht im Player), dezent unter dem Text.

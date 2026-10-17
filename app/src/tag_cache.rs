@@ -24,6 +24,8 @@ const DAY_SECS: u64 = 24 * 60 * 60;
 /// neue Einträge, die Datei hat dann einige MB).
 const SAVE_EVERY_SECS: u64 = 30;
 const FORMAT: &str = "FadeWerk-DJ-Tags";
+/// 2 = mit Tonart. Ältere Einträge wissen nicht, ob ein Tonart-Tag da war: dann einmal neu lesen.
+const VERSION: u32 = 2;
 
 /// Ein Eintrag mit kurzen Feldnamen; leere Felder werden nicht gespeichert.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -52,6 +54,9 @@ struct Entry {
     duration: f64,
     #[serde(rename = "b", default, skip_serializing_if = "Option::is_none")]
     bpm: Option<f32>,
+    /// Tonart aus dem Tag als Camelot-Code (0 bis 23).
+    #[serde(rename = "k", default, skip_serializing_if = "Option::is_none")]
+    key: Option<u8>,
 }
 
 impl Entry {
@@ -65,6 +70,7 @@ impl Entry {
             comment: self.comment.clone(),
             duration_secs: self.duration,
             bpm: self.bpm,
+            key: self.key.and_then(fw_library::Camelot::from_code),
         }
     }
 }
@@ -110,6 +116,10 @@ impl TagCache {
         if file.format != FORMAT {
             return Err(format!("unbekanntes Format „{}“", file.format));
         }
+        if file.version < VERSION {
+            log::info!("Tag-Cache aus einer älteren Version (ohne Tonart): wird neu aufgebaut");
+            return Ok(Self { saved_at: now, dirty: true, ..Default::default() });
+        }
         let mut c = Self { saved_at: now, ..Default::default() };
         let cutoff = now.saturating_sub(EXPIRE_DAYS * DAY_SECS);
         for (dir, files) in file.dirs {
@@ -131,7 +141,7 @@ impl TagCache {
             let (Some(dir), Some(name)) = (p.parent(), p.file_name()) else { continue };
             dirs.entry(dir.to_path_buf()).or_default().insert(name.to_string_lossy().into_owned(), e);
         }
-        serde_json::to_string(&File { format: FORMAT.into(), version: 1, dirs }).map_err(|e| e.to_string())
+        serde_json::to_string(&File { format: FORMAT.into(), version: VERSION, dirs }).map_err(|e| e.to_string())
     }
 
     /// Speichert, wenn sich etwas geändert hat und das letzte Speichern [`SAVE_EVERY_SECS`] her ist
@@ -174,6 +184,7 @@ impl TagCache {
             comment: meta.comment.clone(),
             duration: meta.duration_secs,
             bpm: meta.bpm,
+            key: meta.key.map(|k| k.code()),
         };
         let same = self.entries.get(file).is_some_and(|old| Entry { used: old.used, ..e.clone() } == *old);
         if !same {

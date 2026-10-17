@@ -53,6 +53,10 @@ pub struct Settings {
     pub columns_share: f32,
     /// Sichtbare Spalten der Titelliste im Browser (Schlüssel aus `browser::TrackColumn`), Titel ist immer da.
     pub track_columns: Vec<String>,
+    /// Stand der Spaltenauswahl: 1 = Spalte „Tonart“ ist einmal hinter BPM eingefügt worden (für ältere Einstellungen).
+    /// Fehlt das Feld (Einstellungen von vorher), gilt 0.
+    #[serde(default)]
+    pub columns_rev: u32,
     /// Vom Nutzer gezogene Spaltenbreiten der Titelliste in Punkten, je Spaltenschlüssel.
     pub column_widths: Vec<(String, f32)>,
     /// Sortierung der Titelliste: (Spaltenschlüssel, absteigend), `None` = Reihenfolge der Ordner.
@@ -138,6 +142,7 @@ impl Default for Settings {
             folder_columns: false,
             columns_share: 0.0,
             track_columns: crate::browser::TrackColumn::DEFAULT.iter().map(|c| c.key().to_owned()).collect(),
+            columns_rev: 1,
             column_widths: Vec::new(),
             track_sort: None,
             center_tab: Some("pads".into()),
@@ -278,6 +283,15 @@ impl Settings {
 
     /// Begrenzt Zahlen auf die Bereiche der Regler; Unsinn (negativ, riesig, unendlich) wird zum Standard.
     fn sanitize(&mut self) {
+        // Neue Spalte „Tonart“ für Einstellungen aus der Zeit davor: einmal hinter BPM zeigen
+        if self.columns_rev < 1 {
+            if let Some(i) = self.track_columns.iter().position(|c| c == "bpm")
+                && !self.track_columns.iter().any(|c| c == "key")
+            {
+                self.track_columns.insert(i + 1, "key".into());
+            }
+            self.columns_rev = 1;
+        }
         let d = Self::default();
         let fit = |v: f32, lo: f32, hi: f32, def: f32| if v.is_finite() { v.clamp(lo, hi) } else { def };
         self.browser_height = fit(self.browser_height, 0.0, 10_000.0, 0.0);
