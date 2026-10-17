@@ -103,6 +103,7 @@ jobs:
           DMG_PYTHON="$RUNNER_TEMP/dmgbuild/bin/python3" scripts/make-dmg.sh \
             "pkg/FadeWerk-DJ-${{ steps.version.outputs.version }}-macOS.dmg"
 
+      # Icon und Versionsangaben bettet app/build.rs ein (assets/icon.ico)
       - name: Windows bauen
         if: matrix.name == 'Windows'
         shell: bash
@@ -123,6 +124,7 @@ jobs:
           cp target/release/fadewerk-dj assets/fadewerk-dj.desktop README.md LICENSE \
             THIRD-PARTY-LICENSES.yml assets/fonts/OFL-*.txt "pkg/$DIR/"
           cp assets/icon-256.png "pkg/$DIR/fadewerk-dj.png"
+          cp scripts/install-linux.sh "pkg/$DIR/install.sh"
           cd pkg && tar czf "$DIR.tar.gz" "$DIR" && rm -r "$DIR"
 
       - uses: actions/upload-artifact@v4

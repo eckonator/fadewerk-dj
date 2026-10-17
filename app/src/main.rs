@@ -99,6 +99,8 @@ fn run(renderer: eframe::Renderer, settings: settings::Settings, start_dir: Opti
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("FadeWerk DJ")
+            // Wayland sucht Icon und Namen über die .desktop-Datei mit diesem Namen (assets/fadewerk-dj.desktop)
+            .with_app_id("fadewerk-dj")
             .with_inner_size(size)
             .with_min_inner_size([1100.0, 620.0])
             .with_icon(eframe::icon_data::from_png_bytes(include_bytes!("../../assets/icon-256.png")).unwrap_or_default()),

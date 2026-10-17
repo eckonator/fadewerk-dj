@@ -8,3 +8,4 @@ Exec=fadewerk-dj
 Icon=fadewerk-dj
 Terminal=false
 Categories=AudioVideo;Audio;Player;Music;
+StartupWMClass=fadewerk-dj
