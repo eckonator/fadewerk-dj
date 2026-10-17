@@ -37,6 +37,12 @@ pub struct Settings {
     pub browser_side: bool,
     /// Breite des Ordnerbrowsers rechts in Punkten, 0 = automatisch.
     pub browser_width: f32,
+    /// Ordnerbrowser in einem eigenen Fenster (etwa auf einem zweiten Monitor).
+    pub browser_detached: bool,
+    /// Lage dieses Fensters: links, oben, Breite, Höhe in Punkten des Systems (ohne App-Zoom), Breite 0 = Standard.
+    pub browser_window: [f32; 4],
+    /// Im eigenen Fenster: Ordner links neben den Titeln (sonst darüber).
+    pub browser_window_tree_left: bool,
     /// Breite des Ordnerbaums im Browser in Punkten, 0 = Standard.
     pub tree_width: f32,
     /// Höhe des Ordnerbaums über der Titelliste (Browser rechts) in Punkten, 0 = automatisch.
@@ -108,6 +114,10 @@ pub struct Settings {
     pub record_history: bool,
     /// Bildschirm und Rechner nicht in den Ruhezustand gehen lassen, solange Musik spielt.
     pub keep_awake: bool,
+    /// Systemtöne und (Windows, Linux) andere Programme stumm, solange FadeWerk DJ läuft.
+    pub mute_others: bool,
+    /// macOS: Ausgabegerät exklusiv belegen, andere Programme bleiben darauf stumm.
+    pub exclusive_output: bool,
 }
 
 impl Default for Settings {
@@ -120,6 +130,9 @@ impl Default for Settings {
             browser_height: 0.0,
             browser_side: false,
             browser_width: 0.0,
+            browser_detached: false,
+            browser_window: [0.0; 4],
+            browser_window_tree_left: false,
             tree_width: 0.0,
             tree_height: 0.0,
             folder_columns: false,
@@ -159,6 +172,8 @@ impl Default for Settings {
             update_check: None,
             record_history: true,
             keep_awake: true,
+            mute_others: false,
+            exclusive_output: false,
         }
     }
 }
@@ -267,6 +282,9 @@ impl Settings {
         let fit = |v: f32, lo: f32, hi: f32, def: f32| if v.is_finite() { v.clamp(lo, hi) } else { def };
         self.browser_height = fit(self.browser_height, 0.0, 10_000.0, 0.0);
         self.browser_width = fit(self.browser_width, 0.0, 10_000.0, 0.0);
+        if !self.browser_window.iter().all(|v| v.is_finite() && v.abs() < 100_000.0) || self.browser_window[2] < 0.0 || self.browser_window[3] < 0.0 {
+            self.browser_window = [0.0; 4];
+        }
         self.tree_width = fit(self.tree_width, 0.0, 5_000.0, 0.0);
         self.tree_height = fit(self.tree_height, 0.0, 5_000.0, 0.0);
         self.columns_share = fit(self.columns_share, 0.0, 0.8, 0.0);

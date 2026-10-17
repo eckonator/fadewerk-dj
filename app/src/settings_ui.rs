@@ -49,6 +49,10 @@ pub enum SettingsAction {
     CheckUpdateNow,
     RecordHistory(bool),
     KeepAwake(bool),
+    /// Systemtöne und andere Programme stumm schalten.
+    MuteOthers(bool),
+    /// macOS: Ausgabegerät exklusiv belegen.
+    Exclusive(bool),
     Zoom(f32),
     RevealLog,
     /// Eigener Name eines Effekt-Pads (leer = Standard).
@@ -504,6 +508,36 @@ impl SettingsUi {
             RichText::new(tr("Kleiner Puffer: weniger Verzögerung beim Scratchen, aber mehr Rechenlast. Bei Knacksern größer wählen."))
                 .size(12.0)
                 .color(theme::dim()),
+        );
+
+        ui.add_space(10.0);
+        ui.label(RichText::new(tr("Andere Geräusche")).strong());
+        let mut mute = s.mute_others;
+        let mute_label = if cfg!(target_os = "macos") { tr("Systemtöne stumm schalten, solange FadeWerk DJ läuft") } else { tr("Systemtöne und andere Programme stumm schalten, solange FadeWerk DJ läuft") };
+        if ui.checkbox(&mut mute, RichText::new(mute_label).size(14.0)).changed() {
+            out.push(SettingsAction::MuteOthers(mute));
+        }
+        let mute_note = if cfg!(target_os = "macos") {
+            tr("Hinweistöne des Systems und der Programme sind aus und kommen beim Beenden zurück.")
+        } else {
+            tr("Auch Browser, Musik- und Chatprogramme sind stumm (wie im Lautstärkemixer) und kommen beim Beenden zurück. Neu gestartete Programme werden nach etwa 2 Sekunden stumm.")
+        };
+        ui.label(RichText::new(mute_note).size(12.0).color(theme::dim()));
+        if cfg!(target_os = "macos") {
+            let mut excl = s.exclusive_output;
+            if ui.checkbox(&mut excl, RichText::new(tr("Lautsprecher exklusiv belegen (andere Programme stumm)")).size(14.0)).changed() {
+                out.push(SettingsAction::Exclusive(excl));
+            }
+            ui.label(
+                RichText::new(tr("Nur FadeWerk DJ spielt dann über das Master-Gerät, alle anderen Programme bleiben darauf stumm, auch Videocalls. Das Kopfhörergerät ist davon nicht betroffen."))
+                    .size(12.0)
+                    .color(theme::dim()),
+            );
+        }
+        ui.label(
+            RichText::new(tr("Mitteilungen (Mail, Kalender, Chat) blendet der Fokus „Nicht stören“ des Systems aus; den kann FadeWerk DJ nicht selbst einschalten."))
+                .size(12.0)
+                .color(theme::faint()),
         );
     }
 }

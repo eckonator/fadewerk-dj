@@ -266,10 +266,18 @@ pub struct FadeWerkDjApp {
     toggle_fullscreen: bool,
     /// Einstellungen und Playlists speichern? Bei Entwicklerläufen nicht.
     persist: bool,
+    /// Stummschalten anderer Geräusche (`mute_others`), läuft in einem eigenen Thread.
+    quiet: Option<crate::quiet::Quiet>,
     session_saved: u64,
     session_checked: f64,
     /// Ordnerbrowser im letzten Bild (ändert sich nur der Browser, hat der Nutzer ihn gezogen): (rechts, Fensterhöhe bzw. -breite, Höhe bzw. Breite des Browsers).
     last_sizes: (bool, f32, f32),
+    /// Titel, die gerade aus dem ausgeklinkten Ordnerfenster gezogen werden.
+    cross: crate::crossdrag::CrossDrag,
+    /// Lage des Ordnerfensters beim Öffnen (danach gehört sie dem Nutzer).
+    browser_window_init: Option<[f32; 4]>,
+    /// Wie viele Bilder das Ordnerfenster schon auf keinem Bildschirm liegt.
+    browser_window_lost: u32,
     update_rx: Option<std::sync::mpsc::Receiver<Result<Option<crate::update::NewVersion>, ()>>>,
     /// Prüfung von Hand angestoßen (Einstellungen): dann auch „nichts Neues“ melden.
     update_manual: bool,
@@ -400,9 +408,13 @@ impl FadeWerkDjApp {
             save_due: None,
             toggle_fullscreen: false,
             persist: true,
+            quiet: None,
             session_saved: 0,
             session_checked: 0.0,
             last_sizes: (false, 0.0, 0.0),
+            cross: Default::default(),
+            browser_window_init: None,
+            browser_window_lost: 0,
             update_rx: None,
             update_manual: false,
             self_update: None,
@@ -482,6 +494,12 @@ impl FadeWerkDjApp {
         }
         app.push_mixer_state();
         app.start_head_audio(0.0, true);
+        // Entwicklerläufe schalten nichts am System stumm, außer mit FW_QUIET=1
+        let quiet_test = std::env::var_os("FW_QUIET").is_some();
+        if app.persist || quiet_test {
+            app.quiet = Some(crate::quiet::Quiet::start(crate::settings::config_dir(), app.settings.mute_others));
+            app.apply_exclusive(0.0);
+        }
         if let Some(s) = app.dev.skin {
             theme::set_skin(s);
             theme::apply(&cc.egui_ctx);
@@ -547,9 +565,12 @@ impl FadeWerkDjApp {
                     app.playlists[1].set_fade(0, TrackFade { fade_in: Some(Region { start: 3.0, end: 6.0 }), fade_out: None });
                 }
             }
-            // FW_BROWSER=rechts: Ordnerbrowser rechts neben den Playern
+            // FW_BROWSER=rechts: Ordnerbrowser rechts neben den Playern, FW_BROWSER=fenster: in eigenem Fenster
             if std::env::var("FW_BROWSER").is_ok_and(|v| v == "rechts") {
                 app.settings.browser_side = true;
+            }
+            if std::env::var("FW_BROWSER").is_ok_and(|v| v == "fenster") {
+                app.settings.browser_detached = true;
             }
             // FW_FOLDERS=spalten: Ordner in Spalten statt als Baum
             if std::env::var("FW_FOLDERS").is_ok_and(|v| v == "spalten") {
@@ -715,12 +736,36 @@ impl FadeWerkDjApp {
         self.ctl.send(Command::TestTone { to_master });
     }
 
+    /// Exklusivmodus (macOS) für das laufende Master-Gerät, wenn eingestellt.
+    fn apply_exclusive(&mut self, now: f64) {
+        if !self.settings.exclusive_output || !cfg!(target_os = "macos") {
+            return;
+        }
+        let Some(audio) = &self.audio else { return };
+        match crate::quiet::set_exclusive(&audio.id, true) {
+            Ok(()) => log::info!("Ausgabegerät exklusiv: {}", audio.device),
+            Err(e) => {
+                log::warn!("Exklusivmodus: {e}");
+                self.notify(trf("Ausgabegerät lässt sich nicht exklusiv belegen: {}", &[&e]), now);
+            }
+        }
+    }
+
+    fn release_exclusive(&self) {
+        if let Some(audio) = &self.audio
+            && let Err(e) = crate::quiet::set_exclusive(&audio.id, false)
+        {
+            log::warn!("Exklusivmodus freigeben: {e}");
+        }
+    }
+
     /// Startet die Audio-Ausgabe mit den aktuellen Einstellungen neu. Geladene Titel laufen an derselben Stelle weiter.
     fn restart_audio(&mut self, now: f64) {
         let st: Vec<(f64, bool)> = (0..2).map(|d| (self.ctl.shared.decks[d].position_secs(), self.ctl.shared.decks[d].is_playing())).collect();
         // Kopfhörergerät nur wieder öffnen, wenn es lief (siehe `start_head_audio`)
         let head_was_on = self.head_audio.is_some();
         // Alte Geräte zuerst freigeben, manche Treiber erlauben nur einen Stream
+        self.release_exclusive();
         self.head_audio = None;
         self.audio = None;
         let (audio, ctl, err) = audio::start(self.settings.output_device.as_deref(), self.settings.buffer_frames);
@@ -729,6 +774,9 @@ impl FadeWerkDjApp {
         self.audio_error = err.clone();
         self.push_mixer_state();
         self.start_head_audio(now, head_was_on);
+        if self.quiet.is_some() {
+            self.apply_exclusive(now);
+        }
         for (d, &(pos, playing)) in st.iter().enumerate() {
             self.decks[d].ended_seen = 0;
             self.decks[d].reverse_ended_seen = 0;
@@ -799,6 +847,22 @@ impl FadeWerkDjApp {
             SettingsAction::OpenGl(on) => self.settings.opengl = on,
             SettingsAction::RecordHistory(on) => self.settings.record_history = on,
             SettingsAction::KeepAwake(on) => self.settings.keep_awake = on,
+            SettingsAction::MuteOthers(on) => {
+                self.settings.mute_others = on;
+                if let Some(q) = &self.quiet {
+                    q.set(on);
+                }
+            }
+            SettingsAction::Exclusive(on) => {
+                self.settings.exclusive_output = on;
+                if self.quiet.is_some() {
+                    if on {
+                        self.apply_exclusive(now);
+                    } else {
+                        self.release_exclusive();
+                    }
+                }
+            }
             SettingsAction::FxName(slot, name) => {
                 self.settings.fx_slot_mut(slot).name = name;
                 self.save_due = Some(now + 1.0);
@@ -1986,25 +2050,7 @@ impl FadeWerkDjApp {
 
     /// Tasten 1 bis 8 lösen die Effekt-Pads aus (nicht beim Tippen, nicht mit ⌘/Strg/⌥, ohne Tastenwiederholung).
     fn fx_keys(&mut self, ctx: &egui::Context, now: f64) {
-        if ctx.egui_wants_keyboard_input() {
-            return;
-        }
-        const KEYS: [egui::Key; fw_engine::FX_SLOTS] =
-            [egui::Key::Num1, egui::Key::Num2, egui::Key::Num3, egui::Key::Num4, egui::Key::Num5, egui::Key::Num6, egui::Key::Num7, egui::Key::Num8];
-        let pressed: Vec<usize> = ctx.input(|i| {
-            i.events
-                .iter()
-                .filter_map(|e| match e {
-                    egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. }
-                        if !(modifiers.command || modifiers.ctrl || modifiers.alt) =>
-                    {
-                        KEYS.iter().position(|k| k == key)
-                    }
-                    _ => None,
-                })
-                .collect()
-        });
-        for slot in pressed {
+        for slot in pad_keys(ctx) {
             self.trigger_fx(slot, true, now);
         }
     }
@@ -2334,6 +2380,17 @@ impl FadeWerkDjApp {
                 self.settings.browser_side = !self.settings.browser_side;
                 self.save_due = Some(now + 1.0);
             }
+            BrowserAction::TreeLeft(on) => {
+                self.settings.browser_window_tree_left = on;
+                self.save_due = Some(now + 1.0);
+            }
+            BrowserAction::Detach(on) => {
+                self.settings.browser_detached = on;
+                self.browser_window_init = None;
+                self.browser_window_lost = 0;
+                self.cross = Default::default();
+                self.save_due = Some(now + 1.0);
+            }
         }
     }
 }
@@ -2464,6 +2521,7 @@ impl eframe::App for FadeWerkDjApp {
             fullscreen: ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)),
             side: false,
             side_possible: false,
+            detached: self.settings.browser_detached,
             history: &self.history,
             importing: self.import_rx.is_some(),
             data_gen: self.data_gen,
@@ -2473,10 +2531,12 @@ impl eframe::App for FadeWerkDjApp {
         let total_h = ui.available_height();
         let total_w = ui.available_width();
         let side = self.settings.browser_side && total_w >= SIDE_MAIN_MIN + SIDE_BROWSER_MIN;
+        // Im eigenen Fenster wählt der Nutzer: Ordner über den Titeln (wie rechts) oder daneben (wie unten)
+        let side = if self.settings.browser_detached { !self.settings.browser_window_tree_left } else { side };
         let bctx = BrowserCtx { side, side_possible: total_w >= SIDE_MAIN_MIN + SIDE_BROWSER_MIN, ..bctx };
         let browser_frame = Frame::new().fill(theme::panel()).stroke(Stroke::new(1.0, theme::line())).inner_margin(Margin::same(10));
         let browser = &mut self.browser;
-        let show_browser = |ui: &mut egui::Ui| {
+        let mut show_browser = |ui: &mut egui::Ui| {
             if theme::brushed() {
                 let p = ui.ctx().layer_painter(ui.layer_id());
                 let face = crate::hw::steel_face(theme::panel(), theme::skin().dark);
@@ -2485,7 +2545,64 @@ impl eframe::App for FadeWerkDjApp {
             browser.show(ui, &bctx, &mut browser_actions)
         };
         // Rechts: ohne gespeicherten Wert gut ein Viertel der Breite (bei 2560 pt etwa 680)
-        let size = if side {
+        let mut detach_closed = false;
+        let mut detached_pads: Vec<usize> = Vec::new();
+        let size = if self.settings.browser_detached {
+        // Eigenes Fenster: läuft im Takt des Hauptfensters mit (egui-„immediate viewport“), Eingaben dort
+        // zeichnen beide neu. Ziehen ins Hauptfenster über `crossdrag`.
+            let zoom = ctx.zoom_factor();
+            // Lage nur beim Öffnen vorgeben; danach verschiebt und vergrößert der Nutzer das Fenster
+            let geo = *self.browser_window_init.get_or_insert(self.settings.browser_window);
+            let mut builder = egui::ViewportBuilder::default()
+                .with_title(tr("FadeWerk DJ – Ordner"))
+                .with_min_inner_size([SIDE_BROWSER_MIN, 300.0])
+                .with_icon(eframe::icon_data::from_png_bytes(include_bytes!("../../assets/icon-256.png")).unwrap_or_default());
+            builder = if geo[2] > 0.0 {
+                builder.with_position([geo[0] / zoom, geo[1] / zoom]).with_inner_size([geo[2] / zoom, geo[3] / zoom])
+            } else {
+                builder.with_inner_size([DETACHED_DEFAULT_W, 640.0])
+            };
+            let cross = &mut self.cross;
+            let window_geo = &mut self.settings.browser_window;
+            let save_due = &mut self.save_due;
+            let lost = &mut self.browser_window_lost;
+            let pads = &mut detached_pads;
+            let main_pos = ctx.input(|i| i.viewport().outer_rect).map(|r| r.min);
+                        let closed = ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("fw-ordner"), builder, |ui, _class| {
+                let wctx = ui.ctx().clone();
+                egui::CentralPanel::default().frame(browser_frame).show(ui, |ui| {
+                    show_browser(ui);
+                });
+                cross.track_source(&wctx);
+                // Effekt-Pads auch, wenn das Ordnerfenster vorn ist
+                *pads = pad_keys(&wctx);
+                // Pfeil- und Eingabetasten für die Titelliste kommen in diesem Fenster an
+                crate::keynav::collect(&wctx);
+                let info = wctx.input(|i| i.viewport().clone());
+                // Lage merken, sobald sie sich ändert (in Punkten des Systems, damit der Zoom nicht mitspielt)
+                if let (Some(outer), Some(inner)) = (info.outer_rect, info.inner_rect) {
+                    let now_geo = [outer.min.x * zoom, outer.min.y * zoom, inner.width() * zoom, inner.height() * zoom].map(f32::round);
+                    if now_geo != *window_geo {
+                        *window_geo = now_geo;
+                        *save_due = Some(now + 1.0);
+                    }
+                }
+                // Liegt das Fenster auf keinem Bildschirm mehr (zweiter Monitor fehlt), zum Hauptfenster holen
+                if info.monitor_size.is_none() && info.inner_rect.is_some() {
+                    *lost += 1;
+                    if *lost == 10
+                        && let Some(p) = main_pos
+                    {
+                        wctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(p + vec2(60.0, 60.0)));
+                    }
+                } else {
+                    *lost = 0;
+                }
+                info.close_requested()
+            });
+            detach_closed = closed;
+            0.0
+        } else if side {
             let browser_w = if self.settings.browser_width > 0.0 { self.settings.browser_width } else { (total_w * 0.27).max(SIDE_BROWSER_MIN) };
             egui::Panel::right("browser_side")
                 .resizable(true)
@@ -2516,10 +2633,16 @@ impl eframe::App for FadeWerkDjApp {
                 .rect
                 .height()
         };
+        if detach_closed {
+            browser_actions.push(BrowserAction::Detach(false));
+        }
+        for slot in detached_pads {
+            self.trigger_fx(slot, true, now);
+        }
+        self.cross.publish(&ctx);
         let content = ctx.content_rect();
         let sizes = (side, if side { content.width() } else { content.height() }.round(), size.round());
-        // Nur bei gedrückter Maustaste: dann zieht der Nutzer die Kante, sonst hat sich der Inhalt geändert
-        let dragging = ctx.input(|i| i.pointer.primary_down());
+        let dragging = dragging_edge(&ctx) && !self.settings.browser_detached;
         let last = self.last_sizes;
         if dragging && last.0 == sizes.0 && last.1 == sizes.1 && last.2 > 0.0 && (last.2 - sizes.2).abs() >= 1.0 {
             if side {
@@ -2725,6 +2848,8 @@ impl eframe::App for FadeWerkDjApp {
                 self.playlist_action(d, a, now);
             }
         }
+        // Titel aus dem Ordnerfenster ist abgelegt (oder ins Leere gefallen)
+        self.cross.finish(&ctx);
         for a in browser_actions {
             self.browser_action(a, now);
         }
@@ -2942,16 +3067,61 @@ fn start_dir_for_demo(app: &FadeWerkDjApp) -> Option<PathBuf> {
     std::env::args_os().nth(1).map(PathBuf::from).filter(|p| p.is_dir()).or_else(|| app.browser.tracks().first().and_then(|p| p.parent().map(Path::to_path_buf)))
 }
 
+/// Gedrückte Tasten 1 bis 8 im Fenster von `ctx` (Effekt-Pads), nicht beim Tippen, nicht mit ⌘/Strg/⌥,
+/// ohne Tastenwiederholung.
+fn pad_keys(ctx: &egui::Context) -> Vec<usize> {
+    if ctx.egui_wants_keyboard_input() {
+        return Vec::new();
+    }
+    const KEYS: [egui::Key; fw_engine::FX_SLOTS] =
+        [egui::Key::Num1, egui::Key::Num2, egui::Key::Num3, egui::Key::Num4, egui::Key::Num5, egui::Key::Num6, egui::Key::Num7, egui::Key::Num8];
+    ctx.input(|i| {
+        i.events
+            .iter()
+            .filter_map(|e| match e {
+                egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } if !(modifiers.command || modifiers.ctrl || modifiers.alt) => {
+                    KEYS.iter().position(|k| k == key)
+                }
+                _ => None,
+            })
+            .collect()
+    })
+}
+
+/// Breite des Ordnerfensters beim ersten Ausklinken.
+const DETACHED_DEFAULT_W: f32 = 900.0;
+
+/// Zieht der Nutzer gerade eine Kante (Maustaste gedrückt)? Sonst hat sich der Inhalt geändert.
+fn dragging_edge(ctx: &egui::Context) -> bool {
+    ctx.input(|i| i.pointer.primary_down())
+}
+
 /// Ablagefläche über einem Player: leuchtet beim Ziehen eines Titels auf und liefert ihn beim Loslassen.
 fn deck_drop_zone(ui: &egui::Ui, rect: egui::Rect, d: usize) -> Option<DragItem> {
     let ctx = ui.ctx();
-    if !egui::DragAndDrop::has_payload_of_type::<DragItem>(ctx) {
+    // Titel aus dem ausgeklinkten Ordnerfenster
+    let foreign = crate::crossdrag::hover(ctx).is_some_and(|p| rect.contains(p));
+    if !egui::DragAndDrop::has_payload_of_type::<DragItem>(ctx) && !foreign {
         return None;
     }
-    let over = ctx.pointer_latest_pos().is_some_and(|p| rect.contains(p));
+    let over = foreign || ctx.pointer_latest_pos().is_some_and(|p| rect.contains(p));
     if !over {
         return None;
     }
+    if foreign {
+        // Das Leuchten zeichnet sich unten mit; abgelegt wird über `take_drop`
+        let item = crate::crossdrag::take_drop(ctx, rect);
+        paint_deck_drop(ui, rect, d);
+        return item;
+    }
+    paint_deck_drop(ui, rect, d);
+    if ctx.input(|i| i.pointer.any_released()) {
+        return egui::DragAndDrop::take_payload::<DragItem>(ctx).map(|a| (*a).clone());
+    }
+    None
+}
+
+fn paint_deck_drop(ui: &egui::Ui, rect: egui::Rect, d: usize) {
     let color = theme::deck_color(d);
     let p = ui.painter();
     p.rect_filled(rect, 8.0, color.gamma_multiply(0.14));
@@ -2959,10 +3129,6 @@ fn deck_drop_zone(ui: &egui::Ui, rect: egui::Rect, d: usize) -> Option<DragItem>
     let label = trf("In Player {} laden", &[&theme::deck_letter(d)]);
     let pill = egui::Rect::from_center_size(rect.center(), vec2(240.0, 44.0));
     crate::hw::paint_button(p, pill, &label, crate::fonts::bold(18.0), crate::hw::Look::Color(color), true, false, false, true);
-    if ctx.input(|i| i.pointer.any_released()) {
-        return egui::DragAndDrop::take_payload::<DragItem>(ctx).map(|a| (*a).clone());
-    }
-    None
 }
 
 #[cfg(test)]

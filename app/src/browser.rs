@@ -76,6 +76,10 @@ pub enum BrowserAction {
     ToggleFullscreen,
     /// Browser zwischen unten und rechts umsetzen.
     ToggleSide,
+    /// Browser in ein eigenes Fenster ausklinken (`true`) oder zurückholen.
+    Detach(bool),
+    /// Im eigenen Fenster: Ordner links neben den Titeln (`true`) oder darüber.
+    TreeLeft(bool),
 }
 
 /// Spalten der Titelliste mit veränderbarer Breite. Der Titel ist immer da, die übrigen sind wählbar;
@@ -188,6 +192,8 @@ pub struct BrowserCtx<'a> {
     /// Steht der Browser rechts neben den Playern? Und ist das Fenster breit genug dafür?
     pub side: bool,
     pub side_possible: bool,
+    /// Läuft der Browser in einem eigenen Fenster?
+    pub detached: bool,
     pub history: &'a History,
     /// Ein Import der Historie läuft gerade.
     pub importing: bool,
@@ -967,10 +973,19 @@ impl Browser {
                 if ui.button(RichText::new("⚙").size(15.0)).on_hover_text(tr("Einstellungen (⌘,)")).clicked() {
                     out.push(BrowserAction::OpenSettings);
                 }
-                if fullscreen_button(ui, ctx.fullscreen).clicked() {
+                // Vollbild gilt dem Hauptfenster; im eigenen Fenster wäre die Taste irreführend
+                if !ctx.detached && fullscreen_button(ui, ctx.fullscreen).clicked() {
                     out.push(BrowserAction::ToggleFullscreen);
                 }
-                if layout_button(ui, ctx.side, ctx.side_possible).clicked() {
+                if detach_button(ui, ctx.detached).clicked() {
+                    out.push(BrowserAction::Detach(!ctx.detached));
+                }
+                // Im eigenen Fenster gibt es kein unten oder rechts, dafür Ordner über oder neben den Titeln
+                if ctx.detached {
+                    if tree_layout_button(ui, !ctx.side).clicked() {
+                        out.push(BrowserAction::TreeLeft(ctx.side));
+                    }
+                } else if layout_button(ui, ctx.side, ctx.side_possible).clicked() {
                     out.push(BrowserAction::ToggleSide);
                 }
                 let tip = if cfg!(target_os = "macos") { tr("Ordner neu einlesen (⌘R)") } else { tr("Ordner neu einlesen (F5)") };
@@ -2670,6 +2685,50 @@ fn layout_button(ui: &mut egui::Ui, side: bool, possible: bool) -> egui::Respons
         egui::Rect::from_min_max(egui::pos2(frame.right() - 5.0, frame.top()), frame.max)
     };
     p.rect_filled(target, 1.0, color);
+    resp
+}
+
+/// Im eigenen Fenster: zeigt, wohin die Ordner wandern (das Ziel des Klicks), als hervorgehobene Spalte
+/// links bzw. Zeile oben in einem Fensterchen.
+fn tree_layout_button(ui: &mut egui::Ui, tree_left: bool) -> egui::Response {
+    let tip = if tree_left { tr("Ordner über die Titel setzen") } else { tr("Ordner links neben die Titel setzen") };
+    let h = ui.spacing().interact_size.y;
+    let resp = ui.add(egui::Button::new("").min_size(egui::vec2(h + 6.0, h))).on_hover_text(tip);
+    let color = ui.style().interact(&resp).fg_stroke.color;
+    let frame = egui::Rect::from_center_size(resp.rect.center(), egui::vec2(16.0, 11.0));
+    let p = ui.painter();
+    p.rect_stroke(frame, 1.5, egui::Stroke::new(1.4, color), egui::StrokeKind::Middle);
+    let target = if tree_left {
+        egui::Rect::from_min_max(frame.min, egui::pos2(frame.right(), frame.top() + 4.0))
+    } else {
+        egui::Rect::from_min_max(frame.min, egui::pos2(frame.left() + 5.0, frame.bottom()))
+    };
+    p.rect_filled(target, 1.0, color);
+    resp
+}
+
+/// Ausklinken: Fensterchen mit Pfeil nach oben rechts hinaus; im eigenen Fenster Pfeil hinein (zurückholen).
+fn detach_button(ui: &mut egui::Ui, detached: bool) -> egui::Response {
+    let tip = if detached {
+        tr("Ordner zurück ins Hauptfenster holen")
+    } else {
+        tr("Ordner in ein eigenes Fenster ausklinken (etwa für einen zweiten Monitor)")
+    };
+    let h = ui.spacing().interact_size.y;
+    let resp = ui.add(egui::Button::new("").min_size(egui::vec2(h + 6.0, h))).on_hover_text(tip);
+    let color = ui.style().interact(&resp).fg_stroke.color;
+    let stroke = egui::Stroke::new(1.4, color);
+    let c = resp.rect.center();
+    let p = ui.painter();
+    // Fenster links unten, Pfeil diagonal über seine rechte obere Ecke
+    let frame = egui::Rect::from_min_size(c + egui::vec2(-8.0, -4.0), egui::vec2(11.0, 9.0));
+    p.rect_stroke(frame, 1.5, stroke, egui::StrokeKind::Middle);
+    let (inner, outer) = (c + egui::vec2(-1.0, 1.0), c + egui::vec2(7.0, -7.0));
+    let (from, to) = if detached { (outer, inner) } else { (inner, outer) };
+    p.line_segment([from, to], stroke);
+    let back = (from - to).normalized() * 4.0;
+    p.line_segment([to, to + egui::vec2(back.x, 0.0)], stroke);
+    p.line_segment([to, to + egui::vec2(0.0, back.y)], stroke);
     resp
 }
 

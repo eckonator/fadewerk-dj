@@ -15,6 +15,7 @@ use crate::fadewerk::{Region, TrackFade, fmt_point, fmt_secs};
 use crate::deck_ui::fmt_time;
 use crate::playlist::{DragItem, Playlist};
 use crate::i18n::{count_tracks, tr, trf};
+use crate::crossdrag;
 use crate::keynav::{self, KeyList};
 use crate::theme;
 use crate::{fonts, hw};
@@ -210,6 +211,8 @@ pub fn show(
     egui::ScrollArea::vertical().id_salt(("pl", list)).auto_shrink([false, false]).show(ui, |ui| {
         let width = ui.available_width();
         let mut insert_line: Option<f32> = None;
+        // Titel aus dem ausgeklinkten Ordnerfenster, nur über dem sichtbaren Teil der Liste
+        let foreign = crossdrag::hover(ui.ctx()).filter(|&pt| ui.clip_rect().contains(pt));
 
         // Zeilen dicht untereinander, nur ein schmaler Spalt zwischen den Hinterlegungen
         ui.spacing_mut().item_spacing.y = ROW_GAP;
@@ -312,13 +315,16 @@ pub fn show(
             }
 
             resp.dnd_set_drag_payload(DragItem::Row { list, index: i });
-            let upper = |r: &egui::Response| r.hover_pos().or_else(|| ui.ctx().pointer_hover_pos()).is_some_and(|pt| pt.y < rect.center().y);
-            if resp.dnd_hover_payload::<DragItem>().is_some() {
+            // Zeiger beim Ziehen: eigener oder einer aus dem ausgeklinkten Ordnerfenster
+            let foreign = foreign.filter(|&pt| rect.contains(pt));
+            let upper = |r: &egui::Response| foreign.or_else(|| r.hover_pos()).or_else(|| ui.ctx().pointer_hover_pos()).is_some_and(|pt| pt.y < rect.center().y);
+            if resp.dnd_hover_payload::<DragItem>().is_some() || foreign.is_some() {
                 insert_line = Some(if upper(&resp) { rect.top() } else { rect.bottom() });
             }
-            if let Some(item) = resp.dnd_release_payload::<DragItem>() {
+            let dropped = resp.dnd_release_payload::<DragItem>().map(|item| (*item).clone()).or_else(|| foreign.and_then(|_| crossdrag::take_drop(ui.ctx(), rect)));
+            if let Some(item) = dropped {
                 let before = if upper(&resp) { i } else { i + 1 };
-                out.push(PlaylistAction::Drop { item: (*item).clone(), before });
+                out.push(PlaylistAction::Drop { item, before });
             }
             if show_cursor && cursor == Some(i) {
                 ui.painter().rect_stroke(rect.shrink(0.75), 4.0, Stroke::new(1.5, theme::select_accent()), egui::StrokeKind::Inside);
@@ -422,11 +428,13 @@ pub fn show(
         if pl.entries.is_empty() {
             ui.painter().text(rect.center_top() + vec2(0.0, 30.0), Align2::CENTER_CENTER, tr("Leer. Titel aus dem Ordner hierher ziehen."), FontId::proportional(12.5), theme::faint());
         }
-        if resp.dnd_hover_payload::<DragItem>().is_some() {
+        let foreign_here = foreign.is_some_and(|pt| rect.contains(pt));
+        if resp.dnd_hover_payload::<DragItem>().is_some() || foreign_here {
             insert_line = Some(rect.top());
         }
-        if let Some(item) = resp.dnd_release_payload::<DragItem>() {
-            out.push(PlaylistAction::Drop { item: (*item).clone(), before: pl.entries.len() });
+        let dropped = resp.dnd_release_payload::<DragItem>().map(|item| (*item).clone()).or_else(|| foreign_here.then(|| crossdrag::take_drop(ui.ctx(), rect)).flatten());
+        if let Some(item) = dropped {
+            out.push(PlaylistAction::Drop { item, before: pl.entries.len() });
         }
 
         if let Some(y) = insert_line {
