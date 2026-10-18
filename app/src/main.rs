@@ -17,6 +17,7 @@ mod fonts;
 mod folder_cache;
 mod fx;
 mod fx_icons;
+mod harmonic;
 mod history;
 mod history_ui;
 mod hw;

@@ -166,6 +166,27 @@ impl Playlist {
         }
     }
 
+    /// Ordnet die kommenden Titel (nach dem geladenen) neu: `order[k]` = bisherige Stelle (ab dem ersten
+    /// kommenden gezählt) des Titels, der an Stelle `k` rückt. Fade-Bereiche wandern mit. Ungültiges wird ignoriert.
+    pub fn reorder_upcoming(&mut self, order: &[usize]) {
+        self.sync();
+        let start = self.current.map_or(0, |c| c + 1).min(self.entries.len());
+        let n = self.entries.len() - start;
+        let mut seen = vec![false; n];
+        if order.len() != n || !order.iter().all(|&i| i < n && !std::mem::replace(&mut seen[i], true)) {
+            return;
+        }
+        let entries: Vec<PathBuf> = order.iter().map(|&i| self.entries[start + i].clone()).collect();
+        let fades: Vec<TrackFade> = order.iter().map(|&i| self.fades[start + i]).collect();
+        self.entries.splice(start.., entries);
+        self.fades.splice(start.., fades);
+    }
+
+    /// Die kommenden Titel (nach dem geladenen).
+    pub fn upcoming_entries(&self) -> &[PathBuf] {
+        &self.entries[self.current.map_or(0, |c| c + 1).min(self.entries.len())..]
+    }
+
     /// Anzahl der Titel, die `shuffle_upcoming` mischen würde.
     pub fn upcoming(&self) -> usize {
         self.entries.len().saturating_sub(self.current.map_or(0, |c| c + 1))

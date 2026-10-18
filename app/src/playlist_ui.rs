@@ -25,6 +25,10 @@ pub enum PlaylistAction {
     Remove(usize),
     Clear,
     Shuffle,
+    /// Kommende Titel beider Playlists harmonisch ordnen (siehe `harmonic.rs`).
+    Harmonic,
+    /// Die letzte Sortierung (harmonisch oder zufällig) zurücknehmen.
+    SortUndo,
     Drop { item: DragItem, before: usize },
     NeedMeta(PathBuf),
     /// Tags einer sichtbaren Zeile, vor allen anderen.
@@ -79,6 +83,8 @@ pub fn demo_open_editor(ctx: &egui::Context, list: usize, index: usize, path: Pa
 }
 
 const ROW_H: f32 = 44.0;
+/// Höhe von Suchfeld, „Sortieren“ und „Leeren“ in der Kopfzeile.
+const HEADER_CTRL_H: f32 = 24.0;
 const ROW_GAP: f32 = 2.0;
 
 /// Angaben zu den Titeln der Zeilen: Tags, ermittelte BPM und Tonarten. `reference` = klingende Tonart und
@@ -88,6 +94,17 @@ pub struct TrackInfo<'a> {
     pub bpms: &'a HashMap<PathBuf, f32>,
     pub keys: &'a HashMap<PathBuf, Option<Camelot>>,
     pub reference: Option<(Camelot, &'a Path)>,
+    /// Zustand des Auswahlfelds „Sortieren“ (gilt für beide Playlists).
+    pub harmonic: Harmonic,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Harmonic {
+    Ready,
+    /// Fehlende Tonarten werden ermittelt, danach wird sortiert.
+    Analyzing,
+    /// Gerade sortiert: „Rückgängig“ steht im Auswahlfeld.
+    Undo,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -147,19 +164,40 @@ pub fn show(
             out.push(PlaylistAction::FadeWerk(!on));
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.add_enabled(!pl.entries.is_empty(), egui::Button::new(tr("Leeren"))).clicked() {
+            // Leeren, Sortieren und Suchen gleich hoch, damit sie auf einer Linie sitzen
+            ui.spacing_mut().interact_size.y = HEADER_CTRL_H;
+            if ui.add_enabled(!pl.entries.is_empty(), egui::Button::new(tr("Leeren")).min_size(vec2(0.0, HEADER_CTRL_H))).clicked() {
                 out.push(PlaylistAction::Clear);
             }
-            // In schmalen Köpfen (Browser rechts) kurz „Mischen“, sonst schiebt sich die Taste über FADEWERK
-            let long = tr("Zufällige Reihenfolge");
-            let font = egui::TextStyle::Button.resolve(ui.style());
-            let long_w = ui.painter().layout_no_wrap(long.to_owned(), font, theme::ink()).size().x + 2.0 * ui.spacing().button_padding.x;
-            let label = if ui.available_width() >= long_w + ui.spacing().item_spacing.x { long } else { tr("Mischen") };
-            let shuffle = ui
-                .add_enabled(pl.upcoming() > 1, egui::Button::new(label))
-                .on_hover_text(tr("Mischt die kommenden Titel. Der geladene und die schon gespielten bleiben an ihrem Platz."));
-            if shuffle.clicked() {
-                out.push(PlaylistAction::Shuffle);
+            // Ein Auswahlfeld für beide Sortierarten spart Platz in der Kopfzeile; „Rückgängig“ nimmt die letzte
+            // Sortierung zurück (gilt für beide Playlists)
+            let analyzing = key_info.harmonic == Harmonic::Analyzing;
+            let shown = if analyzing { tr("Analysiert …") } else { tr("Sortieren") };
+            let combo = egui::ComboBox::from_id_salt(("pl_sort", list)).selected_text(shown).width(104.0).show_ui(ui, |ui| {
+                let harmonic = ui
+                    .add_enabled(!analyzing && pl.upcoming() > 0, egui::Button::selectable(false, tr("Harmonisch (Tonart, Tempo)")))
+                    .on_hover_text(tr("Ordnet die kommenden Titel beider Playlists so, dass jeder Übergang im Wechsel A – B – A passt: zuerst nach Tonart, dann nach Tempo. Fehlende Tonarten werden vorher ermittelt."));
+                if harmonic.clicked() {
+                    out.push(PlaylistAction::Harmonic);
+                }
+                let shuffle = ui
+                    .add_enabled(!analyzing && pl.upcoming() > 1, egui::Button::selectable(false, tr("Zufällig")))
+                    .on_hover_text(tr("Mischt die kommenden Titel. Der geladene und die schon gespielten bleiben an ihrem Platz."));
+                if shuffle.clicked() {
+                    out.push(PlaylistAction::Shuffle);
+                }
+                if key_info.harmonic == Harmonic::Undo {
+                    ui.separator();
+                    let undo = ui
+                        .add(egui::Button::selectable(false, tr("Rückgängig")))
+                        .on_hover_text(tr("Stellt die Reihenfolge von vor dem letzten Sortieren wieder her."));
+                    if undo.clicked() {
+                        out.push(PlaylistAction::SortUndo);
+                    }
+                }
+            });
+            if analyzing {
+                combo.response.on_hover_text(tr("Fehlende Tonarten werden ermittelt, danach wird sortiert."));
             }
             // Schnellsuche: springt zum ersten Treffer ab dem geladenen Titel, Enter zum nächsten, ⇧Enter zurück
             if let Some(hit) = quick_search(ui, list, pl, metas, cursor) {
@@ -854,7 +892,9 @@ fn quick_search(ui: &mut egui::Ui, list: usize, pl: &Playlist, metas: &HashMap<P
         return None;
     }
     let w = (ui.available_width() * 0.45).clamp(80.0, 200.0).min(room);
-    let resp = ui.add(egui::TextEdit::singleline(&mut query).hint_text(tr("Suchen")).desired_width(w));
+    let resp = ui.add(
+        egui::TextEdit::singleline(&mut query).hint_text(tr("Suchen")).desired_width(w).min_size(vec2(w, HEADER_CTRL_H)).vertical_align(egui::Align::Center),
+    );
     let (enter, shift, esc) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.modifiers.shift, i.key_pressed(egui::Key::Escape)));
     let mut jump = None;
     if resp.lost_focus() && esc {

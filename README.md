@@ -96,6 +96,9 @@ written in Rust. Click a folder and start playing: no database, no library impor
   After clicking into a playlist or the folder track list, ↑/↓ move through the tracks; Enter loads
   the marked track into the deck (playlists) or pre-listens to it (folder browser).
   Each playlist has a quick search that jumps to the matching track (Enter: next match).
+  **Sort** reorders the upcoming tracks: *Shuffle*, or *Harmonic*, which plans both playlists in the
+  A – B – A order auto-fade plays them, so that every transition fits by key first and tempo second (missing
+  keys are detected first). *Undo* restores the previous order.
 - **Skins** Night, Classic, Day and Neon, optionally with a brushed steel look.
   The layout adapts to the window size, including 4K monitors; drag the handle between decks and
   playlists to share the height, and zoom with ⌘/Ctrl +, − and 0 (70 to 150 %). **Full screen** via the button
