@@ -102,6 +102,12 @@ pub fn read_cover(path: &Path) -> Option<Cover> {
     }
 }
 
+/// Hat die Datei ein brauchbares Cover? Manche Rip-Programme haben leere oder kaputte Bilder
+/// eingebettet (z. B. 4 Byte); die zählen nicht.
+pub fn has_cover(path: &Path) -> bool {
+    read_cover(path).is_some()
+}
+
 /// Dekodiert JPEG/PNG, schneidet mittig quadratisch zu und verkleinert auf höchstens `COVER_SIZE`.
 pub fn decode_cover(data: &[u8]) -> anyhow::Result<Cover> {
     let img = image::load_from_memory(data)?;
@@ -126,11 +132,15 @@ pub struct TagFields {
     pub track: String,
     pub bpm: String,
     pub comment: String,
+    /// MusicBrainz-Kennung der Aufnahme (von der Online-Erkennung; im Editor nicht sichtbar, bleibt erhalten).
+    pub mb_recording_id: String,
+    /// MusicBrainz-Kennung der Ausgabe (Release).
+    pub mb_release_id: String,
 }
 
 impl TagFields {
     /// Felder mit ihrem Schlüssel im Tag, in der Reihenfolge des Editors.
-    fn keyed(&self) -> [(ItemKey, &String); 8] {
+    fn keyed(&self) -> [(ItemKey, &String); 10] {
         [
             (ItemKey::TrackTitle, &self.title),
             (ItemKey::TrackArtist, &self.artist),
@@ -140,6 +150,8 @@ impl TagFields {
             (ItemKey::RecordingDate, &self.year),
             (ItemKey::TrackNumber, &self.track),
             (ItemKey::Comment, &self.comment),
+            (ItemKey::MusicBrainzRecordingId, &self.mb_recording_id),
+            (ItemKey::MusicBrainzReleaseId, &self.mb_release_id),
         ]
     }
 }
@@ -190,6 +202,8 @@ pub fn read_tags(path: &Path) -> anyhow::Result<(TagFields, FileInfo)> {
             f.bpm = get(ItemKey::Bpm);
         }
         f.comment = get(ItemKey::Comment);
+        f.mb_recording_id = get(ItemKey::MusicBrainzRecordingId);
+        f.mb_release_id = get(ItemKey::MusicBrainzReleaseId);
     }
     Ok((f, info))
 }
@@ -197,11 +211,26 @@ pub fn read_tags(path: &Path) -> anyhow::Result<(TagFields, FileInfo)> {
 /// Schreibt die Felder in den Haupt-Tag der Datei (legt ihn an, wenn es keinen gibt).
 /// Leere Felder werden entfernt. Der Ton der Datei bleibt unverändert.
 pub fn write_tags(path: &Path, fields: &TagFields) -> anyhow::Result<()> {
-    write_tags_with_cover(path, fields, None)
+    write_tags_ext(path, fields, CoverChange::Keep)
 }
 
 /// Wie `write_tags`; mit `cover` (JPEG/PNG-Daten) wird außerdem das Front-Cover ersetzt.
 pub fn write_tags_with_cover(path: &Path, fields: &TagFields, cover: Option<&[u8]>) -> anyhow::Result<()> {
+    write_tags_ext(path, fields, cover.map_or(CoverChange::Keep, CoverChange::Set))
+}
+
+/// Was `write_tags_ext` mit dem Front-Cover macht.
+#[derive(Debug, Clone, Copy)]
+pub enum CoverChange<'a> {
+    Keep,
+    /// Ersetzen durch diese JPEG/PNG-Daten
+    Set(&'a [u8]),
+    /// Entfernen (Rückgängig nach einem ergänzten Cover)
+    Remove,
+}
+
+/// Schreibt die Felder und ändert auf Wunsch das Front-Cover, alles in einem Speichervorgang.
+pub fn write_tags_ext(path: &Path, fields: &TagFields, cover: CoverChange<'_>) -> anyhow::Result<()> {
     let mut file = lofty::read_from_path(path)?;
     if file.primary_tag().is_none() {
         let kind = file.primary_tag_type();
@@ -226,11 +255,21 @@ pub fn write_tags_with_cover(path: &Path, fields: &TagFields, cover: Option<&[u8
             tag.insert_text(ItemKey::Bpm, bpm);
         }
     }
-    if let Some(data) = cover {
-        let mut picture = Picture::from_reader(&mut &data[..]).map_err(|e| anyhow::anyhow!("Cover: {e}"))?;
-        picture.set_pic_type(PictureType::CoverFront);
-        tag.remove_picture_type(PictureType::CoverFront);
-        tag.push_picture(picture);
+    match cover {
+        CoverChange::Keep => {}
+        CoverChange::Set(data) => {
+            let mut picture = Picture::from_reader(&mut &data[..]).map_err(|e| anyhow::anyhow!("Cover: {e}"))?;
+            picture.set_pic_type(PictureType::CoverFront);
+            tag.remove_picture_type(PictureType::CoverFront);
+            // Kaputte Bilder (nicht dekodierbar) gleich mit entfernen
+            for i in (0..tag.pictures().len()).rev() {
+                if image::guess_format(tag.pictures()[i].data()).is_err() {
+                    tag.remove_picture(i);
+                }
+            }
+            tag.push_picture(picture);
+        }
+        CoverChange::Remove => tag.remove_picture_type(PictureType::CoverFront),
     }
     file.save_to_path(path, WriteOptions::default())?;
     Ok(())
@@ -319,6 +358,22 @@ mod tests {
         assert_eq!(&read_cover(&path).expect("Cover").rgba[..4], &[30, 30, 200, 255]);
         assert_eq!(read_tags(&path).unwrap().0.title, "Rot");
         assert!(write_tags_with_cover(&path, &fields, Some(b"kein Bild")).is_err());
+        // Kaputtes Bild (wie bei alten Rips: 4 Byte) zählt nicht als Cover und fliegt beim Ersetzen raus
+        let mut file = lofty::read_from_path(&path).unwrap();
+        let tag = file.primary_tag_mut().unwrap();
+        tag.remove_picture_type(PictureType::CoverFront);
+        tag.push_picture(Picture::unchecked(vec![0xff, 0xd8, 0, 0]).pic_type(PictureType::Other).mime_type(lofty::picture::MimeType::Jpeg).build());
+        file.save_to_path(&path, WriteOptions::default()).unwrap();
+        assert!(!has_cover(&path));
+        write_tags_with_cover(&path, &fields, Some(&png)).unwrap();
+        assert!(has_cover(&path));
+        assert_eq!(lofty::read_from_path(&path).unwrap().primary_tag().unwrap().pictures().len(), 1);
+        // MusicBrainz-Kennungen bleiben lesbar, Cover lässt sich wieder entfernen
+        let ids = TagFields { mb_recording_id: "efd07c6b-022e-4c79-bad6-38999e898fc4".into(), mb_release_id: "963bfd27-3de2-39bd-946f-eefeebff0bbe".into(), ..fields };
+        write_tags_ext(&path, &ids, CoverChange::Remove).unwrap();
+        let (back, _) = read_tags(&path).unwrap();
+        assert_eq!((back.mb_recording_id.as_str(), back.mb_release_id.as_str()), (ids.mb_recording_id.as_str(), ids.mb_release_id.as_str()));
+        assert!(read_cover(&path).is_none());
         std::fs::remove_file(&path).unwrap();
     }
 
@@ -363,5 +418,35 @@ mod tests {
         let m = TrackMeta::from_filename(Path::new("/m/01 Intro.flac"));
         assert_eq!(m.artist, "");
         assert_eq!(m.title, "01 Intro");
+    }
+}
+
+/// Kennungen in einer Kopie einer echten Datei: `FW_TEST_FILE=… cargo test -p fw-library ids_in_real_file -- --ignored`
+#[test]
+#[ignore]
+fn ids_in_real_file() {
+    let src = std::env::var("FW_TEST_FILE").expect("FW_TEST_FILE");
+    let ext = Path::new(&src).extension().unwrap().to_string_lossy().into_owned();
+    let path = std::env::temp_dir().join(format!("fw-ids-{}.{ext}", std::process::id()));
+    std::fs::copy(&src, &path).unwrap();
+    let (mut f, _) = read_tags(&path).unwrap();
+    f.mb_recording_id = "efd07c6b-022e-4c79-bad6-38999e898fc4".into();
+    f.mb_release_id = "963bfd27-3de2-39bd-946f-eefeebff0bbe".into();
+    write_tags(&path, &f).unwrap();
+    let (back, _) = read_tags(&path).unwrap();
+    std::fs::remove_file(&path).ok();
+    assert_eq!(back, f);
+}
+
+/// Cover einer echten Datei untersuchen: `FW_TEST_FILE=… cargo test -p fw-library inspect_cover -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn inspect_cover() {
+    let path = std::env::var("FW_TEST_FILE").expect("FW_TEST_FILE");
+    let file = lofty::read_from_path(&path).unwrap();
+    for t in file.tags() {
+        for p in t.pictures() {
+            println!("BILD {:?} {:?} {} Byte, dekodierbar: {:?}", p.pic_type(), p.mime_type(), p.data().len(), decode_cover(p.data()).map(|c| c.size).map_err(|e| e.to_string()));
+        }
     }
 }

@@ -6,6 +6,7 @@
 //! Musikdatei verlässt den Rechner nie. Abgefragt wird wie in `update.rs` über `curl`. Alles läuft in
 //! eigenen Threads; das Tag-Fenster liest die Ergebnisse über einen Kanal.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
@@ -13,6 +14,9 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
+use fw_library::TagFields;
+
+use crate::i18n::tr;
 use serde_json::Value;
 
 /// Anwendungsschlüssel bei AcoustID (für Open-Source-Programme kostenlos; öffentlich wie bei anderen freien Programmen).
@@ -22,10 +26,72 @@ const MB_URL: &str = "https://musicbrainz.org/ws/2";
 const CAA_URL: &str = "https://coverartarchive.org";
 /// MusicBrainz erlaubt eine Anfrage pro Sekunde und Programm; etwas Luft lassen.
 const MB_GAP: Duration = Duration::from_millis(1100);
+const ACOUSTID_GAP: Duration = Duration::from_millis(350);
 /// So viele Vorschläge zeigt das Fenster höchstens.
 const MAX_CANDIDATES: usize = 6;
 /// AcoustID-Treffer darunter sind meist falsch.
 const MIN_SCORE: f32 = 0.5;
+
+/// Felder, die die Online-Erkennung vorschlagen kann (Reihenfolge der Vergleichstabelle).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Field {
+    Title,
+    Artist,
+    Album,
+    AlbumArtist,
+    Year,
+    Track,
+    Genre,
+    Cover,
+}
+
+pub const FIELDS: [Field; 8] = [Field::Title, Field::Artist, Field::Album, Field::AlbumArtist, Field::Year, Field::Track, Field::Genre, Field::Cover];
+
+impl Field {
+    pub fn label(self) -> &'static str {
+        match self {
+            Field::Title => tr("Titel"),
+            Field::Artist => tr("Interpret"),
+            Field::Album => tr("Album"),
+            Field::AlbumArtist => tr("Album-Interpret"),
+            Field::Year => tr("Jahr"),
+            Field::Track => tr("Track"),
+            Field::Genre => tr("Genre"),
+            Field::Cover => tr("Cover"),
+        }
+    }
+
+    /// Schlüssel im Rückgängig-Journal.
+    pub fn key(self) -> &'static str {
+        match self {
+            Field::Title => "title",
+            Field::Artist => "artist",
+            Field::Album => "album",
+            Field::AlbumArtist => "album_artist",
+            Field::Year => "year",
+            Field::Track => "track",
+            Field::Genre => "genre",
+            Field::Cover => "cover",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Field> {
+        FIELDS.into_iter().find(|f| f.key() == key)
+    }
+
+    pub fn slot(self, f: &mut TagFields) -> Option<&mut String> {
+        Some(match self {
+            Field::Title => &mut f.title,
+            Field::Artist => &mut f.artist,
+            Field::Album => &mut f.album,
+            Field::AlbumArtist => &mut f.album_artist,
+            Field::Year => &mut f.year,
+            Field::Track => &mut f.track,
+            Field::Genre => &mut f.genre,
+            Field::Cover => return None,
+        })
+    }
+}
 
 /// Meldungen für das Tag-Fenster (deutscher Text = Schlüssel für `tr`, Übersetzung in i18n.rs).
 const OFFLINE: &str = "Keine Verbindung zum Erkennungsdienst. Ist der Rechner online?";
@@ -58,6 +124,8 @@ pub struct Candidate {
     pub recording_id: String,
     pub artist_ids: Vec<String>,
     pub albums: Vec<AlbumChoice>,
+    /// Bekannte Längen der zusammengelegten Aufnahmen in Sekunden
+    pub durations: Vec<f64>,
 }
 
 /// Nachrichten aus dem Such-Thread.
@@ -135,18 +203,10 @@ pub fn details(album: AlbumChoice, artist_ids: Vec<String>, ctx: egui::Context) 
     std::thread::Builder::new()
         .name("fw-identify-details".into())
         .spawn(move || {
-            let mut d = Details::default();
-            let genre_of = |url: String| -> Option<String> {
-                let body = mb_get(&url).ok()?;
-                top_genre(&serde_json::from_slice(&body).ok()?)
+            let d = Details {
+                genre: fetch_genre(&album.group_id, artist_ids.first().map(String::as_str)).unwrap_or_default(),
+                cover: fetch_cover(&album.group_id, &album.release_id),
             };
-            d.genre = genre_of(format!("{MB_URL}/release-group/{}?inc=genres&fmt=json", album.group_id))
-                .or_else(|| artist_ids.first().and_then(|a| genre_of(format!("{MB_URL}/artist/{a}?inc=genres&fmt=json"))))
-                .unwrap_or_default();
-            d.cover = http_get(&format!("{CAA_URL}/release-group/{}/front-500", album.group_id))
-                .or_else(|_| http_get(&format!("{CAA_URL}/release/{}/front-500", album.release_id)))
-                .ok()
-                .filter(|b| fw_library::meta::decode_cover(b).is_ok());
             let _ = tx.send(d);
             ctx.request_repaint();
         })
@@ -154,9 +214,58 @@ pub fn details(album: AlbumChoice, artist_ids: Vec<String>, ctx: egui::Context) 
     rx
 }
 
+/// Genre eines Albums (Release Group), sonst des Interpreten. Ergebnisse werden für die Laufzeit gemerkt,
+/// damit ein Ordner-Durchlauf je Album bzw. Interpret nur einmal fragt.
+pub fn fetch_genre(group_id: &str, artist_id: Option<&str>) -> Option<String> {
+    static CACHE: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
+    let cached = |url: String| -> Option<String> {
+        if let Some(hit) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_default().get(&url) {
+            return hit.clone();
+        }
+        let genre = mb_get(&url).ok().and_then(|b| top_genre(&serde_json::from_slice(&b).ok()?));
+        CACHE.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_default().insert(url, genre.clone());
+        genre
+    };
+    Some(group_id).filter(|g| !g.is_empty()).and_then(|g| cached(format!("{MB_URL}/release-group/{g}?inc=genres&fmt=json")))
+        .or_else(|| artist_id.and_then(|a| cached(format!("{MB_URL}/artist/{a}?inc=genres&fmt=json"))))
+}
+
+/// Front-Cover eines Albums aus dem Cover Art Archive (500 px), nur wenn es sich dekodieren lässt.
+pub fn fetch_cover(group_id: &str, release_id: &str) -> Option<Vec<u8>> {
+    let urls = [
+        Some(group_id).filter(|g| !g.is_empty()).map(|g| format!("{CAA_URL}/release-group/{g}/front-500")),
+        Some(release_id).filter(|r| !r.is_empty()).map(|r| format!("{CAA_URL}/release/{r}/front-500")),
+    ];
+    // archive.org setzt gelegentlich aus (Verbindungsfehler): je Adresse ein zweiter Versuch, nicht bei 404
+    let get = |u: &str| match http_get(u) {
+        Err(e) if !e.starts_with("404") => {
+            std::thread::sleep(Duration::from_secs(2));
+            http_get(u)
+        }
+        other => other,
+    };
+    urls.into_iter().flatten().find_map(|u| get(&u).ok()).filter(|b| fw_library::meta::decode_cover(b).is_ok())
+}
+
+/// Erkennt eine Datei nur am Klang (für den Ordner-Durchlauf). `Ok(leer)` = kein Treffer,
+/// `Err` = keine Antwort von AcoustID.
+pub fn identify_by_sound(path: &Path) -> Result<Vec<Candidate>, String> {
+    let fp = fw_library::identify::fingerprint(path).map_err(|e| format!("{e:#}"))?;
+    acoustid_lookup(&fp).map(|json| parse_acoustid(&json))
+}
+
 // ---------------------------------------------------------------- Netz
 
 fn acoustid_lookup(fp: &fw_library::identify::Fingerprint) -> Result<Value, String> {
+    // AcoustID erlaubt drei Anfragen pro Sekunde (für alle Threads zusammen)
+    static LAST: Mutex<Option<Instant>> = Mutex::new(None);
+    {
+        let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(t) = *last {
+            std::thread::sleep(ACOUSTID_GAP.saturating_sub(t.elapsed()));
+        }
+        *last = Some(Instant::now());
+    }
     let mut cmd = curl();
     for (k, v) in [
         ("client", ACOUSTID_KEY.to_string()),
@@ -291,6 +400,7 @@ pub fn parse_acoustid(json: &Value) -> Vec<Candidate> {
                     recording_id: rec["id"].as_str().unwrap_or_default().to_string(),
                     artist_ids: ids(&rec["artists"]),
                     albums,
+                    durations: rec["duration"].as_f64().into_iter().collect(),
                 },
             );
         }
@@ -339,6 +449,7 @@ pub fn parse_mb_search(json: &Value) -> Vec<Candidate> {
                 recording_id: rec["id"].as_str().unwrap_or_default().to_string(),
                 artist_ids: rec["artist-credit"].as_array().into_iter().flatten().filter_map(|c| c["artist"]["id"].as_str()).map(str::to_string).collect(),
                 albums,
+                durations: rec["length"].as_f64().map(|ms| ms / 1000.0).into_iter().collect(),
             },
         );
     }
@@ -362,6 +473,7 @@ fn add(out: &mut Vec<Candidate>, c: Candidate) {
             if o.year.is_empty() || (!c.year.is_empty() && c.year < o.year) {
                 o.year = c.year;
             }
+            o.durations.extend(c.durations);
         }
         None => out.push(c),
     }
@@ -385,7 +497,7 @@ fn finish(mut out: Vec<Candidate>) -> Vec<Candidate> {
 
 /// Bei (fast) gleicher Trefferquote zuerst, was zu den vorhandenen Angaben passt: Ein Fingerabdruck trifft
 /// oft mehrere Aufnahmen einer Single gleich gut (auch die B-Seite).
-fn rank_by_hint(list: &mut [Candidate], artist: &str, title: &str) {
+pub fn rank_by_hint(list: &mut [Candidate], artist: &str, title: &str) {
     let norm = |s: &str| s.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect::<String>();
     let (artist, title) = (norm(artist), norm(title));
     let fit = |c: &Candidate| -> u8 {
@@ -547,6 +659,7 @@ mod tests {
             recording_id: String::new(),
             artist_ids: vec![],
             albums: vec![],
+            durations: vec![],
         };
         let mut list = vec![c("Dangerous", 0.98), c("Personal Jesus (Telephone Stomp mix)", 0.98), c("Personal Jesus", 0.98), c("Sonst", 0.99)];
         rank_by_hint(&mut list, "Depeche Mode", "Personal Jesus");

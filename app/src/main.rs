@@ -35,6 +35,7 @@ mod selection;
 mod self_update;
 mod tag_cache;
 mod online_tags;
+mod tag_batch;
 mod tag_editor;
 mod session;
 mod settings;

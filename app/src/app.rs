@@ -271,6 +271,7 @@ pub struct FadeWerkDjApp {
     settings: Settings,
     settings_ui: SettingsUi,
     tag_editor: Option<TagEditor>,
+    tag_batch: Option<crate::tag_batch::TagBatch>,
     save_due: Option<f64>,
     /// Vollbild beim nächsten Bild umschalten (Taste im Browser).
     toggle_fullscreen: bool,
@@ -420,6 +421,7 @@ impl FadeWerkDjApp {
             settings,
             settings_ui: SettingsUi::default(),
             tag_editor: None,
+            tag_batch: None,
             save_due: None,
             toggle_fullscreen: false,
             persist: true,
@@ -618,6 +620,13 @@ impl FadeWerkDjApp {
                     ed.start_search(&cc.egui_ctx);
                 }
                 app.tag_editor = Some(ed);
+            }
+            // FW_BATCH=1: Ordner-Durchlauf „Tags online ergänzen“ für die Demo-Titel (mit FW_ONLINE=1 ohne Rückfrage)
+            if std::env::var_os("FW_BATCH").is_some() {
+                app.tag_batch = Some(crate::tag_batch::TagBatch::new(tracks.clone()));
+                if std::env::var_os("FW_ONLINE").is_some() {
+                    app.settings.online_lookup = true;
+                }
             }
             // FW_HISTORY=1: Beispiel-Historie aus den Demo-Titeln (nicht gespeichert), Tag geöffnet
             if std::env::var_os("FW_HISTORY").is_some() {
@@ -2426,6 +2435,11 @@ impl FadeWerkDjApp {
                 self.save_settings();
             }
             BrowserAction::EditTags(path) => self.tag_editor = Some(TagEditor::open(path)),
+            BrowserAction::OnlineTags(paths) => {
+                if self.tag_batch.is_none() {
+                    self.tag_batch = Some(crate::tag_batch::TagBatch::new(paths));
+                }
+            }
             BrowserAction::SearchMemory(remember, hide_duplicates, whole_words, search) => {
                 self.settings.remember_search = remember;
                 self.settings.hide_duplicates = hide_duplicates;
@@ -3128,6 +3142,9 @@ impl eframe::App for FadeWerkDjApp {
                     self.metas.remove(&path);
                     self.meta_requested.remove(&path);
                     self.meta_urgent.remove(&path);
+                    if let Some(b) = &mut self.tag_batch {
+                        b.saved(&path);
+                    }
                     self.request_meta_now(path);
                     self.notify(tr("Tags gespeichert"), now);
                 }
@@ -3135,6 +3152,30 @@ impl eframe::App for FadeWerkDjApp {
                 TagEditorEvent::AllowOnline => {
                     self.settings.online_lookup = true;
                     self.save_settings();
+                }
+            }
+        }
+        let busy: Vec<PathBuf> = (0..2).filter(|&d| self.ctl.shared.decks[d].is_playing()).filter_map(|d| self.decks[d].path.clone()).collect();
+        if let Some(event) = self.tag_batch.as_mut().and_then(|b| b.show(&ctx, self.settings.online_lookup, &busy)) {
+            use crate::tag_batch::BatchEvent;
+            match event {
+                BatchEvent::Close => self.tag_batch = None,
+                BatchEvent::AllowOnline => {
+                    self.settings.online_lookup = true;
+                    self.save_settings();
+                }
+                BatchEvent::Review(path) => {
+                    let mut ed = TagEditor::open(path);
+                    ed.start_search(&ctx);
+                    self.tag_editor = Some(ed);
+                }
+                BatchEvent::Changed(paths) => {
+                    for path in paths {
+                        self.metas.remove(&path);
+                        self.meta_requested.remove(&path);
+                        self.meta_urgent.remove(&path);
+                        self.request_meta_now(path);
+                    }
                 }
             }
         }

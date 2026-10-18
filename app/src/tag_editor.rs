@@ -8,7 +8,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use eframe::egui::{self, Align2, Frame, Margin, RichText, vec2};
 use fw_library::{FileInfo, TagFields, TrackMeta, read_cover, read_tags, write_tags_with_cover};
 
-use crate::online_tags::{self, Candidate, Details, Progress};
+use crate::online_tags::{self, Candidate, Details, FIELDS, Field, Progress};
 
 use crate::deck_ui::fmt_time;
 use crate::i18n::{Lang, lang, tr};
@@ -21,49 +21,6 @@ pub enum TagEditorEvent {
     Reveal(PathBuf),
     /// Der Nutzer hat der Online-Erkennung zugestimmt (Einstellung merken).
     AllowOnline,
-}
-
-/// Felder, die die Online-Erkennung vorschlagen kann (Reihenfolge der Vergleichstabelle).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Field {
-    Title,
-    Artist,
-    Album,
-    AlbumArtist,
-    Year,
-    Track,
-    Genre,
-    Cover,
-}
-
-const FIELDS: [Field; 8] = [Field::Title, Field::Artist, Field::Album, Field::AlbumArtist, Field::Year, Field::Track, Field::Genre, Field::Cover];
-
-impl Field {
-    fn label(self) -> &'static str {
-        match self {
-            Field::Title => tr("Titel"),
-            Field::Artist => tr("Interpret"),
-            Field::Album => tr("Album"),
-            Field::AlbumArtist => tr("Album-Interpret"),
-            Field::Year => tr("Jahr"),
-            Field::Track => tr("Track"),
-            Field::Genre => tr("Genre"),
-            Field::Cover => tr("Cover"),
-        }
-    }
-
-    fn slot(self, f: &mut TagFields) -> Option<&mut String> {
-        Some(match self {
-            Field::Title => &mut f.title,
-            Field::Artist => &mut f.artist,
-            Field::Album => &mut f.album,
-            Field::AlbumArtist => &mut f.album_artist,
-            Field::Year => &mut f.year,
-            Field::Track => &mut f.track,
-            Field::Genre => &mut f.genre,
-            Field::Cover => return None,
-        })
-    }
 }
 
 /// Zustand der Online-Erkennung im Fenster.

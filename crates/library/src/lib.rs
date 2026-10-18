@@ -14,7 +14,7 @@ pub mod waveform;
 pub mod worker;
 
 pub use key::{Camelot, estimate_key, parse_key};
-pub use meta::{Cover, FileInfo, TagFields, TrackMeta, read_cover, read_tags, write_tags, write_tags_with_cover};
+pub use meta::{Cover, CoverChange, FileInfo, TagFields, TrackMeta, has_cover, read_cover, read_tags, write_tags, write_tags_ext, write_tags_with_cover};
 pub use scan::{DirListing, is_system_dir, list_dir, walk_audio, walk_audio_progress};
 pub use sketch::WaveSketch;
 pub use waveform::Waveform;

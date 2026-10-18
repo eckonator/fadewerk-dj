@@ -54,6 +54,8 @@ pub enum BrowserAction {
     Analyze { paths: Vec<PathBuf>, force: bool },
     /// Wartende Analysen verwerfen.
     StopBpm,
+    /// Tags dieser Titel online ergänzen (Fenster mit Übersicht).
+    OnlineTags(Vec<PathBuf>),
     /// Gemerkte Einstellungen „Mit Unterordnern“ je Ordner (nur Abweichungen vom Standard).
     FolderRecursion(Vec<(PathBuf, bool)>),
     /// Historie: Tag umbenennen, löschen, exportieren; Einträge entfernen; Datei importieren.
@@ -277,6 +279,8 @@ enum FolderOp {
     Distribute,
     /// BPM und Tonart aller Titel ermitteln, denen eines davon fehlt.
     Analyze,
+    /// Tags online ergänzen.
+    OnlineTags,
 }
 
 /// Breite des Ordnerbaums ohne gespeicherten Wert und Grenzen beim Ziehen.
@@ -964,6 +968,7 @@ impl Browser {
                 FolderOp::Shuffled(list) => BrowserAction::AddShuffled { list, paths },
                 FolderOp::Distribute => BrowserAction::Distribute(paths),
                 FolderOp::Analyze => BrowserAction::Analyze { paths, force: false },
+                FolderOp::OnlineTags => BrowserAction::OnlineTags(paths),
             });
         }
 
@@ -2193,6 +2198,14 @@ fn list_tools(ui: &mut egui::Ui, ctx: &BrowserCtx<'_>, rows: &[PathBuf], rows_mi
         if ui.add_enabled(missing > 0, Button::new(tr("Analysieren"))).on_hover_text(tip).on_disabled_hover_text(tip).clicked() {
             out.push(BrowserAction::Analyze { paths: paths.to_vec(), force: false });
         }
+        let tip = if sel_rows.is_empty() {
+            tr("Tags der Titel in der Liste online ergänzen (erst Übersicht, dann schreiben)")
+        } else {
+            tr("Tags der ausgewählten Titel online ergänzen (erst Übersicht, dann schreiben)")
+        };
+        if ui.add_enabled(!paths.is_empty() && history.is_none(), Button::new(tr("Tags online"))).on_hover_text(tip).clicked() {
+            out.push(BrowserAction::OnlineTags(paths.to_vec()));
+        }
         if let Some(date) = history
             && ui.add_enabled(!rows.is_empty(), Button::new(tr("Wiederherstellen"))).on_hover_text(tr(RESTORE_HINT)).clicked()
         {
@@ -2416,6 +2429,10 @@ fn folder_menu(ui: &mut egui::Ui, count: usize, removable: bool) -> Option<Folde
     let hint = tr("Im Hintergrund für alle Titel, denen BPM oder Tonart fehlt (im Tag oder schon ermittelt). Die Werte werden gemerkt.");
     if ui.button(tr("Fehlende BPM und Tonarten ermitteln")).on_hover_text(hint).clicked() {
         pick = Some(FolderMenu::Op(FolderOp::Analyze));
+    }
+    let hint = tr("Erkennt alle Titel am Klang und ergänzt leere oder offensichtlich falsche Tags. Vorher siehst du eine Übersicht.");
+    if ui.button(tr("Tags online ergänzen …")).on_hover_text(hint).clicked() {
+        pick = Some(FolderMenu::Op(FolderOp::OnlineTags));
     }
     ui.separator();
     if ui.button(reveal_label()).clicked() {

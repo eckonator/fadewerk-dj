@@ -7,6 +7,8 @@
 //! - `FW_PREVIEW=1` hört in der Demo den zweiten Titel vor.
 //! - `FW_TAGS=1` öffnet in der Demo das Fenster „Titelinfo & Tags“ für den ersten Titel; mit `FW_ONLINE=1`
 //!   startet dort gleich „Online suchen“ (fragt AcoustID/MusicBrainz, ohne Rückfrage).
+//! - `FW_BATCH=1` öffnet in der Demo „Tags online ergänzen“ für alle Titel des Startordners (mit `FW_ONLINE=1`
+//!   startet die Erkennung sofort; geschrieben wird nur per Klick).
 //! - `FW_SELECT=1` wählt in der Demo im Ordnerbrowser den 2. bis 4. Titel aus.
 //! - `FW_HISTORY=1` legt in der Demo zwei Beispieltage der Historie an (einer mit fehlender Datei) und öffnet den neueren.
 //! - `FW_BPM=1` ermittelt in der Demo die fehlenden BPM des Startordners (Ergebnis in `bpm.json`, mit `FW_PERSIST=1`).
