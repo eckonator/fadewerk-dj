@@ -114,6 +114,8 @@ pub struct Settings {
     pub deck_height: f32,
     /// Beim Start bei GitHub nach einer neuen Version fragen; `None` = noch nicht gefragt.
     pub update_check: Option<bool>,
+    /// Titel online erkennen (AcoustID/MusicBrainz) erlaubt; vorher fragt das Tag-Fenster einmal nach.
+    pub online_lookup: bool,
     /// Gespielte Titel in der Historie aufzeichnen.
     pub record_history: bool,
     /// Bildschirm und Rechner nicht in den Ruhezustand gehen lassen, solange Musik spielt.
@@ -175,6 +177,7 @@ impl Default for Settings {
             ui_zoom: 1.0,
             deck_height: 0.0,
             update_check: None,
+            online_lookup: false,
             record_history: true,
             keep_awake: true,
             mute_others: false,

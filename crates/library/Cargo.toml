@@ -17,3 +17,5 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 dirs = "7"
 # FFT für die Tonart-Erkennung (MIT/Apache, kommt ohnehin über symphonia mit)
 rustfft = "6"
+# Akustischer Fingerabdruck für die Online-Erkennung (MIT, reines Rust)
+rusty-chromaprint = "0.3.0"

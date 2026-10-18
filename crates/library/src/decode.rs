@@ -19,15 +19,20 @@ const WAVE_FORMAT_MPEG: u16 = 0x0050;
 /// Dekodiert eine Audiodatei vollständig in den Speicher (Stereo, f32).
 /// Mono wird verdoppelt, mehr als zwei Kanäle werden auf die ersten beiden reduziert.
 pub fn decode_file(path: &Path) -> anyhow::Result<TrackAudio> {
+    decode_file_head(path, None)
+}
+
+/// Wie `decode_file`, hört aber nach `max_secs` Sekunden auf (`None` = ganzer Titel).
+pub fn decode_file_head(path: &Path, max_secs: Option<f64>) -> anyhow::Result<TrackAudio> {
     let bytes = std::fs::read(path).with_context(|| format!("{} lässt sich nicht öffnen", path.display()))?;
     let ext = path.extension().and_then(|e| e.to_str()).map(str::to_owned);
-    match decode_bytes(bytes, ext.as_deref()) {
+    match decode_bytes(bytes, ext.as_deref(), max_secs) {
         Ok(t) => Ok(t),
         Err(e) => {
             // MP3 in einer WAV-Hülle (alte Rip-Programme): den Datenblock als MP3 dekodieren
             let bytes = std::fs::read(path)?;
             match wav_payload(&bytes) {
-                Some((WAVE_FORMAT_MPEGLAYER3 | WAVE_FORMAT_MPEG, data)) => decode_bytes(data.to_vec(), Some("mp3"))
+                Some((WAVE_FORMAT_MPEGLAYER3 | WAVE_FORMAT_MPEG, data)) => decode_bytes(data.to_vec(), Some("mp3"), max_secs)
                     .with_context(|| format!("{}: MP3 in WAV-Hülle nicht lesbar", path.display())),
                 _ => Err(e.context(format!("{}", path.display()))),
             }
@@ -72,7 +77,7 @@ fn id3v2_len(bytes: &[u8]) -> usize {
     10 + size + footer
 }
 
-fn decode_bytes(bytes: Vec<u8>, ext: Option<&str>) -> anyhow::Result<TrackAudio> {
+fn decode_bytes(bytes: Vec<u8>, ext: Option<&str>, max_secs: Option<f64>) -> anyhow::Result<TrackAudio> {
     let mss = MediaSourceStream::new(Box::new(Cursor::new(bytes)), Default::default());
     let mut hint = Hint::new();
     if let Some(ext) = ext {
@@ -124,6 +129,9 @@ fn decode_bytes(bytes: Vec<u8>, ext: Option<&str>) -> anyhow::Result<TrackAudio>
         frames.reserve(tmp.len() / ch);
         for f in tmp.chunks_exact(ch) {
             frames.push(if ch == 1 { [f[0], f[0]] } else { [f[0], f[1]] });
+        }
+        if max_secs.is_some_and(|m| frames.len() as f64 >= m * sample_rate as f64) {
+            break;
         }
     }
 

@@ -612,7 +612,12 @@ impl FadeWerkDjApp {
             if std::env::var_os("FW_TAGS").is_some()
                 && let Some(t) = tracks.first()
             {
-                app.tag_editor = Some(TagEditor::open(t.clone()));
+                let mut ed = TagEditor::open(t.clone());
+                // FW_ONLINE=1: gleich online suchen (ohne Rückfrage)
+                if std::env::var_os("FW_ONLINE").is_some() {
+                    ed.start_search(&cc.egui_ctx);
+                }
+                app.tag_editor = Some(ed);
             }
             // FW_HISTORY=1: Beispiel-Historie aus den Demo-Titeln (nicht gespeichert), Tag geöffnet
             if std::env::var_os("FW_HISTORY").is_some() {
@@ -938,6 +943,10 @@ impl FadeWerkDjApp {
             }
             SettingsAction::FxIcon(slot, key) => {
                 self.settings.fx_slot_mut(slot).icon = Some(key);
+                self.save_settings();
+            }
+            SettingsAction::OnlineLookup(on) => {
+                self.settings.online_lookup = on;
                 self.save_settings();
             }
             SettingsAction::UpdateCheck(on) => {
@@ -3111,7 +3120,7 @@ impl eframe::App for FadeWerkDjApp {
             playing: self.ctl.shared.decks.iter().any(|s| s.is_playing()),
         };
         self.settings_ui.show(&ctx, &sctx, &mut settings_actions);
-        if let Some(event) = self.tag_editor.as_mut().and_then(|ed| ed.show(&ctx)) {
+        if let Some(event) = self.tag_editor.as_mut().and_then(|ed| ed.show(&ctx, self.settings.online_lookup)) {
             match event {
                 TagEditorEvent::Close => self.tag_editor = None,
                 TagEditorEvent::Saved(path) => {
@@ -3123,6 +3132,10 @@ impl eframe::App for FadeWerkDjApp {
                     self.notify(tr("Tags gespeichert"), now);
                 }
                 TagEditorEvent::Reveal(path) => self.browser_action(BrowserAction::Reveal(path), now),
+                TagEditorEvent::AllowOnline => {
+                    self.settings.online_lookup = true;
+                    self.save_settings();
+                }
             }
         }
         if let Some(event) = self.history_dialog.as_mut().and_then(|d| d.show(&ctx)) {

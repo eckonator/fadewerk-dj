@@ -5,7 +5,8 @@
 //! - `FW_DEMO=1` verteilt die Titel des Startordners auf beide Playlists und startet Player A.
 //! - `FW_SKIN=nacht|classic|tag|neon` und `FW_LANG=de|en` überschreiben Skin und Sprache (ohne zu speichern).
 //! - `FW_PREVIEW=1` hört in der Demo den zweiten Titel vor.
-//! - `FW_TAGS=1` öffnet in der Demo das Fenster „Titelinfo & Tags“ für den ersten Titel.
+//! - `FW_TAGS=1` öffnet in der Demo das Fenster „Titelinfo & Tags“ für den ersten Titel; mit `FW_ONLINE=1`
+//!   startet dort gleich „Online suchen“ (fragt AcoustID/MusicBrainz, ohne Rückfrage).
 //! - `FW_SELECT=1` wählt in der Demo im Ordnerbrowser den 2. bis 4. Titel aus.
 //! - `FW_HISTORY=1` legt in der Demo zwei Beispieltage der Historie an (einer mit fehlender Datei) und öffnet den neueren.
 //! - `FW_BPM=1` ermittelt in der Demo die fehlenden BPM des Startordners (Ergebnis in `bpm.json`, mit `FW_PERSIST=1`).

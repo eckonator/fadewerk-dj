@@ -45,6 +45,7 @@ pub enum SettingsAction {
     Platters(bool),
     OpenGl(bool),
     UpdateCheck(bool),
+    OnlineLookup(bool),
     /// Sofort bei GitHub nach einer neuen Version fragen.
     CheckUpdateNow,
     RecordHistory(bool),
@@ -391,7 +392,7 @@ impl SettingsUi {
 
         ui.add_space(10.0);
         ui.label(RichText::new(tr("Verwendete Fremdbestandteile")).strong());
-        ui.label(RichText::new(tr("Schriften Chakra Petch und DSEG (SIL Open Font License 1.1), egui und eframe (MIT/Apache-2.0), cpal (Apache-2.0), Symphonia (MPL-2.0), lofty (MIT/Apache-2.0) und weitere Rust-Bibliotheken. Die vollständige Liste liegt jedem Release als THIRD-PARTY-LICENSES.yml bei.")).size(12.5).color(theme::dim()));
+        ui.label(RichText::new(tr("Schriften Chakra Petch und DSEG (SIL Open Font License 1.1), egui und eframe (MIT/Apache-2.0), cpal (Apache-2.0), Symphonia (MPL-2.0), lofty (MIT/Apache-2.0), rusty-chromaprint (MIT) und weitere Rust-Bibliotheken. Titelerkennung über AcoustID und MusicBrainz (Daten CC0), Cover über das Cover Art Archive. Die vollständige Liste liegt jedem Release als THIRD-PARTY-LICENSES.yml bei.")).size(12.5).color(theme::dim()));
 
         ui.add_space(10.0);
         ui.label(RichText::new(tr("Lizenztexte")).strong());
@@ -566,6 +567,14 @@ fn general_options(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<Setting
             .size(12.0)
             .color(theme::dim()),
     );
+
+    ui.add_space(10.0);
+    ui.label(RichText::new(tr("Titel online erkennen")).strong());
+    let mut online = c.settings.online_lookup;
+    if ui.checkbox(&mut online, RichText::new(tr("„Online suchen“ im Tag-Fenster erlauben")).size(14.0)).changed() {
+        out.push(SettingsAction::OnlineLookup(online));
+    }
+    ui.label(RichText::new(tr("Nur auf Knopfdruck: Ein akustischer Fingerabdruck und die Länge gehen an AcoustID, ohne Treffer Interpret und Titel an MusicBrainz, für das Cover die Album-Kennung an das Cover Art Archive. Die Musikdatei bleibt auf deinem Rechner.")).size(11.5).color(theme::dim()));
 
     ui.add_space(10.0);
     ui.label(RichText::new(tr("Updates")).strong());

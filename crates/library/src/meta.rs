@@ -2,7 +2,7 @@
 use std::path::Path;
 
 use lofty::config::WriteOptions;
-use lofty::picture::PictureType;
+use lofty::picture::{Picture, PictureType};
 use lofty::prelude::*;
 use lofty::tag::Tag;
 
@@ -197,6 +197,11 @@ pub fn read_tags(path: &Path) -> anyhow::Result<(TagFields, FileInfo)> {
 /// Schreibt die Felder in den Haupt-Tag der Datei (legt ihn an, wenn es keinen gibt).
 /// Leere Felder werden entfernt. Der Ton der Datei bleibt unverändert.
 pub fn write_tags(path: &Path, fields: &TagFields) -> anyhow::Result<()> {
+    write_tags_with_cover(path, fields, None)
+}
+
+/// Wie `write_tags`; mit `cover` (JPEG/PNG-Daten) wird außerdem das Front-Cover ersetzt.
+pub fn write_tags_with_cover(path: &Path, fields: &TagFields, cover: Option<&[u8]>) -> anyhow::Result<()> {
     let mut file = lofty::read_from_path(path)?;
     if file.primary_tag().is_none() {
         let kind = file.primary_tag_type();
@@ -220,6 +225,12 @@ pub fn write_tags(path: &Path, fields: &TagFields) -> anyhow::Result<()> {
         if !tag.insert_text(ItemKey::IntegerBpm, int) {
             tag.insert_text(ItemKey::Bpm, bpm);
         }
+    }
+    if let Some(data) = cover {
+        let mut picture = Picture::from_reader(&mut &data[..]).map_err(|e| anyhow::anyhow!("Cover: {e}"))?;
+        picture.set_pic_type(PictureType::CoverFront);
+        tag.remove_picture_type(PictureType::CoverFront);
+        tag.push_picture(picture);
     }
     file.save_to_path(path, WriteOptions::default())?;
     Ok(())
@@ -287,6 +298,27 @@ mod tests {
         write_tags(&path, &TagFields { genre: String::new(), ..back }).unwrap();
         assert_eq!(read_tags(&path).unwrap().0.genre, "");
         assert_eq!(read_meta(&path).unwrap().title, "Ice Blue");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn writes_cover_with_tags() {
+        let path = std::env::temp_dir().join(format!("fw-cover-write-{}.wav", std::process::id()));
+        write_wav(&path);
+        let img = image::RgbImage::from_fn(40, 40, |_, _| image::Rgb([200, 30, 30]));
+        let mut png = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        let fields = TagFields { title: "Rot".into(), ..Default::default() };
+        write_tags_with_cover(&path, &fields, Some(&png)).unwrap();
+        assert_eq!(&read_cover(&path).expect("Cover").rgba[..4], &[200, 30, 30, 255]);
+        // Zweites Cover ersetzt das erste
+        let img = image::RgbImage::from_fn(40, 40, |_, _| image::Rgb([30, 30, 200]));
+        png.clear();
+        img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        write_tags_with_cover(&path, &fields, Some(&png)).unwrap();
+        assert_eq!(&read_cover(&path).expect("Cover").rgba[..4], &[30, 30, 200, 255]);
+        assert_eq!(read_tags(&path).unwrap().0.title, "Rot");
+        assert!(write_tags_with_cover(&path, &fields, Some(b"kein Bild")).is_err());
         std::fs::remove_file(&path).unwrap();
     }
 
