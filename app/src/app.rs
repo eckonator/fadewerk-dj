@@ -2722,6 +2722,11 @@ impl eframe::App for FadeWerkDjApp {
                 let p = ui.ctx().layer_painter(ui.layer_id());
                 let face = crate::hw::steel_face(theme::panel(), theme::skin().dark);
                 crate::hw::surface(&p, ui.max_rect().expand(10.0), 0.0, crate::hw::lighten(face, 0.04), crate::hw::darken(face, 0.18));
+            } else if theme::alu() {
+                // Aluminium: gestrahltes Korn, leicht heller oben
+                let p = ui.ctx().layer_painter(ui.layer_id());
+                let face = theme::panel();
+                crate::hw::surface(&p, ui.max_rect().expand(10.0), 0.0, crate::hw::lighten(face, if theme::skin().dark { 0.03 } else { 0.15 }), crate::hw::darken(face, 0.06));
             }
             browser.show(ui, &bctx, &mut browser_actions)
         };
@@ -2935,6 +2940,8 @@ impl eframe::App for FadeWerkDjApp {
         egui::CentralPanel::default().frame(Frame::new().fill(theme::ground()).inner_margin(Margin::same(8))).show(ui, |ui| {
             if theme::brushed() {
                 crate::hw::brushed_overlay(ui.painter(), ui.max_rect().expand(8.0), 0.0, theme::skin().dark);
+            } else if theme::alu() {
+                crate::hw::grain_overlay(ui.painter(), ui.max_rect().expand(8.0), 0.0, theme::skin().dark);
             }
             // Links Player A über Playlist A, rechts B über B. Die Mitte (Mixer und Auto-Fade)
             // läuft über die ganze Höhe, damit keine Zeile die andere in die Länge zieht.

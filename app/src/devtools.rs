@@ -3,7 +3,7 @@
 //!
 //! - `FW_SCREENSHOT=/pfad/bild.bmp` speichert kurz nach dem Start ein Bild des Fensters und beendet die App.
 //! - `FW_DEMO=1` verteilt die Titel des Startordners auf beide Playlists und startet Player A.
-//! - `FW_SKIN=nacht|classic|tag|neon` und `FW_LANG=de|en` überschreiben Skin und Sprache (ohne zu speichern).
+//! - `FW_SKIN=nacht|classic|tag|neon|silber|anthrazit` und `FW_LANG=de|en` überschreiben Skin und Sprache (ohne zu speichern).
 //! - `FW_PREVIEW=1` hört in der Demo den zweiten Titel vor.
 //! - `FW_TAGS=1` öffnet in der Demo das Fenster „Titelinfo & Tags“ für den ersten Titel; mit `FW_ONLINE=1`
 //!   startet dort gleich „Online suchen“ (fragt AcoustID/MusicBrainz, ohne Rückfrage).
@@ -83,6 +83,8 @@ impl DevTools {
                 "classic" => Some(SkinId::Classic),
                 "tag" => Some(SkinId::Tag),
                 "neon" => Some(SkinId::Neon),
+                "silber" => Some(SkinId::Silber),
+                "anthrazit" => Some(SkinId::Anthrazit),
                 _ => None,
             }),
             lang: std::env::var("FW_LANG").ok().map(|l| if l == "en" { Lang::En } else { Lang::De }),

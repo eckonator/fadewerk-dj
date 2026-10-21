@@ -502,7 +502,7 @@ fn paint_platter(ui: &egui::Ui, c: Pos2, r: f32, angle: f32, color: Color32, m: 
     for k in 0..if lite { 0 } else { 6 } {
         p.circle_filled(c + vec2(0.0, 5.0), r + 4.0 - k as f32 * 1.5, Color32::from_black_alpha(18));
     }
-    p.circle_filled(c, r, Color32::from_rgb(0x2c, 0x34, 0x46));
+    p.circle_filled(c, r, hw::platter_rim());
     let arc = |from: f32, to: f32, rr: f32, stroke: Stroke| {
         let pts: Vec<Pos2> = (0..=24).map(|i| { let t = from + (to - from) * i as f32 / 24.0; c + vec2(t.cos(), t.sin()) * rr }).collect();
         p.add(egui::Shape::line(pts, stroke));

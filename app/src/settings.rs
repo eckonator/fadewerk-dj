@@ -130,7 +130,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             language: Lang::De,
-            skin: SkinId::Nacht,
+            skin: SkinId::Anthrazit,
             brushed_steel: false,
             platters: true,
             browser_height: 0.0,

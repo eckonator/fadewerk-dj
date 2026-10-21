@@ -619,6 +619,8 @@ fn look_tab(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction
             p.rect_filled(panel, CornerRadius::same(4), s.panel);
             if theme::brushed() {
                 crate::hw::brushed_overlay(p, panel, 4.0, s.dark);
+            } else if s.finish == theme::Finish::Alu && !theme::lite() {
+                crate::hw::grain_overlay(p, panel, 4.0, s.dark);
             }
             let swatches: [Color32; 5] = [s.deck_a, s.deck_b, s.cue, s.play, s.well];
             for (k, col) in swatches.iter().enumerate() {

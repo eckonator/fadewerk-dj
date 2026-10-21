@@ -14,11 +14,21 @@ use crate::i18n::{Lang, lang};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SkinId {
-    #[default]
     Nacht,
     Classic,
     Tag,
     Neon,
+    Silber,
+    #[default]
+    Anthrazit,
+}
+
+/// Oberfläche des Gehäuses: lackiertes Blech oder eloxiertes Aluminium wie bei High-End-HiFi
+/// (feinkörnig gestrahlt, gefaste Lichtkanten, gedrehte Knöpfe, LED-Fenster in den Tasten).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Finish {
+    Paint,
+    Alu,
 }
 
 pub struct Skin {
@@ -28,6 +38,7 @@ pub struct Skin {
     pub about_de: &'static str,
     pub about_en: &'static str,
     pub dark: bool,
+    pub finish: Finish,
     pub ground: Color32,
     pub panel: Color32,
     pub panel2: Color32,
@@ -57,14 +68,61 @@ const fn rgb(hex: u32) -> Color32 {
     Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
 }
 
-pub static SKINS: [Skin; 4] = [
+pub static SKINS: [Skin; 6] = [
+    Skin {
+        id: SkinId::Anthrazit,
+        name_de: "Anthrazit",
+        name_en: "Anthracite",
+        about_de: "Dunkel eloxiertes Aluminium, gedrehte Knöpfe und schwarzes Glas. Ruhig und edel.",
+        about_en: "Dark anodised aluminium, turned knobs and black glass. Calm and refined.",
+        dark: true,
+        finish: Finish::Alu,
+        ground: rgb(0x141516),
+        panel: rgb(0x2b2c2f),
+        panel2: rgb(0x393b3f),
+        well: rgb(0x050506),
+        well_ink: rgb(0xf2f2f4),
+        line: rgb(0x46484c),
+        ink: rgb(0xf2f2f4),
+        dim: rgb(0xb6b7bc),
+        faint: rgb(0x88898f),
+        deck_a: rgb(0xff9f0a),
+        deck_b: rgb(0x5ac8fa),
+        cue: rgb(0xff453a),
+        play: rgb(0x32d74b),
+        yellow: rgb(0xffd60a),
+    },
+    Skin {
+        id: SkinId::Silber,
+        name_de: "Silber",
+        name_en: "Silver",
+        about_de: "Eloxiertes Aluminium wie High-End-HiFi, gedrehte Knöpfe und LED-Fenster.",
+        about_en: "Anodised aluminium like high-end hi-fi, turned knobs and LED windows.",
+        dark: false,
+        finish: Finish::Alu,
+        ground: rgb(0xb4b8be),
+        panel: rgb(0xd9dce0),
+        panel2: rgb(0xe4e6e9),
+        well: rgb(0x0b0c0e),
+        well_ink: rgb(0xf2f4f7),
+        line: rgb(0x9fa4ab),
+        ink: rgb(0x1d1d1f),
+        dim: rgb(0x3f4247),
+        faint: rgb(0x62666c),
+        deck_a: rgb(0xc8650f),
+        deck_b: rgb(0x0a6fd0),
+        cue: rgb(0xd0281f),
+        play: rgb(0x1a8a3a),
+        yellow: rgb(0xb88a00),
+    },
     Skin {
         id: SkinId::Nacht,
         name_de: "Nacht",
         name_en: "Night",
-        about_de: "Dunkles Blaugrau, Bernstein und Eisblau. Der Standard.",
-        about_en: "Dark blue-grey with amber and ice blue. The default.",
+        about_de: "Dunkles Blaugrau, Bernstein und Eisblau..",
+        about_en: "Dark blue-grey with amber and ice blue..",
         dark: true,
+        finish: Finish::Paint,
         ground: rgb(0x0a0e16),
         panel: rgb(0x111826),
         panel2: rgb(0x172033),
@@ -87,6 +145,7 @@ pub static SKINS: [Skin; 4] = [
         about_de: "Gebürstetes Graphit mit LCD-Anzeigen, wie DJ-Software um 2005.",
         about_en: "Brushed graphite with LCD displays, like DJ software around 2005.",
         dark: true,
+        finish: Finish::Paint,
         ground: rgb(0x2a2d32),
         panel: rgb(0x3a3e45),
         panel2: rgb(0x4b5059),
@@ -109,6 +168,7 @@ pub static SKINS: [Skin; 4] = [
         about_de: "Hell für Tageslicht und Bühnen im Freien. Anzeigen bleiben dunkel.",
         about_en: "Light for daylight and outdoor stages. Displays stay dark.",
         dark: false,
+        finish: Finish::Paint,
         ground: rgb(0xe4e8ef),
         panel: rgb(0xf7f8fb),
         panel2: rgb(0xe2e7ef),
@@ -132,6 +192,7 @@ pub static SKINS: [Skin; 4] = [
         about_de: "Club-Look mit Pink und Türkis auf Tiefviolett.",
         about_en: "Club look with pink and teal on deep violet.",
         dark: true,
+        finish: Finish::Paint,
         ground: rgb(0x0c0a16),
         panel: rgb(0x151229),
         panel2: rgb(0x211c3d),
@@ -169,6 +230,11 @@ pub fn set_brushed(on: bool) {
 
 pub fn brushed() -> bool {
     BRUSHED.load(Ordering::Relaxed) && !lite()
+}
+
+/// Aktiver Skin ist aus Aluminium (siehe [`Finish`]); in der sparsamen Darstellung nicht.
+pub fn alu() -> bool {
+    skin().finish == Finish::Alu && !lite()
 }
 
 static LITE: AtomicBool = AtomicBool::new(false);

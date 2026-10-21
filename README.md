@@ -3,14 +3,14 @@
 **Two decks, two playlists, auto-fade.** A DJ player for macOS, Windows and Linux,
 written in Rust. Click a folder and start playing: no database, no library import.
 
-![FadeWerk DJ with the “Night” skin](docs/screenshot.png)
+![FadeWerk DJ with the “Anthracite” skin](docs/screenshot.png)
 
 ![FadeWerk mode: waveforms behind the playlist tracks and the fade editor open below a track](docs/screenshot-fadewerk.png)
 
 <details>
-<summary>“Classic” skin with brushed steel, the crossfade curve, a day of the history and a track playing in the headphones</summary>
+<summary>“Silver” skin with brushed steel, the crossfade curve, a day of the history and a track playing in the headphones</summary>
 
-![FadeWerk DJ with the “Classic” skin and brushed steel](docs/screenshot-steel.png)
+![FadeWerk DJ with the “Silver” skin and brushed steel](docs/screenshot-steel.png)
 </details>
 
 *The screenshots show self-generated demo tracks (`scripts/make-demo-tracks.py`).*
@@ -99,7 +99,7 @@ written in Rust. Click a folder and start playing: no database, no library impor
   **Sort** reorders the upcoming tracks: *Shuffle*, or *Harmonic*, which plans both playlists in the
   A – B – A order auto-fade plays them, so that every transition fits by key first and tempo second (missing
   keys are detected first). *Undo* restores the previous order.
-- **Skins** Night, Classic, Day and Neon, optionally with a brushed steel look.
+- **Skins** Anthracite (default), Silver, Night, Classic, Day and Neon; Anthracite and Silver look like anodised aluminium hi-fi gear, all optionally with a brushed steel look.
   The layout adapts to the window size, including 4K monitors; drag the handle between decks and
   playlists to share the height, and zoom with ⌘/Ctrl +, − and 0 (70 to 150 %). **Full screen** via the button
   in the folder browser, F11 or ⌃⌘F on macOS. On wide monitors, the button next to it moves the
@@ -220,7 +220,7 @@ Code comments are in German; issues and contributions in English are welcome.
 | `FW_DEMO=1` | Spreads the tracks of the start folder across both playlists and starts deck A. |
 | `FW_SCREENSHOT=/path/image.bmp` | Saves a screenshot of the window shortly after start, then quits. |
 | `FW_SIZE=1600x1000` | Window size. |
-| `FW_SKIN=nacht\|classic\|tag\|neon`, `FW_STEEL=1`, `FW_LITE=1`, `FW_LANG=de\|en` | Look (`FW_LITE` = lightweight display) and language. |
+| `FW_SKIN=anthrazit\|silber\|nacht\|classic\|tag\|neon`, `FW_STEEL=1`, `FW_LITE=1`, `FW_LANG=de\|en` | Look (`FW_LITE` = lightweight display) and language. |
 | `FW_PREVIEW=1` | Pre-listens to the second track in the demo. |
 | `FW_SELECT=1` | Selects tracks 2 to 4 in the folder browser. |
 | `FW_HISTORY=1` | Creates two example days in the history (one with a missing file) and opens the newer one. |
