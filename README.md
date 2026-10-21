@@ -76,8 +76,8 @@ written in Rust. Click a folder and start playing: no database, no library impor
   that the right output is chosen.
 - **Mixer** with LED meters (A, main, B; on wider windows the main meter adds a spectrum of up to
   ten octave bands between left and right), channel faders, master and headphone mix, and a
-  **3-band EQ per deck** (isolator, −26 to +6 dB) with kill buttons, plus a **filter knob** per deck
-  (left low-pass, right high-pass, centre off, slight resonance). Below the crossfader, tabs for
+  **3-band EQ per deck** (isolator, −26 to +6 dB) with kill buttons. Each deck has a **filter knob** above its
+  pitch fader (left low-pass, right high-pass, centre off, slight resonance). Below the crossfader, tabs for
   pads, headphones, curve (crossfade curve and fade time) and motor keep the centre column tidy; one is open at a time.
   Right-click or double-click resets any fader to its default; with the mouse over a fader or knob,
   the arrow keys or the mouse wheel move it step by step. Click the fade-time display to type in a value.

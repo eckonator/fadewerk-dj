@@ -58,6 +58,8 @@ pub struct DeckModel<'a> {
     /// Passt harmonisch zum Titel, der gerade auf Sendung ist (Display zeigt „PASST“).
     pub key_fits: bool,
     pub pitch_pct: f32,
+    /// Filter, −1 Tiefpass bis +1 Hochpass, 0 = aus.
+    pub filter: f32,
     /// Auto-Sync steuert gerade den Pitch (SYNC-Taste leuchtet).
     pub auto_synced: bool,
     pub position: f64,
@@ -104,6 +106,7 @@ pub enum DeckAction {
     Sync,
     Loop(u32),
     Pitch(f32),
+    Filter(f32),
     Seek(f64),
     ScratchBegin,
     /// Bewegung der Hand in Sekunden Titelzeit.
@@ -167,6 +170,7 @@ pub fn show(ui: &mut egui::Ui, m: &DeckModel<'_>, out: &mut Vec<DeckAction>) {
         };
         let max_w = CONTROLS_MAX_W_NO_PLATTER * k();
         let ctrl_rect = if ctrl_rect.width() > max_w { Rect::from_center_size(ctrl_rect.center(), vec2(max_w, ctrl_rect.height())) } else { ctrl_rect };
+        let pitch_rect = centered_pitch(pitch_rect, ctrl_rect, avail, mirrored);
         ui.allocate_rect(Rect::from_min_max(avail.min, pos2(avail.right(), avail.top() + h)), Sense::hover());
         ui.scope_builder(UiBuilder::new().max_rect(ctrl_rect), |ui| controls(ui, m, color, out));
         ui.scope_builder(UiBuilder::new().max_rect(pitch_rect), |ui| pitch(ui, m, out));
@@ -177,21 +181,26 @@ pub fn show(ui: &mut egui::Ui, m: &DeckModel<'_>, out: &mut Vec<DeckAction>) {
     let avail = ui.available_rect_before_wrap();
     let pitch_w = 54.0 * k();
     let plat = (avail.height().min(avail.width() * 0.42)).clamp(120.0, 240.0 * k());
+    // Ist der Teller durch die Breite begrenzt, nutzen Bedienfeld und Pitch trotzdem die verfügbare Höhe
+    // (bis zur vollen Tellerhöhe bei großem Player); der Teller steht dann mittig daneben
+    let row = avail.height().min(240.0 * k()).max(plat);
+    let plat_top = avail.top() + (row - plat) / 2.0;
     let (plat_rect, ctrl_rect, pitch_rect) = if !mirrored {
-        let p = Rect::from_min_size(avail.min, vec2(plat, plat));
-        let pr = Rect::from_min_max(pos2(avail.right() - pitch_w, avail.top()), pos2(avail.right(), avail.top() + plat));
-        let c = Rect::from_min_max(pos2(p.right() + 12.0, avail.top()), pos2(pr.left() - 8.0, avail.top() + plat));
+        let p = Rect::from_min_size(pos2(avail.left(), plat_top), vec2(plat, plat));
+        let pr = Rect::from_min_max(pos2(avail.right() - pitch_w, avail.top()), pos2(avail.right(), avail.top() + row));
+        let c = Rect::from_min_max(pos2(p.right() + 12.0, avail.top()), pos2(pr.left() - 8.0, avail.top() + row));
         (p, c, pr)
     } else {
-        let p = Rect::from_min_size(pos2(avail.right() - plat, avail.top()), vec2(plat, plat));
-        let pr = Rect::from_min_size(avail.min, vec2(pitch_w, plat));
-        let c = Rect::from_min_max(pos2(pr.right() + 8.0, avail.top()), pos2(p.left() - 12.0, avail.top() + plat));
+        let p = Rect::from_min_size(pos2(avail.right() - plat, plat_top), vec2(plat, plat));
+        let pr = Rect::from_min_size(avail.min, vec2(pitch_w, row));
+        let c = Rect::from_min_max(pos2(pr.right() + 8.0, avail.top()), pos2(p.left() - 12.0, avail.top() + row));
         (p, c, pr)
     };
     // Auf breiten Monitoren das Bedienfeld nicht in die Breite ziehen, sondern mittig setzen
     let max_w = CONTROLS_MAX_W * k();
     let ctrl_rect = if ctrl_rect.width() > max_w { Rect::from_center_size(ctrl_rect.center(), vec2(max_w, ctrl_rect.height())) } else { ctrl_rect };
-    ui.allocate_rect(Rect::from_min_max(avail.min, pos2(avail.right(), avail.top() + plat)), Sense::hover());
+    let pitch_rect = centered_pitch(pitch_rect, ctrl_rect, avail, mirrored);
+    ui.allocate_rect(Rect::from_min_max(avail.min, pos2(avail.right(), avail.top() + row)), Sense::hover());
 
     platter(ui, m, color, plat_rect, out);
     // Nach dem Teller: liegt obenauf und bekommt Klicks auf den Tonkopf zuerst
@@ -790,6 +799,14 @@ fn paint_cover(p: &egui::Painter, c: Pos2, radius: f32, angle: f32, tex: egui::T
     p.add(mesh);
 }
 
+/// Pitch-Spalte (mit Filter) mittig zwischen Bedienfeld und Außenkante des Players setzen, statt an der Kante
+/// zur Mittelspalte zu kleben, wenn das Bedienfeld auf breiten Playern schmaler bleibt als der Platz.
+fn centered_pitch(pitch: Rect, ctrl: Rect, avail: Rect, mirrored: bool) -> Rect {
+    let (a, b) = if mirrored { (avail.left(), ctrl.left()) } else { (ctrl.right(), avail.right()) };
+    let cx = ((a + b) / 2.0).clamp(a + pitch.width() / 2.0, b - pitch.width() / 2.0);
+    Rect::from_center_size(pos2(cx, pitch.center().y), pitch.size())
+}
+
 fn controls(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, out: &mut Vec<DeckAction>) {
     let w = ui.available_width();
     let gap = 6.0;
@@ -843,8 +860,21 @@ fn controls(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, out: &mut Vec<
     ui.horizontal(|ui| {
         let pfl_w = (w - 2.0 * gap) * 0.46;
         let rest_w = (w - 2.0 * gap - pfl_w) / 2.0;
-        let label = format!("🎧 {}", tr("VORHÖREN"));
-        if hw::button(ui, vec2(pfl_w, 28.0 * k()), &label, fonts::bold(12.0 * k()), hw::Look::Color(color), m.pfl, true)
+        // In schmalen Playern erst ohne Symbol, dann kleiner, damit die Beschriftung nicht über SYNC ragt
+        let fits = |text: &str, size: f32| ui.painter().layout_no_wrap(text.to_owned(), fonts::bold(size), Color32::WHITE).size().x <= pfl_w - 8.0;
+        let full = format!("🎧 {}", tr("VORHÖREN"));
+        let size = 12.0 * k();
+        let (label, size) = if fits(&full, size) {
+            (full, size)
+        } else {
+            let short = tr("VORHÖREN").to_owned();
+            let mut s = size;
+            while s > 8.0 && !fits(&short, s) {
+                s -= 0.5;
+            }
+            (short, s)
+        };
+        if hw::button(ui, vec2(pfl_w, 28.0 * k()), &label, fonts::bold(size), hw::Look::Color(color), m.pfl, true)
             .on_hover_text(tr("Auf dem Kopfhörer vorhören, unabhängig vom Crossfader"))
             .clicked()
         {
@@ -890,8 +920,46 @@ fn time_box(ui: &mut egui::Ui, width: f32, label: &str, value: &str, color: Colo
     hw::lcd_text(p, rect.right_bottom() + vec2(-8.0, -6.0), Align2::RIGHT_BOTTOM, value, 17.0 * k(), color);
 }
 
+/// Schritt des Filters je Pfeiltaste bzw. Rastung (Reglerweg −1 … +1).
+const FILTER_STEP: f32 = 0.05;
+
+/// Filterknopf oben in der Pitch-Spalte: Mitte aus, links Tiefpass, rechts Hochpass. Darunter „FILTER“,
+/// sobald er arbeitet stattdessen Art und Grenzfrequenz (spart eine Zeile für den Pitch-Fader). Liefert die belegte Höhe.
+fn filter_knob(ui: &mut egui::Ui, m: &DeckModel<'_>, area: Rect, out: &mut Vec<DeckAction>) -> f32 {
+    let p = ui.painter().clone();
+    let color = theme::deck_color(m.deck);
+    let d = (area.width() - 4.0).min(36.0 * k());
+    let kr = Rect::from_min_size(pos2(area.center().x - d / 2.0, area.top()), vec2(d, d));
+    let (resp, new) = hw::knob(ui, kr, ("filter", m.deck), 0.5 + 0.5 * m.filter, 0.5, color);
+    let keyed = hw::nudge(ui, &resp, m.filter, FILTER_STEP, -1.0, 1.0);
+    resp.on_hover_text(tr("Filter: links Tiefpass, rechts Hochpass, Mitte aus (Rechtsklick)"));
+    if let Some(v) = keyed {
+        out.push(DeckAction::Filter(if v.abs() < 0.01 { 0.0 } else { v }));
+    } else if let Some(n) = new {
+        // Nahe der Mitte einrasten
+        let v = 2.0 * n - 1.0;
+        out.push(DeckAction::Filter(if v.abs() < 0.04 { 0.0 } else { v }));
+    }
+    let freq = |hz: f32| if hz >= 1000.0 { format!("{:.1}k", hz / 1000.0) } else { format!("{hz:.0}") };
+    let state = fw_engine::filter::cutoff_hz(m.filter);
+    let reading = match state {
+        Some((true, hz)) => format!("{} {}", tr("TP"), freq(hz)),
+        Some((false, hz)) => format!("HP {}", freq(hz)),
+        None => tr("FILTER").to_owned(),
+    };
+    let reading_y = kr.bottom() + 2.0;
+    p.text(pos2(area.center().x, reading_y), Align2::CENTER_TOP, reading, fonts::bold(9.0 * k()), if state.is_some() { color } else { theme::dim() });
+    reading_y + 11.0 * k() - area.top()
+}
+
+/// Mindesthöhe des Pitch-Faders, ab der noch Platz für die Beschriftung darunter bleibt.
+const PITCH_LABEL_MIN_FADER: f32 = 120.0;
+
 fn pitch(ui: &mut egui::Ui, m: &DeckModel<'_>, out: &mut Vec<DeckAction>) {
-    let area = ui.max_rect();
+    // Oben der Filter, darunter der Pitch-Fader
+    let full = ui.max_rect();
+    let used = filter_knob(ui, m, full, out);
+    let area = Rect::from_min_max(pos2(full.left(), full.top() + used + 4.0 * k()), full.max);
     // Oben = schneller wie an Plattenspielern mit „+“ oben
     let value = (m.pitch_pct + PITCH_RANGE) / (2.0 * PITCH_RANGE);
     // Rechtsklick irgendwo auf den Pitch-Bereich lässt ihn langsam auf 0 laufen (über den Fader, damit es
@@ -900,18 +968,25 @@ fn pitch(ui: &mut egui::Ui, m: &DeckModel<'_>, out: &mut Vec<DeckAction>) {
         hw::start_glide(ui, ("pitch", m.deck), value, 0.5, 1.0);
     }
     let p = ui.painter().clone();
-    p.text(pos2(area.center().x, area.top()), Align2::CENTER_TOP, "PITCH", fonts::bold(10.0 * k()), theme::dim());
-    let fader = Rect::from_min_max(pos2(area.left() + 4.0, area.top() + 18.0), pos2(area.right() - 4.0, area.bottom() - 26.0));
+    // Beschriftung „PITCH“ unter dem Fader nur, wenn der Fader trotzdem genug Weg behält
+    let lcd_h = 20.0 * k();
+    let label_h = 14.0 * k();
+    let show_label = area.height() - lcd_h - 4.0 - label_h >= PITCH_LABEL_MIN_FADER;
+    let below = lcd_h + 4.0 + if show_label { label_h } else { 0.0 };
+    let fader = Rect::from_min_max(pos2(area.left() + 4.0, area.top()), pos2(area.right() - 4.0, area.bottom() - below));
+    if show_label {
+        p.text(pos2(area.center().x, fader.bottom() + 2.0), Align2::CENTER_TOP, "PITCH", fonts::bold(9.5 * k()), theme::dim());
+    }
     // Grundwert 0,5 = Mitte = 0 %
     let (resp, new) = hw::vertical_fader(ui, fader, ("pitch", m.deck), value, 0.5, true);
     // Pfeiltasten über dem Fader: 0,1 % je Druck
     let keyed = hw::nudge(ui, &resp, (m.pitch_pct * 10.0).round() / 10.0, 0.1, -PITCH_RANGE, PITCH_RANGE);
-    resp.on_hover_text(tr("Rechtsklick oder Doppelklick setzt auf 0"));
+    resp.on_hover_text(tr("Pitch (Tempo). Rechtsklick oder Doppelklick setzt auf 0"));
     if let Some(pct) = keyed.or(new.map(|v| ((v * 2.0 - 1.0) * PITCH_RANGE * 10.0).round() / 10.0)) {
         out.push(DeckAction::Pitch((pct * 10.0).round() / 10.0));
     }
-    let lcd = Rect::from_min_max(pos2(area.left(), area.bottom() - 20.0), pos2(area.right(), area.bottom()));
+    let lcd = Rect::from_min_max(pos2(area.left(), area.bottom() - lcd_h), pos2(area.right(), area.bottom()));
     hw::well(&p, lcd, 3.0);
     let sign = if m.pitch_pct > 0.0 { "+" } else if m.pitch_pct < 0.0 { "-" } else { " " };
-    hw::lcd_text(&p, lcd.center(), Align2::CENTER_CENTER, &format!("{sign}{:.1}", m.pitch_pct.abs()), 10.5, theme::well_ink());
+    hw::lcd_text(&p, lcd.center(), Align2::CENTER_CENTER, &format!("{sign}{:.1}%", m.pitch_pct.abs()), 10.5, theme::well_ink());
 }

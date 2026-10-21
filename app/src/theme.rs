@@ -249,6 +249,11 @@ pub fn lite() -> bool {
     LITE.load(Ordering::Relaxed)
 }
 
+/// Einheitliche Höhe von Tasten, Suchfeldern und Auswahlfeldern in den Kopfzeilen (Ordnerbrowser, Playlists).
+pub const CTRL_H: f32 = 26.0;
+/// Breite der Symboltasten in diesen Kopfzeilen (Lupe, Ansicht, Einstellungen …).
+pub const ICON_BTN_W: f32 = CTRL_H + 6.0;
+
 /// Farbe der Auswahl in Listen (Rahmen). Gelb wie die Modus-Tasten, damit sie sich von A und B abhebt.
 pub fn select_accent() -> Color32 {
     skin().yellow

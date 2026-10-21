@@ -976,12 +976,15 @@ impl Browser {
         // in eine zweite Zeile, und der Hinweis „Live gelesen“ entfällt.
         let compact = ctx.side || ui.available_width() < HEADER_ONE_ROW_W;
         ui.horizontal(|ui| {
+            // Alle Tasten und Felder der Kopfzeile gleich hoch, wie in den Playlists
+            ui.spacing_mut().interact_size.y = theme::CTRL_H;
             ui.label(RichText::new(tr("ORDNER")).font(fonts::bold(16.0)).extra_letter_spacing(1.5));
             if !compact {
                 self.view_switch(ui, out);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button(RichText::new("⚙").size(15.0)).on_hover_text(tr("Einstellungen (⌘,)")).clicked() {
+                let icon_size = vec2(theme::ICON_BTN_W, theme::CTRL_H);
+                if ui.add(Button::new(RichText::new("⚙").size(15.0)).min_size(icon_size)).on_hover_text(tr("Einstellungen (⌘,)")).clicked() {
                     out.push(BrowserAction::OpenSettings);
                 }
                 // Vollbild gilt dem Hauptfenster; im eigenen Fenster wäre die Taste irreführend
@@ -1000,7 +1003,7 @@ impl Browser {
                     out.push(BrowserAction::ToggleSide);
                 }
                 let tip = if cfg!(target_os = "macos") { tr("Ordner neu einlesen (⌘R)") } else { tr("Ordner neu einlesen (F5)") };
-                if ui.button(RichText::new("🔄").size(14.0)).on_hover_text(tip).clicked() {
+                if ui.add(Button::new(RichText::new("🔄").size(14.0)).min_size(icon_size)).on_hover_text(tip).clicked() {
                     self.refresh();
                 }
                 if ui.button(tr("Ordner hinzufügen …")).clicked() {
@@ -1015,6 +1018,7 @@ impl Browser {
         });
         if compact {
             ui.horizontal(|ui| {
+                ui.spacing_mut().interact_size.y = theme::CTRL_H;
                 // In der schmalen Kopfzeile stehen Baum/Spalten vorn in der zweiten Zeile
                 self.view_switch(ui, out);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2171,6 +2175,7 @@ pub const ANALYZE_HINT: &str = "Tempo und Tonart im Hintergrund neu ermitteln, a
 /// `rows_missing_analysis` = Titel der Liste ohne bekannte BPM oder Tonart (vorberechnet, die Liste kann sehr lang sein).
 fn list_tools(ui: &mut egui::Ui, ctx: &BrowserCtx<'_>, rows: &[PathBuf], rows_missing_analysis: usize, sel_rows: &[PathBuf], history: Option<&str>, out: &mut Vec<BrowserAction>) -> f32 {
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.spacing_mut().interact_size.y = theme::CTRL_H;
         // Mit Auswahl gelten die Tasten nur für die ausgewählten Titel
         let (paths, label) = match (sel_rows.is_empty(), history.is_some()) {
             (false, _) => (sel_rows, "Auswahl in Playlist {}"),
@@ -2384,7 +2389,7 @@ fn column_item(ui: &mut egui::Ui, text: &str, selected: bool, open: bool, chevro
 fn view_button(ui: &mut egui::Ui, columns: bool, active: bool) -> egui::Response {
     let tip = if columns { tr("Ordner in Spalten zeigen") } else { tr("Ordner als Baum zeigen") };
     let h = ui.spacing().interact_size.y;
-    let resp = ui.add(egui::Button::new("").min_size(egui::vec2(h + 4.0, h))).on_hover_text(tip);
+    let resp = ui.add(egui::Button::new("").min_size(egui::vec2(theme::ICON_BTN_W, h))).on_hover_text(tip);
     let color = if active { theme::select_accent() } else { ui.style().interact(&resp).fg_stroke.color };
     let stroke = egui::Stroke::new(1.4, color);
     let c = resp.rect.center();
@@ -2629,16 +2634,19 @@ fn fit_widths(cols: &[TrackColumn], saved: impl Fn(TrackColumn) -> Option<f32>, 
 fn search_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
     let h = ui.spacing().interact_size.y;
     let tip = if cfg!(target_os = "macos") { tr("Erweiterte Suche (⇧⌘F)") } else { tr("Erweiterte Suche (Strg+Umschalt+F)") };
-    let resp = ui.add(egui::Button::new("").min_size(egui::vec2(h + 4.0, h))).on_hover_text(tip);
+    let resp = ui.add(egui::Button::new("").min_size(egui::vec2(theme::ICON_BTN_W, h))).on_hover_text(tip);
     let color = if active { theme::select_accent() } else { ui.style().interact(&resp).fg_stroke.color };
-    let stroke = egui::Stroke::new(1.7, color);
-    let c = resp.rect.center() + egui::vec2(-1.5, -1.5);
+    paint_lupe(ui.painter(), resp.rect.center(), color);
+    resp
+}
+
+/// Selbst gezeichnete Lupe (Suche im Browser und in den Playlists).
+pub fn paint_lupe(p: &egui::Painter, center: egui::Pos2, color: egui::Color32) {
+    let c = center + egui::vec2(-1.5, -1.5);
     let r = 4.5;
-    let p = ui.painter();
-    p.circle_stroke(c, r, stroke);
+    p.circle_stroke(c, r, egui::Stroke::new(1.7, color));
     let d = egui::vec2(1.0, 1.0).normalized();
     p.line_segment([c + d * (r + 0.5), c + d * (r + 5.0)], egui::Stroke::new(2.2, color));
-    resp
 }
 
 impl Browser {
@@ -2650,7 +2658,13 @@ impl Browser {
             self.toggle_search();
         }
         let search_w = if compact { (ui.available_width() * 0.5).clamp(140.0, 260.0) } else { 200.0 };
-        ui.add(egui::TextEdit::singleline(&mut self.filter).hint_text(tr("Suchen")).desired_width(search_w));
+        ui.add(
+            egui::TextEdit::singleline(&mut self.filter)
+                .hint_text(tr("Suchen"))
+                .desired_width(search_w)
+                .min_size(vec2(search_w, theme::CTRL_H))
+                .vertical_align(egui::Align::Center),
+        );
         if !compact {
             ui.label(RichText::new(tr("⏺ Live gelesen, keine Datenbank")).size(12.0).color(theme::play()));
         }
@@ -2710,7 +2724,7 @@ fn layout_button(ui: &mut egui::Ui, side: bool, possible: bool) -> egui::Respons
     };
     let h = ui.spacing().interact_size.y;
     let resp = ui
-        .add_enabled(side || possible, egui::Button::new("").min_size(egui::vec2(h + 6.0, h)))
+        .add_enabled(side || possible, egui::Button::new("").min_size(egui::vec2(theme::ICON_BTN_W, h)))
         .on_hover_text(tip)
         .on_disabled_hover_text(tip);
     let color = ui.style().interact(&resp).fg_stroke.color;
@@ -2732,7 +2746,7 @@ fn layout_button(ui: &mut egui::Ui, side: bool, possible: bool) -> egui::Respons
 fn tree_layout_button(ui: &mut egui::Ui, tree_left: bool) -> egui::Response {
     let tip = if tree_left { tr("Ordner über die Titel setzen") } else { tr("Ordner links neben die Titel setzen") };
     let h = ui.spacing().interact_size.y;
-    let resp = ui.add(egui::Button::new("").min_size(egui::vec2(h + 6.0, h))).on_hover_text(tip);
+    let resp = ui.add(egui::Button::new("").min_size(egui::vec2(theme::ICON_BTN_W, h))).on_hover_text(tip);
     let color = ui.style().interact(&resp).fg_stroke.color;
     let frame = egui::Rect::from_center_size(resp.rect.center(), egui::vec2(16.0, 11.0));
     let p = ui.painter();
@@ -2754,7 +2768,7 @@ fn detach_button(ui: &mut egui::Ui, detached: bool) -> egui::Response {
         tr("Ordner in ein eigenes Fenster ausklinken (etwa für einen zweiten Monitor)")
     };
     let h = ui.spacing().interact_size.y;
-    let resp = ui.add(egui::Button::new("").min_size(egui::vec2(h + 6.0, h))).on_hover_text(tip);
+    let resp = ui.add(egui::Button::new("").min_size(egui::vec2(theme::ICON_BTN_W, h))).on_hover_text(tip);
     let color = ui.style().interact(&resp).fg_stroke.color;
     let stroke = egui::Stroke::new(1.4, color);
     let c = resp.rect.center();
@@ -2779,7 +2793,7 @@ fn fullscreen_button(ui: &mut egui::Ui, fullscreen: bool) -> egui::Response {
         (true, false) => tr("Vollbild beenden (F11)"),
     };
     let h = ui.spacing().interact_size.y;
-    let resp = ui.add(egui::Button::new("").min_size(egui::vec2(h + 4.0, h))).on_hover_text(tip);
+    let resp = ui.add(egui::Button::new("").min_size(egui::vec2(theme::ICON_BTN_W, h))).on_hover_text(tip);
     let color = ui.style().interact(&resp).fg_stroke.color;
     let stroke = egui::Stroke::new(1.6, color);
     let c = resp.rect.center();

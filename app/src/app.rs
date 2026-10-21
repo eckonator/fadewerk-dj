@@ -2227,6 +2227,10 @@ impl FadeWerkDjApp {
                 let range = v.loop_range;
                 self.ctl.send(Command::SetLoop { deck: d, range });
             }
+            DeckAction::Filter(value) => {
+                self.filter[d] = value;
+                self.ctl.send(Command::SetFilter { deck: d, value });
+            }
             DeckAction::Pitch(p) => {
                 self.decks[d].sync = None;
                 self.decks[d].pitch_pct = p;
@@ -2280,10 +2284,6 @@ impl FadeWerkDjApp {
             }
             MixerAction::Eq { deck, band, db } => self.eq_db[deck][band] = db,
             MixerAction::EqKill { deck, band, on } => self.eq_kill[deck][band] = on,
-            MixerAction::Filter { deck, value } => {
-                self.filter[deck] = value;
-                self.ctl.send(Command::SetFilter { deck, value });
-            }
             MixerAction::Record => self.toggle_recording(now),
             MixerAction::Fx { slot, to_master } => self.trigger_fx(slot, to_master, now),
             MixerAction::FxVolume(v) => {
@@ -2980,6 +2980,7 @@ impl eframe::App for FadeWerkDjApp {
                     artist: v.meta.as_ref().map_or("", |m| m.artist.as_str()),
                     bpm: v.bpm,
                     pitch_pct: v.pitch_pct,
+                    filter: self.filter[d],
                     auto_synced: v.sync.is_some(),
                     position: if in_sync { shown[d] } else { 0.0 },
                     duration: if in_sync { st.duration_secs() } else { v.meta.as_ref().map_or(0.0, |m| m.duration_secs) },
@@ -3017,7 +3018,6 @@ impl eframe::App for FadeWerkDjApp {
             head_device: self.head_audio.is_some(),
             eq_db: self.eq_db,
             eq_kill: self.eq_kill,
-            filter: self.filter,
             recording: self.recording.as_ref().map(|r| (r.secs(), r.is_stopping(), r.bytes())),
             fx_labels: &fx_labels,
             fx_icons: std::array::from_fn(|i| self.settings.fx_slot(i).icon(i)),

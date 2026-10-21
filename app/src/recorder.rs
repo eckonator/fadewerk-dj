@@ -347,6 +347,10 @@ mod tests {
         ctl.send(Command::SetRecording(false));
         rec.stop();
         engine.process(&mut out, 2);
+        // Erst lesen, wenn der Thread alles aus dem Ringpuffer geschrieben hat
+        while !rec.is_done() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
         let secs = rec.secs();
         let (back, files) = rec.finish();
         assert!(back.is_some(), "Ringpuffer kommt zurück");
