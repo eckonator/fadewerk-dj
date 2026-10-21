@@ -30,6 +30,7 @@ mod mixer_ui;
 mod playlist;
 mod playlist_ui;
 mod quiet;
+mod recorder;
 mod search;
 mod selection;
 mod self_update;

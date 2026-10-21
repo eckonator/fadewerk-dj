@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use crate::atomic::{AtomicF32, AtomicF64};
 use crate::deck::Deck;
 use crate::eq::Eq;
+use crate::filter::Filter;
 use crate::headlink::HeadSink;
 use crate::mixer::{Curve, HeadMode};
 use crate::motor::Motor;
@@ -51,6 +52,10 @@ pub enum Command {
     SetPfl { deck: usize, on: bool },
     /// Pegel eines EQ-Bandes (0 = Bässe, 1 = Mitten, 2 = Höhen) als Faktor, 0 = Kill.
     SetEq { deck: usize, band: usize, gain: f32 },
+    /// Filter je Player: −1 Tiefpass ganz zu, 0 neutral, +1 Hochpass ganz offen.
+    SetFilter { deck: usize, value: f32 },
+    /// Aufnahme des Masters an- oder ausschalten (Frames gehen an [`Controller::take_recording`]).
+    SetRecording(bool),
     SetHeadMode(HeadMode),
     SetHeadMix(f32),
     SetHeadVolume(f32),
@@ -83,6 +88,7 @@ impl Command {
             | SetCrossfader(x)
             | SetChannelVolume { volume: x, .. }
             | SetEq { gain: x, .. }
+            | SetFilter { value: x, .. }
             | SetHeadMix(x)
             | SetHeadVolume(x)
             | SetMasterVolume(x)
@@ -136,6 +142,10 @@ pub struct Shared {
     crossfader: AtomicF32,
     /// Bitmaske der Effekt-Pads, die gerade klingen.
     fx_playing: AtomicU32,
+    /// Läuft die Aufnahme? (Wird vom Audio-Thread gesetzt, sobald `SetRecording` ankommt.)
+    recording: AtomicBool,
+    /// Frames, die bei der Aufnahme verloren gingen, weil der Schreib-Thread nicht nachkam.
+    record_dropped: AtomicU64,
 }
 
 impl Shared {
@@ -160,6 +170,16 @@ impl Shared {
         self.fx_playing.load(Ordering::Relaxed)
     }
 
+    /// Läuft die Aufnahme gerade?
+    pub fn is_recording(&self) -> bool {
+        self.recording.load(Ordering::Relaxed)
+    }
+
+    /// Bei der Aufnahme verlorene Frames seit dem Start der Engine.
+    pub fn record_dropped(&self) -> u64 {
+        self.record_dropped.load(Ordering::Relaxed)
+    }
+
     /// Aktuelle (geglättete) Crossfader-Stellung im Audio-Thread.
     pub fn crossfader(&self) -> f32 {
         self.crossfader.load()
@@ -170,6 +190,7 @@ impl Shared {
 pub struct Controller {
     tx: rtrb::Producer<Command>,
     garbage: rtrb::Consumer<Arc<TrackAudio>>,
+    recording: Option<rtrb::Consumer<[f32; 2]>>,
     pub shared: Arc<Shared>,
 }
 
@@ -179,6 +200,12 @@ impl Controller {
         if self.tx.push(cmd).is_err() {
             log_dropped();
         }
+    }
+
+    /// Ausgang der Aufnahme: Stereo-Frames des Masters (nach Crossfader und Effekten, vor der
+    /// Master-Lautstärke), solange `SetRecording(true)` gilt. Nur einmal abholbar, für den Schreib-Thread.
+    pub fn take_recording(&mut self) -> Option<rtrb::Consumer<[f32; 2]>> {
+        self.recording.take()
     }
 
     /// Gibt ausgeworfene Titel frei. Regelmäßig aus der Oberfläche aufrufen.
@@ -208,6 +235,9 @@ pub struct Engine {
     volume: [f32; DECKS],
     pfl: [bool; DECKS],
     eq: [Eq; DECKS],
+    filter: [Filter; DECKS],
+    record: rtrb::Producer<[f32; 2]>,
+    recording: bool,
     head_mode: HeadMode,
     head_mix: f32,
     head_volume: f32,
@@ -225,6 +255,8 @@ impl Engine {
     pub fn new(sample_rate: u32, channels: usize) -> (Engine, Controller) {
         let (tx, rx) = rtrb::RingBuffer::new(1024);
         let (gtx, grx) = rtrb::RingBuffer::new(64);
+        // Vier Sekunden Vorrat, falls der Schreib-Thread kurz hängt (Festplatte, Netzlaufwerk)
+        let (rec_tx, rec_rx) = rtrb::RingBuffer::new(sample_rate.max(1) as usize * 4);
         let shared = Arc::new(Shared {
             sample_rate,
             channels,
@@ -234,6 +266,8 @@ impl Engine {
             spectrum_on: AtomicBool::new(true),
             crossfader: AtomicF32::new(-1.0),
             fx_playing: AtomicU32::new(0),
+            recording: AtomicBool::new(false),
+            record_dropped: AtomicU64::new(0),
         });
         let engine = Engine {
             rx,
@@ -250,6 +284,9 @@ impl Engine {
             volume: [0.85; DECKS],
             pfl: [false; DECKS],
             eq: std::array::from_fn(|_| Eq::new(sample_rate)),
+            filter: std::array::from_fn(|_| Filter::new(sample_rate)),
+            record: rec_tx,
+            recording: false,
             spectrum: Spectrum::new(sample_rate),
             head_mode: HeadMode::Off,
             head_mix: 0.0,
@@ -260,7 +297,7 @@ impl Engine {
             test_tone: TestTone::default(),
             fx_bufs: std::array::from_fn(|_| vec![[0.0; 2]; CHUNK]),
         };
-        (engine, Controller { tx, garbage: grx, shared })
+        (engine, Controller { tx, garbage: grx, recording: Some(rec_rx), shared })
     }
 
     fn discard(&mut self, old: Option<Arc<TrackAudio>>) {
@@ -326,6 +363,11 @@ impl Engine {
             SetChannelVolume { deck, volume } if deck < DECKS => self.volume[deck] = volume.clamp(0.0, 1.0),
             SetPfl { deck, on } if deck < DECKS => self.pfl[deck] = on,
             SetEq { deck, band, gain } if deck < DECKS => self.eq[deck].set_gain(band, gain),
+            SetFilter { deck, value } if deck < DECKS => self.filter[deck].set(value),
+            SetRecording(on) => {
+                self.recording = on;
+                self.shared.recording.store(on, Ordering::Relaxed);
+            }
             SetHeadMode(m) => self.head_mode = m,
             SetHeadMix(m) => self.head_mix = m.clamp(0.0, 1.0),
             SetHeadVolume(v) => self.head_volume = v.clamp(0.0, 1.0),
@@ -354,6 +396,7 @@ impl Engine {
         }
         let rate = self.shared.sample_rate as f32;
         let mut peaks = [[0.0f32; 2]; 3];
+        let mut dropped = 0u64;
         let spectrum_on = self.shared.spectrum_on.load(Ordering::Relaxed);
 
         for block in out.chunks_mut(CHUNK * channels) {
@@ -365,8 +408,9 @@ impl Engine {
                 deck.render(motor, rate, &mut buf[..n]);
             }
             // EQ vor Kanalfader und Vorhören, wie am Mischpult
-            for (eq, buf) in self.eq.iter_mut().zip(self.bufs.iter_mut()) {
+            for ((eq, filter), buf) in self.eq.iter_mut().zip(self.filter.iter_mut()).zip(self.bufs.iter_mut()) {
                 eq.process(&mut buf[..n]);
+                filter.process(&mut buf[..n]);
             }
             // Effekt-Pads: hinter dem Crossfader in den Master bzw. direkt auf den Kopfhörer
             let [fx_master, fx_cue] = &mut self.fx_bufs;
@@ -396,14 +440,20 @@ impl Engine {
                 let mut master = [0.0f32; 2];
                 let mut cue = [p[0] + fxc[0], p[1] + fxc[1]];
                 let (tone_master, tone_head) = self.test_tone.next(rate);
+                let mut mix = [0.0f32; 2];
                 for c in 0..2 {
-                    master[c] = (ca[c] * ga + cb[c] * gb + fxm[c]) * self.master_volume + tone_master;
+                    mix[c] = ca[c] * ga + cb[c] * gb + fxm[c];
+                    master[c] = mix[c] * self.master_volume + tone_master;
                     // Vorhören greift vor Kanalfader und Crossfader ab
                     if self.pfl[0] { cue[c] += a[c]; }
                     if self.pfl[1] { cue[c] += b[c]; }
                     peaks[0][c] = peaks[0][c].max(ca[c].abs());
                     peaks[1][c] = peaks[1][c].max(cb[c].abs());
                     peaks[2][c] = peaks[2][c].max(master[c].abs());
+                }
+                // Aufgenommen wird vor der Master-Lautstärke: leiser im Raum heißt nicht leiser in der Datei
+                if self.recording && self.record.push([soft_clip(mix[0]), soft_clip(mix[1])]).is_err() {
+                    dropped += 1;
                 }
                 if spectrum_on {
                     self.spectrum.push(0.5 * (master[0] + master[1]));
@@ -422,6 +472,9 @@ impl Engine {
             }
         }
 
+        if dropped > 0 {
+            self.shared.record_dropped.fetch_add(dropped, Ordering::Relaxed);
+        }
         self.publish(peaks);
     }
 
@@ -558,6 +611,31 @@ mod tests {
         run(&mut e, 0.05);
         assert_eq!(speed(1), 0.0);
         assert_eq!(speed(PREVIEW), 0.0);
+    }
+
+    #[test]
+    fn recording_delivers_master_before_master_volume() {
+        let (mut e, mut c) = Engine::new(8000, 2);
+        let mut rx = c.take_recording().expect("Aufnahme-Ausgang");
+        assert!(c.take_recording().is_none());
+        c.send(Command::SetMotor(Motor::INSTANT));
+        c.send(Command::Load { deck: 0, id: 1, track: tone(5.0, 8000), keep_playing: false, start_secs: 0.0 });
+        c.send(Command::Play { deck: 0 });
+        c.send(Command::SetMasterVolume(0.0));
+        run(&mut e, 0.1);
+        assert_eq!(rx.slots(), 0, "ohne Aufnahme kommt nichts an");
+        c.send(Command::SetRecording(true));
+        run(&mut e, 0.25);
+        assert!(c.shared.is_recording());
+        assert_eq!(rx.slots(), 2000);
+        let mut loudest = 0.0f32;
+        while let Ok(f) = rx.pop() {
+            loudest = loudest.max(f[0].abs());
+        }
+        assert!(loudest > 0.2, "Master-Lautstärke 0 ist trotzdem in der Aufnahme zu hören");
+        c.send(Command::SetRecording(false));
+        run(&mut e, 0.1);
+        assert_eq!(rx.slots(), 0);
     }
 
     #[test]

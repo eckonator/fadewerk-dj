@@ -5,13 +5,7 @@ written in Rust. Click a folder and start playing: no database, no library impor
 
 ![FadeWerk DJ with the “Anthracite” skin](docs/screenshot.png)
 
-![FadeWerk mode: waveforms behind the playlist tracks and the fade editor open below a track](docs/screenshot-fadewerk.png)
-
-<details>
-<summary>“Silver” skin with brushed steel, the crossfade curve, a day of the history and a track playing in the headphones</summary>
-
-![FadeWerk DJ with the “Silver” skin and brushed steel](docs/screenshot-steel.png)
-</details>
+![“Anthracite” with brushed steel in FadeWerk mode: waveforms behind the playlist tracks and the fade editor open below a track](docs/screenshot-fadewerk.png)
 
 *The screenshots show self-generated demo tracks (`scripts/make-demo-tracks.py`).*
 
@@ -55,7 +49,7 @@ written in Rust. Click a folder and start playing: no database, no library impor
 - **Fast with large collections and network drives**: tags that were read once and the track lists
   of slow folders are remembered (no database: the folder is still read live in the background and
   its result wins, changed files are re-read). Tags are read with four threads. The caches can be
-  cleared under Settings → General, where FadeWerk DJ can also be reset completely.
+  cleared under Settings → Music; Settings → General can also reset FadeWerk DJ completely.
 - **Track info & tags**: right-click a track in the folder browser or a playlist to view and edit
   its tags (title, artist, album, album artist, genre, year, track number, BPM, comment).
 - **History**: below the folders, “History” lists every day with the tracks that were played, in order,
@@ -82,10 +76,14 @@ written in Rust. Click a folder and start playing: no database, no library impor
   that the right output is chosen.
 - **Mixer** with LED meters (A, main, B; on wider windows the main meter adds a spectrum of up to
   ten octave bands between left and right), channel faders, master and headphone mix, and a
-  **3-band EQ per deck** (isolator, −26 to +6 dB) with kill buttons. Below the crossfader, tabs for
+  **3-band EQ per deck** (isolator, −26 to +6 dB) with kill buttons, plus a **filter knob** per deck
+  (left low-pass, right high-pass, centre off, slight resonance). Below the crossfader, tabs for
   pads, headphones, curve (crossfade curve and fade time) and motor keep the centre column tidy; one is open at a time.
   Right-click or double-click resets any fader to its default; with the mouse over a fader or knob,
   the arrow keys or the mouse wheel move it step by step. Click the fade-time display to type in a value.
+- **Record the mix**: REC next to the master fader records what plays on master (before the master volume)
+  as WAV (24 bit) or MP3 (320 kbit/s, LAME), by default into `Music/FadeWerk DJ Recordings`, file name with
+  date and time. Format and folder under Settings → Recording.
 - **Effect pads**: eight DJ effects (air horn, siren, laser, boom, riser, drop, rewind, brake), synthesised by
   FadeWerk DJ itself. Trigger them with a click or the keys 1–8, right-click to pre-listen in the headphones;
   a separate FX fader sets their volume. Replace any of them with your own audio file, name and one of
@@ -121,7 +119,7 @@ written in Rust. Click a folder and start playing: no database, no library impor
   quit, even after a crash (on the next start).
 - User interface in **English and German**.
 - **No telemetry, no account.** The only network request is an optional check for new versions on
-  GitHub. FadeWerk DJ asks once before enabling it (switch it on or off under *Settings → General*);
+  GitHub. FadeWerk DJ asks once before enabling it (switch it on or off under *Settings → General*; track recognition online under *Settings → Music*);
   it sends nothing about your music or folders.
 
 ## Download
@@ -203,7 +201,7 @@ A push without a version change replaces that release; raise `version` for a new
 
 | Part | Purpose |
 |---|---|
-| `crates/engine` | Real-time audio: decks with motor, scratch, cue, loop and reverse, mixer, crossfader, EQ, headphone path, sampler for the effect pads, spectrum bands for the main meter, auto-fade logic. No GUI or system dependencies, tested. |
+| `crates/engine` | Real-time audio: decks with motor, scratch, cue, loop and reverse, mixer, crossfader, EQ, filter, recording tap, headphone path, sampler for the effect pads, spectrum bands for the main meter, auto-fade logic. No GUI or system dependencies, tested. |
 | `crates/library` | Live folder reading, tags (lofty), decoding (Symphonia), waveform, BPM detection, synthesis of the built-in effects, background threads. |
 | `app` | User interface with egui, audio output with cpal, settings, skins; ties everything together. |
 

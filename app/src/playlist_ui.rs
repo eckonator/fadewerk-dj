@@ -135,78 +135,121 @@ pub fn show(
     let keys = keynav::take(ui.ctx(), me);
     // Ausrichtung beim Scrollen zur Markierung: Pfeiltasten nur bis sichtbar, Suchtreffer in die Mitte
     let mut scroll_to_cursor: Option<Option<egui::Align>> = None;
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(trf("PLAYLIST {}", &[&theme::deck_letter(list)])).font(fonts::bold(16.0)).color(color).extra_letter_spacing(1.2));
-        // Gesamtdauer und fehlende Tags nur neu durchgehen, wenn sich Länge der Liste oder Tag-Bestand ändern
-        // (lange Playlists kosten sonst in jedem Bild Zeit)
-        let sum_id = egui::Id::new(("pl_total", list));
-        let sig = (pl.entries.len(), metas.len());
-        let total = match ui.data(|d| d.get_temp::<((usize, usize), f64)>(sum_id)) {
-            Some((s, t)) if s == sig => t,
-            _ => {
-                let mut t = 0.0;
-                for p in &pl.entries {
-                    match metas.get(p) {
-                        Some(m) => t += m.duration_secs,
-                        None => out.push(PlaylistAction::NeedMeta(p.clone())),
-                    }
+    // Gesamtdauer und fehlende Tags nur neu durchgehen, wenn sich Länge der Liste oder Tag-Bestand ändern
+    // (lange Playlists kosten sonst in jedem Bild Zeit)
+    let sum_id = egui::Id::new(("pl_total", list));
+    let sig = (pl.entries.len(), metas.len());
+    let total = match ui.data(|d| d.get_temp::<((usize, usize), f64)>(sum_id)) {
+        Some((s, t)) if s == sig => t,
+        _ => {
+            let mut t = 0.0;
+            for p in &pl.entries {
+                match metas.get(p) {
+                    Some(m) => t += m.duration_secs,
+                    None => out.push(PlaylistAction::NeedMeta(p.clone())),
                 }
-                ui.data_mut(|d| d.insert_temp(sum_id, (sig, t)));
-                t
             }
-        };
-        ui.label(RichText::new(count_tracks(pl.entries.len(), &fmt_time(total))).color(theme::dim()));
-        ui.add_space(4.0);
-        // Ein Schalter für beide Playlists: beide Tasten leuchten gemeinsam
-        let on = sketches.is_some();
-        let tip = tr("FadeWerk: zeigt die Wellenform jedes Titels. Hier legst du fest, wie jeder Titel ein- und ausgeblendet wird.");
-        if hw::button(ui, vec2(84.0, 22.0), "FADEWERK", fonts::bold(11.0), hw::Look::Color(theme::yellow()), on, true).on_hover_text(tip).clicked() {
-            out.push(PlaylistAction::FadeWerk(!on));
+            ui.data_mut(|d| d.insert_temp(sum_id, (sig, t)));
+            t
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // Leeren, Sortieren und Suchen gleich hoch, damit sie auf einer Linie sitzen
-            ui.spacing_mut().interact_size.y = HEADER_CTRL_H;
-            if ui.add_enabled(!pl.entries.is_empty(), egui::Button::new(tr("Leeren")).min_size(vec2(0.0, HEADER_CTRL_H))).clicked() {
-                out.push(PlaylistAction::Clear);
+    };
+    let title = trf("PLAYLIST {}", &[&theme::deck_letter(list)]);
+    let count = count_tracks(pl.entries.len(), &fmt_time(total));
+    // Passt alles in eine Zeile? Sonst stehen Suche und Sortieren in einer zweiten Zeile darunter
+    // (vorher schob sich bei schmalen Fenstern „Sortieren“ über die FADEWERK-Taste)
+    let gap = ui.spacing().item_spacing.x;
+    let text_w = |t: &str, font: egui::FontId| ui.painter().layout_no_wrap(t.to_owned(), font, egui::Color32::WHITE).size().x;
+    let body = egui::TextStyle::Body.resolve(ui.style());
+    let left_w = text_w(&title, fonts::bold(16.0)) + 1.2 * title.chars().count() as f32 + text_w(&count, body.clone()) + FADEWERK_W + 3.0 * gap + 4.0;
+    let clear_w = text_w(tr("Leeren"), body) + 2.0 * ui.spacing().button_padding.x;
+    let tools_w = clear_w + SORT_W + SEARCH_MIN_W + 3.0 * gap;
+    let narrow = ui.available_width() < left_w + tools_w;
+
+    // Ein Schalter für beide Playlists: beide Tasten leuchten gemeinsam
+    let fadewerk_on = sketches.is_some();
+    let mut head_out: Vec<PlaylistAction> = Vec::new();
+    // Titel, Anzahl und FADEWERK-Taste; liefert, ob die Taste geklickt wurde
+    let left = |ui: &mut egui::Ui| {
+        ui.label(RichText::new(&title).font(fonts::bold(16.0)).color(color).extra_letter_spacing(1.2));
+        ui.label(RichText::new(&count).color(theme::dim()));
+        ui.add_space(4.0);
+        let tip = tr("FadeWerk: zeigt die Wellenform jedes Titels. Hier legst du fest, wie jeder Titel ein- und ausgeblendet wird.");
+        hw::button(ui, vec2(FADEWERK_W, 22.0), "FADEWERK", fonts::bold(11.0), hw::Look::Color(theme::yellow()), fadewerk_on, true).on_hover_text(tip).clicked()
+    };
+    let clear = |ui: &mut egui::Ui| ui.add_enabled(!pl.entries.is_empty(), egui::Button::new(tr("Leeren")).min_size(vec2(0.0, HEADER_CTRL_H))).clicked();
+    // Sortieren und Schnellsuche, von rechts nach links; in der zweiten Zeile nimmt die Suche den ganzen Rest
+    let mut tools = |ui: &mut egui::Ui, fill: bool| {
+        // Ein Auswahlfeld für beide Sortierarten spart Platz in der Kopfzeile; „Rückgängig“ nimmt die letzte
+        // Sortierung zurück (gilt für beide Playlists)
+        let analyzing = key_info.harmonic == Harmonic::Analyzing;
+        let shown = if analyzing { tr("Analysiert …") } else { tr("Sortieren") };
+        let combo = egui::ComboBox::from_id_salt(("pl_sort", list)).selected_text(shown).width(SORT_W - 26.0).show_ui(ui, |ui| {
+            let harmonic = ui
+                .add_enabled(!analyzing && pl.upcoming() > 0, egui::Button::selectable(false, tr("Harmonisch (Tonart, Tempo)")))
+                .on_hover_text(tr("Ordnet die kommenden Titel beider Playlists so, dass jeder Übergang im Wechsel A – B – A passt: zuerst nach Tonart, dann nach Tempo. Fehlende Tonarten werden vorher ermittelt."));
+            if harmonic.clicked() {
+                out.push(PlaylistAction::Harmonic);
             }
-            // Ein Auswahlfeld für beide Sortierarten spart Platz in der Kopfzeile; „Rückgängig“ nimmt die letzte
-            // Sortierung zurück (gilt für beide Playlists)
-            let analyzing = key_info.harmonic == Harmonic::Analyzing;
-            let shown = if analyzing { tr("Analysiert …") } else { tr("Sortieren") };
-            let combo = egui::ComboBox::from_id_salt(("pl_sort", list)).selected_text(shown).width(104.0).show_ui(ui, |ui| {
-                let harmonic = ui
-                    .add_enabled(!analyzing && pl.upcoming() > 0, egui::Button::selectable(false, tr("Harmonisch (Tonart, Tempo)")))
-                    .on_hover_text(tr("Ordnet die kommenden Titel beider Playlists so, dass jeder Übergang im Wechsel A – B – A passt: zuerst nach Tonart, dann nach Tempo. Fehlende Tonarten werden vorher ermittelt."));
-                if harmonic.clicked() {
-                    out.push(PlaylistAction::Harmonic);
-                }
-                let shuffle = ui
-                    .add_enabled(!analyzing && pl.upcoming() > 1, egui::Button::selectable(false, tr("Zufällig")))
-                    .on_hover_text(tr("Mischt die kommenden Titel. Der geladene und die schon gespielten bleiben an ihrem Platz."));
-                if shuffle.clicked() {
-                    out.push(PlaylistAction::Shuffle);
-                }
-                if key_info.harmonic == Harmonic::Undo {
-                    ui.separator();
-                    let undo = ui
-                        .add(egui::Button::selectable(false, tr("Rückgängig")))
-                        .on_hover_text(tr("Stellt die Reihenfolge von vor dem letzten Sortieren wieder her."));
-                    if undo.clicked() {
-                        out.push(PlaylistAction::SortUndo);
-                    }
-                }
-            });
-            if analyzing {
-                combo.response.on_hover_text(tr("Fehlende Tonarten werden ermittelt, danach wird sortiert."));
+            let shuffle = ui
+                .add_enabled(!analyzing && pl.upcoming() > 1, egui::Button::selectable(false, tr("Zufällig")))
+                .on_hover_text(tr("Mischt die kommenden Titel. Der geladene und die schon gespielten bleiben an ihrem Platz."));
+            if shuffle.clicked() {
+                out.push(PlaylistAction::Shuffle);
             }
-            // Schnellsuche: springt zum ersten Treffer ab dem geladenen Titel, Enter zum nächsten, ⇧Enter zurück
-            if let Some(hit) = quick_search(ui, list, pl, metas, cursor) {
-                cursor = Some(hit);
-                scroll_to_cursor = Some(Some(egui::Align::Center));
-                keynav::focus(ui.ctx(), me);
+            if key_info.harmonic == Harmonic::Undo {
+                ui.separator();
+                let undo = ui
+                    .add(egui::Button::selectable(false, tr("Rückgängig")))
+                    .on_hover_text(tr("Stellt die Reihenfolge von vor dem letzten Sortieren wieder her."));
+                if undo.clicked() {
+                    out.push(PlaylistAction::SortUndo);
+                }
             }
         });
-    });
+        if analyzing {
+            combo.response.on_hover_text(tr("Fehlende Tonarten werden ermittelt, danach wird sortiert."));
+        }
+        // Schnellsuche: springt zum ersten Treffer ab dem geladenen Titel, Enter zum nächsten, ⇧Enter zurück
+        if let Some(hit) = quick_search(ui, list, pl, metas, cursor, fill) {
+            cursor = Some(hit);
+            scroll_to_cursor = Some(Some(egui::Align::Center));
+            keynav::focus(ui.ctx(), me);
+        }
+    };
+    let right_to_left = egui::Layout::right_to_left(egui::Align::Center);
+    if narrow {
+        ui.horizontal(|ui| {
+            if left(ui) {
+                head_out.push(PlaylistAction::FadeWerk(!fadewerk_on));
+            }
+            ui.with_layout(right_to_left, |ui| {
+                ui.spacing_mut().interact_size.y = HEADER_CTRL_H;
+                if clear(ui) {
+                    head_out.push(PlaylistAction::Clear);
+                }
+            });
+        });
+        // Feste Zeilenhöhe: ein bloßes `with_layout` nähme die ganze restliche Höhe und setzte die Zeile in deren Mitte
+        ui.allocate_ui_with_layout(vec2(ui.available_width(), HEADER_CTRL_H), right_to_left, |ui| {
+            ui.spacing_mut().interact_size.y = HEADER_CTRL_H;
+            tools(ui, true);
+        });
+    } else {
+        ui.horizontal(|ui| {
+            if left(ui) {
+                head_out.push(PlaylistAction::FadeWerk(!fadewerk_on));
+            }
+            ui.with_layout(right_to_left, |ui| {
+                // Leeren, Sortieren und Suchen gleich hoch, damit sie auf einer Linie sitzen
+                ui.spacing_mut().interact_size.y = HEADER_CTRL_H;
+                if clear(ui) {
+                    head_out.push(PlaylistAction::Clear);
+                }
+                tools(ui, false);
+            });
+        });
+    }
+    out.extend(head_out);
     ui.separator();
 
     let current = if deck_has_track { pl.current } else { None };
@@ -878,10 +921,16 @@ fn row_wave(p: &egui::Painter, rect: Rect, sk: &WaveSketch, fade: TrackFade, col
     }
 }
 
+/// Breite der FADEWERK-Taste, des Sortieren-Felds und kleinste Breite der Schnellsuche in der Kopfzeile.
+const FADEWERK_W: f32 = 84.0;
+const SORT_W: f32 = 130.0;
+const SEARCH_MIN_W: f32 = 80.0;
+
 /// Schnellsuche in der Kopfzeile einer Playlist. Liefert den Titel, zu dem gesprungen werden soll: beim Tippen
 /// der erste Treffer ab dem geladenen Titel (die kommenden zuerst), mit Enter der nächste, mit ⇧Enter der vorige.
 /// Esc leert das Feld. Gesucht wird mit allen Wörtern in Titel, Interpret, Album und Dateiname.
-fn quick_search(ui: &mut egui::Ui, list: usize, pl: &Playlist, metas: &HashMap<PathBuf, TrackMeta>, cursor: Option<usize>) -> Option<usize> {
+/// `fill` = so breit wie der ganze restliche Platz (eigene Zeile in schmalen Köpfen).
+fn quick_search(ui: &mut egui::Ui, list: usize, pl: &Playlist, metas: &HashMap<PathBuf, TrackMeta>, cursor: Option<usize>, fill: bool) -> Option<usize> {
     let id = egui::Id::new(("pl_search", list));
     let mut query: String = ui.data(|d| d.get_temp(id)).unwrap_or_default();
     // Trefferzahl der letzten Suche, als (Stelle, Anzahl)
@@ -891,7 +940,7 @@ fn quick_search(ui: &mut egui::Ui, list: usize, pl: &Playlist, metas: &HashMap<P
     if room < 40.0 {
         return None;
     }
-    let w = (ui.available_width() * 0.45).clamp(80.0, 200.0).min(room);
+    let w = if fill { room } else { (ui.available_width() * 0.45).clamp(SEARCH_MIN_W, 200.0).min(room) };
     let resp = ui.add(
         egui::TextEdit::singleline(&mut query).hint_text(tr("Suchen")).desired_width(w).min_size(vec2(w, HEADER_CTRL_H)).vertical_align(egui::Align::Center),
     );

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Aufräumen unter Einstellungen → Allgemein: Größe der Caches messen, Caches leeren und
+//! Aufräumen unter Einstellungen → Musik: Größe der Caches messen, Caches leeren und
 //! FadeWerk DJ ganz zurücksetzen.
 
 use std::path::{Path, PathBuf};

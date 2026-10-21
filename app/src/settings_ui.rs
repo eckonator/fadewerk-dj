@@ -13,8 +13,9 @@ enum Tab {
     #[default]
     General,
     Audio,
+    Recording,
+    Music,
     Effects,
-    Language,
     Look,
     About,
 }
@@ -49,6 +50,13 @@ pub enum SettingsAction {
     /// Sofort bei GitHub nach einer neuen Version fragen.
     CheckUpdateNow,
     RecordHistory(bool),
+    RecordFormat(crate::recorder::RecordFormat),
+    /// Ordner für Aufnahmen wählen (öffnet den Dialog).
+    RecordPickDir,
+    /// Ordner für Aufnahmen auf den Standard zurück.
+    RecordDirDefault,
+    /// Ordner für Aufnahmen im Dateimanager zeigen.
+    RecordRevealDir,
     KeepAwake(bool),
     /// Systemtöne und andere Programme stumm schalten.
     MuteOthers(bool),
@@ -68,7 +76,7 @@ pub enum SettingsAction {
     FxIcon(usize, String),
     /// Alle Effekt-Pads auf die mitgelieferten Klänge, Namen und Symbole zurücksetzen.
     FxResetAll,
-    /// Größe der Caches messen (für die Anzeige unter Allgemein).
+    /// Größe der Caches messen (für die Anzeige unter Musik).
     MeasureCaches,
     /// Caches leeren, mit `bpm` auch die ermittelten BPM.
     ClearCaches { bpm: bool },
@@ -118,8 +126,9 @@ impl SettingsUi {
         self.open = true;
         self.place = true;
         self.tab = match page {
-            "sprache" => Tab::Language,
             "aussehen" => Tab::Look,
+            "aufnahme" => Tab::Recording,
+            "musik" => Tab::Music,
             "ueber" => Tab::About,
             "audio" => Tab::Audio,
             "effekte" => Tab::Effects,
@@ -160,17 +169,18 @@ impl SettingsUi {
                 ui.set_width(SETTINGS_W);
                 ui.horizontal(|ui| {
                     for (tab, label) in [
-                        (Tab::General, "Allgemein"),
-                        (Tab::Audio, "Audio"),
-                        (Tab::Effects, "Effekte"),
-                        (Tab::Language, "Sprache"),
-                        (Tab::Look, "Aussehen"),
-                        (Tab::About, "Über"),
+                        (Tab::General, tr("Allgemein")),
+                        (Tab::Audio, tr("Audio")),
+                        (Tab::Recording, tr("Aufnahme")),
+                        (Tab::Music, tr("Musik")),
+                        (Tab::Effects, tr("Effekte")),
+                        (Tab::Look, tr("Aussehen")),
+                        (Tab::About, tr("Über")),
                     ] {
                         let on = self.tab == tab;
-                        let b = egui::Button::new(RichText::new(tr(label)).size(14.0).color(if on { theme::ground() } else { theme::dim() }))
+                        let b = egui::Button::new(RichText::new(label).size(14.0).color(if on { theme::ground() } else { theme::dim() }))
                             .fill(if on { theme::ink() } else { theme::panel2() })
-                            .min_size(vec2(80.0, 28.0));
+                            .min_size(vec2(56.0, 28.0));
                         if ui.add(b).clicked() {
                             self.tab = tab;
                         }
@@ -182,8 +192,9 @@ impl SettingsUi {
                 match self.tab {
                     Tab::General => self.general_tab(ui, c, out),
                     Tab::Audio => self.audio_tab(ui, c, out),
+                    Tab::Recording => recording_tab(ui, c, out),
+                    Tab::Music => self.music_tab(ui, c, out),
                     Tab::Effects => self.effects_tab(ui, c, out),
-                    Tab::Language => language_tab(ui, c, out),
                     Tab::Look => look_tab(ui, c, out),
                     Tab::About => self.about_tab(ui, out),
                 }
@@ -290,9 +301,20 @@ impl SettingsUi {
         });
     }
 
-    /// Allgemeine Häkchen, darunter Caches und ganz unten, abgesetzt, das Zurücksetzen.
+    /// Sprache, Ruhezustand, Updates und ganz unten, abgesetzt, das Zurücksetzen.
     fn general_tab(&mut self, ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction>) {
         general_options(ui, c, out);
+        self.reset_section(ui, c, out);
+    }
+
+    /// Online-Erkennung und Caches: was beim Lesen der Musiksammlung hilft.
+    fn music_tab(&mut self, ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction>) {
+        ui.label(RichText::new(tr("Titel online erkennen")).strong());
+        let mut online = c.settings.online_lookup;
+        if ui.checkbox(&mut online, RichText::new(tr("„Online suchen“ im Tag-Fenster erlauben")).size(14.0)).changed() {
+            out.push(SettingsAction::OnlineLookup(online));
+        }
+        ui.label(RichText::new(tr("Nur auf Knopfdruck: Ein akustischer Fingerabdruck und die Länge gehen an AcoustID, ohne Treffer Interpret und Titel an MusicBrainz, für das Cover die Album-Kennung an das Cover Art Archive. Die Musikdatei bleibt auf deinem Rechner.")).size(11.5).color(theme::dim()));
 
         ui.add_space(10.0);
         ui.label(RichText::new(tr("Caches")).strong());
@@ -328,7 +350,10 @@ impl SettingsUi {
                 self.confirm_clear = true;
             }
         });
+    }
 
+    /// Alles löschen und neu starten, ganz unten unter Allgemein.
+    fn reset_section(&mut self, ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction>) {
         // Abgesetzt und rot, damit man es nicht mit „Caches leeren“ verwechselt
         ui.add_space(18.0);
         ui.separator();
@@ -392,7 +417,7 @@ impl SettingsUi {
 
         ui.add_space(10.0);
         ui.label(RichText::new(tr("Verwendete Fremdbestandteile")).strong());
-        ui.label(RichText::new(tr("Schriften Chakra Petch und DSEG (SIL Open Font License 1.1), egui und eframe (MIT/Apache-2.0), cpal (Apache-2.0), Symphonia (MPL-2.0), lofty (MIT/Apache-2.0), rusty-chromaprint (MIT) und weitere Rust-Bibliotheken. Titelerkennung über AcoustID und MusicBrainz (Daten CC0), Cover über das Cover Art Archive. Die vollständige Liste liegt jedem Release als THIRD-PARTY-LICENSES.yml bei.")).size(12.5).color(theme::dim()));
+        ui.label(RichText::new(tr("Schriften Chakra Petch und DSEG (SIL Open Font License 1.1), egui und eframe (MIT/Apache-2.0), cpal (Apache-2.0), Symphonia (MPL-2.0), lofty (MIT/Apache-2.0), rusty-chromaprint (MIT), LAME für MP3-Aufnahmen (LGPL) und weitere Rust-Bibliotheken. Titelerkennung über AcoustID und MusicBrainz (Daten CC0), Cover über das Cover Art Archive. Die vollständige Liste liegt jedem Release als THIRD-PARTY-LICENSES.yml bei.")).size(12.5).color(theme::dim()));
 
         ui.add_space(10.0);
         ui.label(RichText::new(tr("Lizenztexte")).strong());
@@ -543,18 +568,16 @@ impl SettingsUi {
     }
 }
 
-/// Was zu keinem Gerät und keiner Optik gehört: Historie, Ruhezustand, Updates.
+/// Was zu keinem Gerät, keiner Aufnahme und keiner Optik gehört: Sprache, Ruhezustand, Updates.
 fn general_options(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction>) {
-    ui.label(RichText::new(tr("Historie")).strong());
-    let mut record = c.settings.record_history;
-    if ui.checkbox(&mut record, RichText::new(tr("Gespielte Titel aufzeichnen")).size(14.0)).changed() {
-        out.push(SettingsAction::RecordHistory(record));
-    }
-    ui.label(
-        RichText::new(tr("Ein Titel zählt, sobald er 30 Sekunden über Master zu hören war. Zu finden im Ordnerbrowser unter „Historie“."))
-            .size(12.0)
-            .color(theme::dim()),
-    );
+    ui.label(RichText::new(tr("Sprache der Oberfläche")).strong());
+    ui.horizontal(|ui| {
+        for l in Lang::ALL {
+            if ui.radio(c.settings.language == l, RichText::new(l.native_name()).size(14.0)).clicked() {
+                out.push(SettingsAction::Language(l));
+            }
+        }
+    });
 
     ui.add_space(10.0);
     ui.label(RichText::new(tr("Ruhezustand")).strong());
@@ -567,14 +590,6 @@ fn general_options(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<Setting
             .size(12.0)
             .color(theme::dim()),
     );
-
-    ui.add_space(10.0);
-    ui.label(RichText::new(tr("Titel online erkennen")).strong());
-    let mut online = c.settings.online_lookup;
-    if ui.checkbox(&mut online, RichText::new(tr("„Online suchen“ im Tag-Fenster erlauben")).size(14.0)).changed() {
-        out.push(SettingsAction::OnlineLookup(online));
-    }
-    ui.label(RichText::new(tr("Nur auf Knopfdruck: Ein akustischer Fingerabdruck und die Länge gehen an AcoustID, ohne Treffer Interpret und Titel an MusicBrainz, für das Cover die Album-Kennung an das Cover Art Archive. Die Musikdatei bleibt auf deinem Rechner.")).size(11.5).color(theme::dim()));
 
     ui.add_space(10.0);
     ui.label(RichText::new(tr("Updates")).strong());
@@ -592,14 +607,52 @@ fn general_options(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<Setting
     }
 }
 
-fn language_tab(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction>) {
-    ui.label(RichText::new(tr("Sprache der Oberfläche")).strong());
-    ui.add_space(4.0);
-    for l in Lang::ALL {
-        if ui.radio(c.settings.language == l, RichText::new(l.native_name()).size(14.0)).clicked() {
-            out.push(SettingsAction::Language(l));
+/// Mix aufnehmen (Format, Ordner) und die Historie der gespielten Titel.
+fn recording_tab(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction>) {
+    ui.label(RichText::new(tr("Mix aufnehmen")).strong());
+    ui.label(
+        RichText::new(tr("Die Taste REC neben MASTER nimmt den Mix auf, wie er über Master klingt (vor der Master-Lautstärke)."))
+            .size(12.0)
+            .color(theme::dim()),
+    );
+    ui.horizontal(|ui| {
+        use crate::recorder::RecordFormat;
+        for (format, name) in [(RecordFormat::Wav, tr("WAV (verlustfrei, 24 Bit)")), (RecordFormat::Mp3, tr("MP3 (320 kbit/s)"))] {
+            if ui.radio(c.settings.record_format == format, RichText::new(name).size(14.0)).clicked() {
+                out.push(SettingsAction::RecordFormat(format));
+            }
         }
+    });
+    let dir = c.settings.record_dir.clone().unwrap_or_else(crate::recorder::default_dir);
+    // Im Benutzerordner mit „~“ abkürzen, damit der Pfad in eine Zeile passt
+    let shown = match dirs::home_dir().and_then(|h| dir.strip_prefix(&h).ok().map(|r| r.to_path_buf())) {
+        Some(rest) => format!("~/{}", rest.display()),
+        None => dir.display().to_string(),
+    };
+    ui.label(RichText::new(shown).size(12.5).color(theme::dim()));
+    ui.horizontal(|ui| {
+        if ui.button(tr("Ordner wählen …")).clicked() {
+            out.push(SettingsAction::RecordPickDir);
+        }
+        if c.settings.record_dir.is_some() && ui.button(tr("Standardordner")).clicked() {
+            out.push(SettingsAction::RecordDirDefault);
+        }
+        if ui.button(crate::browser::reveal_label()).clicked() {
+            out.push(SettingsAction::RecordRevealDir);
+        }
+    });
+
+    ui.add_space(10.0);
+    ui.label(RichText::new(tr("Historie")).strong());
+    let mut record = c.settings.record_history;
+    if ui.checkbox(&mut record, RichText::new(tr("Gespielte Titel aufzeichnen")).size(14.0)).changed() {
+        out.push(SettingsAction::RecordHistory(record));
     }
+    ui.label(
+        RichText::new(tr("Ein Titel zählt, sobald er 30 Sekunden über Master zu hören war. Zu finden im Ordnerbrowser unter „Historie“."))
+            .size(12.0)
+            .color(theme::dim()),
+    );
 }
 
 fn look_tab(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction>) {
@@ -675,7 +728,8 @@ fn look_tab(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction
     });
     let tip = if cfg!(target_os = "macos") { tr("Ganze Oberfläche kleiner oder größer, auch mit ⌘ + und ⌘ − (⌘ 0 = 100 %).") } else { tr("Ganze Oberfläche kleiner oder größer, auch mit Strg + und Strg − (Strg 0 = 100 %).") };
     ui.label(RichText::new(tip).size(11.5).color(theme::dim()));
-    ui.add_space(10.0);
+    ui.add_space(14.0);
+    ui.label(RichText::new(tr("Leistung")).strong());
     let mut lite = c.settings.lite_ui;
     if ui.checkbox(&mut lite, RichText::new(tr("Sparsame Darstellung (für ältere oder langsame Rechner)")).size(14.0)).changed() {
         out.push(SettingsAction::Lite(lite));

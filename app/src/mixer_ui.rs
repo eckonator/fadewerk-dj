@@ -30,6 +30,10 @@ pub struct MixerModel<'a> {
     /// EQ je Player in dB und Kill-Tasten, Reihenfolge Bässe, Mitten, Höhen.
     pub eq_db: [[f32; 3]; 2],
     pub eq_kill: [[bool; 3]; 2],
+    /// Filter je Player, −1 Tiefpass bis +1 Hochpass.
+    pub filter: [f32; 2],
+    /// Laufende Aufnahme: Sekunden bisher, ob sie gerade abgeschlossen wird, geschriebene Bytes.
+    pub recording: Option<(f64, bool, u64)>,
     /// Beschriftung und Symbol der Effekt-Pads.
     pub fx_labels: &'a [String; fw_engine::FX_SLOTS],
     pub fx_icons: [crate::fx_icons::FxIcon; fw_engine::FX_SLOTS],
@@ -48,6 +52,9 @@ pub enum MixerAction {
     MasterVolume(f32),
     Eq { deck: usize, band: usize, db: f32 },
     EqKill { deck: usize, band: usize, on: bool },
+    Filter { deck: usize, value: f32 },
+    /// Aufnahme starten bzw. beenden.
+    Record,
     /// Effekt-Pad auslösen: über Master oder nur auf dem Kopfhörer (vorhören).
     Fx { slot: usize, to_master: bool },
     FxVolume(f32),
@@ -84,8 +91,11 @@ pub fn show_mixer(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerActi
     // Pegelbrücke: LED A | Fader A | MAIN | Fader B | LED B
     // Maße wachsen mit der Breite der Mittelspalte
     let w = ui.available_width();
-    // Etwas flacher seit der EQ darüber sitzt, damit die Spalte auf kleinen Fenstern nicht überläuft
-    let h = (w * 0.4).clamp(110.0, 180.0);
+    // Flacher seit EQ und Filter darüber sitzen, damit die Spalte auf kleinen Fenstern nicht überläuft
+    let h = (w * 0.4 - 30.0).clamp(96.0, 160.0);
+    let left = ui.available_rect_before_wrap().left();
+    let (fa_center, fb_center) = bridge_fader_x(left, w);
+    filter_row(ui, m, [fa_center, fb_center], out);
     let (rect, _) = ui.allocate_exact_size(vec2(w, h + 18.0), Sense::hover());
     let led_w = (w * 0.055).clamp(14.0, 24.0);
     let bar = Rect::from_min_size(rect.min, vec2(w, h));
@@ -102,8 +112,6 @@ pub fn show_mixer(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerActi
     let between = (led_b.left() - led_a.right()) - 2.0 * (gap + fader_w) - 2.0 * (gap + 2.0);
     let main_w = between.clamp(main_base, main_base * 3.0);
     let led_m = Rect::from_center_size(pos2(bar.center().x, bar.center().y), vec2(main_w, h));
-    let fa_center = (led_a.right() + gap + fader_w / 2.0).min((led_a.right() + led_m.left()) / 2.0);
-    let fb_center = (led_b.left() - gap - fader_w / 2.0).max((led_m.right() + led_b.left()) / 2.0);
     let fad_a = Rect::from_center_size(pos2(fa_center, bar.center().y), vec2(fader_w, h));
     let fad_b = Rect::from_center_size(pos2(fb_center, bar.center().y), vec2(fader_w, h));
 
@@ -130,9 +138,13 @@ pub fn show_mixer(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerActi
     ui.add_space(2.0);
     ui.horizontal(|ui| {
         ui.label(small("MASTER"));
-        let (resp, new) = hw::mini_fader(ui, "master", m.master_volume, settings::DEFAULT_MASTER_VOLUME, 0.0, 1.0, ui.available_width() - 4.0);
+        let rec_w = 62.0;
+        let (resp, new) = hw::mini_fader(ui, "master", m.master_volume, settings::DEFAULT_MASTER_VOLUME, 0.0, 1.0, ui.available_width() - rec_w - 10.0);
         if let Some(v) = hw::nudge(ui, &resp, m.master_volume, VOLUME_STEP, 0.0, 1.0).or(new) {
             out.push(MixerAction::MasterVolume(v));
+        }
+        if record_button(ui, vec2(rec_w, 20.0), m.recording).clicked() {
+            out.push(MixerAction::Record);
         }
     });
 
@@ -140,6 +152,54 @@ pub fn show_mixer(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerActi
     if !m.audio_ok {
         ui.colored_label(theme::cue(), tr("Keine Audio-Ausgabe gefunden"));
     }
+}
+
+/// Aufnahme-Taste: roter Punkt und REC, während der Aufnahme leuchtend mit blinkendem Punkt und Laufzeit.
+fn record_button(ui: &mut egui::Ui, size: egui::Vec2, recording: Option<(f64, bool, u64)>) -> egui::Response {
+    let stopping = recording.is_some_and(|(_, s, _)| s);
+    let blink = ui.input(|i| i.time) % 1.0 < 0.6;
+    let label = match recording {
+        Some((secs, _, _)) => {
+            let s = secs as u64;
+            if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) }
+        }
+        None => "REC".to_owned(),
+    };
+    let b = hw::custom_button(ui, size, hw::Look::Color(theme::cue()), recording.is_some(), !stopping, |p, r, color| {
+        let font = fonts::bold(11.0);
+        let galley = p.layout_no_wrap(label, font, color);
+        let dot_r = 3.5;
+        let gap = 5.0;
+        let total = 2.0 * dot_r + gap + galley.size().x;
+        let left = r.center().x - total / 2.0;
+        let dot = if recording.is_none() || blink { theme::cue() } else { theme::cue().gamma_multiply(0.25) };
+        p.circle_filled(pos2(left + dot_r, r.center().y), dot_r, dot);
+        p.galley(pos2(left + 2.0 * dot_r + gap, r.center().y - galley.size().y / 2.0), galley, color);
+    });
+    if recording.is_some() {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+    }
+    match recording {
+        Some((_, _, bytes)) => b.on_hover_text(trf("Aufnahme beenden ({} MB)", &[&format!("{:.0}", bytes as f64 / 1e6)])),
+        None => b.on_hover_text(tr("Mix aufnehmen (Format und Ordner unter Einstellungen → Aufnahme)")),
+    }
+}
+
+/// Mitte der beiden Kanalfader in der Pegelbrücke (gleiche Rechnung wie in `show_mixer`), damit der Filter darüber sitzt.
+fn bridge_fader_x(left: f32, w: f32) -> (f32, f32) {
+    let led_w = (w * 0.055).clamp(14.0, 24.0);
+    let inset = eq_outer_inset(w) + 2.0;
+    let (a_right, b_left) = (left + inset + led_w, left + w - inset - led_w);
+    let fader_w = (w * 0.16).clamp(40.0, 60.0);
+    let gap = 10.0;
+    let main_base = led_w * 1.7;
+    let between = (b_left - a_right) - 2.0 * (gap + fader_w) - 2.0 * (gap + 2.0);
+    let main_w = between.clamp(main_base, main_base * 3.0);
+    let center = left + w / 2.0;
+    let (m_left, m_right) = (center - main_w / 2.0, center + main_w / 2.0);
+    let fa = (a_right + gap + fader_w / 2.0).min((a_right + m_left) / 2.0);
+    let fb = (b_left - gap - fader_w / 2.0).max((m_right + b_left) / 2.0);
+    (fa, fb)
 }
 
 /// Maße der EQ-Reihe bei Breite `w`: Knopfdurchmesser, Breite einer Gruppe (A oder B), Platz je Knopf.
@@ -196,6 +256,45 @@ fn eq_strip(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerAction>) {
         }
     }
     ui.add_space(2.0);
+}
+
+/// Schritt des Filters je Pfeiltaste bzw. Rastung (Reglerweg −1 … +1).
+const FILTER_STEP: f32 = 0.05;
+
+/// Reihe mit den Filtern unter dem EQ, je Player ein Knopf über seinem Kanalfader (Mitte neutral,
+/// links Tiefpass, rechts Hochpass). Beschriftung und Grenzfrequenz stehen zur Mitte hin daneben.
+fn filter_row(ui: &mut egui::Ui, m: &MixerModel<'_>, fader_x: [f32; 2], out: &mut Vec<MixerAction>) {
+    let w = ui.available_width();
+    let d = (w * 0.13).clamp(30.0, 42.0);
+    let (rect, _) = ui.allocate_exact_size(vec2(w, d + 4.0), Sense::hover());
+    let p = ui.painter().clone();
+    let freq = |hz: f32| if hz >= 1000.0 { format!("{:.1}k", hz / 1000.0) } else { format!("{hz:.0}") };
+    for (deck, x) in fader_x.into_iter().enumerate() {
+        let value = m.filter[deck];
+        let c = pos2(x, rect.center().y);
+        let kr = Rect::from_center_size(c, vec2(d, d));
+        let (resp, new) = hw::knob(ui, kr, ("filter", deck), 0.5 + 0.5 * value, 0.5, theme::deck_color(deck));
+        let keyed = hw::nudge(ui, &resp, value, FILTER_STEP, -1.0, 1.0);
+        resp.on_hover_text(tr("Filter: links Tiefpass, rechts Hochpass, Mitte aus (Rechtsklick)"));
+        if let Some(v) = keyed {
+            out.push(MixerAction::Filter { deck, value: if v.abs() < 0.01 { 0.0 } else { v } });
+        } else if let Some(n) = new {
+            // Nahe der Mitte einrasten
+            let v = 2.0 * n - 1.0;
+            out.push(MixerAction::Filter { deck, value: if v.abs() < 0.04 { 0.0 } else { v } });
+        }
+        let state = fw_engine::filter::cutoff_hz(value);
+        let reading = match state {
+            Some((true, hz)) => format!("{} {}", tr("TP"), freq(hz)),
+            Some((false, hz)) => format!("HP {}", freq(hz)),
+            None => tr("AUS").to_owned(),
+        };
+        // A: Text rechts vom Knopf, B: links davon, jeweils zur Mitte hin
+        let (x, align) = if deck == 0 { (kr.right() + 8.0, Align2::LEFT_CENTER) } else { (kr.left() - 8.0, Align2::RIGHT_CENTER) };
+        p.text(pos2(x, c.y - 7.0), align, tr("FILTER"), fonts::bold(9.5), theme::dim());
+        let color = if state.is_some() { theme::deck_color(deck) } else { theme::faint() };
+        p.text(pos2(x, c.y + 7.0), align, reading, fonts::bold(10.0), color);
+    }
 }
 
 pub struct FadeModel<'a> {

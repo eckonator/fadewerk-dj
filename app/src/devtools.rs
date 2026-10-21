@@ -20,7 +20,7 @@
 //! - `FW_AUTOSYNC=1` schaltet Auto-Sync ein (ohne zu speichern).
 //! - `FW_STEEL=1` schaltet gebürsteten Stahl ein (ohne zu speichern).
 //! - `FW_LITE=1` schaltet die sparsame Darstellung ein (ohne zu speichern).
-//! - `FW_SETTINGS=allgemein|audio|effekte|sprache|aussehen|ueber` öffnet das Einstellungsfenster auf dieser Seite.
+//! - `FW_SETTINGS=allgemein|audio|aufnahme|musik|effekte|aussehen|ueber` öffnet das Einstellungsfenster auf dieser Seite.
 //! - `FW_POINTER=x,y` bewegt die Maus (in Punkten) nach Bild 100 dorthin, etwa um Tooltips zu sehen;
 //!   `FW_POINTER=x,y,2` klickt dort rechts (Kontextmenü), `FW_POINTER=x,y,1` links;
 //!   `FW_POINTER=x1,y1,x2,y2` zieht mit gedrückter Taste von x1,y1 nach x2,y2 und bleibt dort stehen.

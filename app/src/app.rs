@@ -251,6 +251,15 @@ pub struct FadeWerkDjApp {
     /// EQ je Player in dB und Kill-Tasten (Bässe, Mitten, Höhen).
     eq_db: [[f32; 3]; 2],
     eq_kill: [[bool; 3]; 2],
+    /// Filter je Player, −1 Tiefpass bis +1 Hochpass (wird nicht gespeichert).
+    filter: [f32; 2],
+    /// Ausgang der Aufnahme aus der Engine, solange keine Aufnahme läuft.
+    record_rx: Option<crate::recorder::FrameRx>,
+    recording: Option<crate::recorder::Recording>,
+    /// Verlorene Frames beim Start der Aufnahme (Zähler der Engine), für den Hinweis am Ende.
+    record_dropped_at_start: u64,
+    /// Zählt hoch, wenn die Audio-Ausgabe neu startet (dann gehört ein alter Aufnahme-Puffer zur alten Engine).
+    audio_gen: u64,
     /// Zuletzt an die Engine geschickte EQ-Faktoren; NaN erzwingt erneutes Senden.
     eq_sent: [[f32; 3]; 2],
     bass_swap: bool,
@@ -405,6 +414,11 @@ impl FadeWerkDjApp {
             fx_volume: settings.fx_volume,
             eq_db: settings.eq_db,
             eq_kill: [[false; 3]; 2],
+            filter: [0.0; 2],
+            record_rx: None,
+            recording: None,
+            record_dropped_at_start: 0,
+            audio_gen: 0,
             eq_sent: [[f32::NAN; 3]; 2],
             bass_swap: settings.bass_swap,
             auto_sync: settings.auto_sync || std::env::var_os("FW_AUTOSYNC").is_some(),
@@ -639,6 +653,7 @@ impl FadeWerkDjApp {
                 app.browser_action(BrowserAction::Preview(t.clone()), 0.0);
             }
         }
+        app.record_rx = app.ctl.take_recording();
         app
     }
 
@@ -669,6 +684,71 @@ impl FadeWerkDjApp {
         }
         self.eq_sent = [[f32::NAN; 3]; 2];
         self.push_eq();
+        for d in 0..2 {
+            self.ctl.send(Command::SetFilter { deck: d, value: self.filter[d] });
+        }
+    }
+
+    /// Aufnahme des Mix starten oder beenden.
+    fn toggle_recording(&mut self, now: f64) {
+        if let Some(rec) = &self.recording {
+            if !rec.is_stopping() {
+                self.ctl.send(Command::SetRecording(false));
+                rec.stop();
+            }
+            return;
+        }
+        let Some(rx) = self.record_rx.take() else {
+            self.notify(tr("Aufnahme nicht möglich: keine Audio-Ausgabe"), now);
+            return;
+        };
+        let dir = self.settings.record_dir.clone().unwrap_or_else(crate::recorder::default_dir);
+        match crate::recorder::Recording::start(&dir, self.settings.record_format, self.ctl.shared.clone(), rx, self.audio_gen) {
+            Ok(rec) => {
+                self.record_dropped_at_start = self.ctl.shared.record_dropped();
+                self.ctl.send(Command::SetRecording(true));
+                log::info!("Aufnahme: {}", rec.path.display());
+                self.notify(trf("Aufnahme läuft: {}", &[&file_label(&rec.path)]), now);
+                self.recording = Some(rec);
+            }
+            Err((e, rx)) => {
+                log::warn!("Aufnahme: {e:#}");
+                self.record_rx = rx;
+                self.notify(trf("Aufnahme nicht möglich: {}", &[&format!("{e:#}")]), now);
+            }
+        }
+    }
+
+    /// Fertige (oder abgebrochene) Aufnahme abschließen und melden.
+    fn poll_recording(&mut self, now: f64) {
+        if !self.recording.as_ref().is_some_and(|r| r.is_done()) {
+            return;
+        }
+        let Some(rec) = self.recording.take() else { return };
+        // Endete der Thread wegen eines Fehlers, soll die Engine nicht weiter in den Puffer schreiben
+        self.ctl.send(Command::SetRecording(false));
+        let generation = rec.generation;
+        let secs = rec.secs();
+        let (rx, result) = rec.finish();
+        if generation == self.audio_gen && self.record_rx.is_none() {
+            self.record_rx = rx;
+        }
+        let lost = self.ctl.shared.record_dropped().saturating_sub(self.record_dropped_at_start);
+        match result {
+            Ok(files) => {
+                let names: Vec<String> = files.iter().map(|f| file_label(f)).collect();
+                log::info!("Aufnahme fertig ({secs:.0} s): {}", names.join(", "));
+                let mut text = trf("Aufnahme gespeichert ({}): {}", &[&format_duration(secs), &names.join(", ")]);
+                if lost > 0 && generation == self.audio_gen {
+                    text.push_str(&trf(" – mit Aussetzern ({} ms fehlen)", &[&(lost * 1000 / self.ctl.shared.sample_rate.max(1) as u64)]));
+                }
+                self.notice = Some((text, now + 6.0));
+            }
+            Err(e) => {
+                log::warn!("Aufnahme abgebrochen: {e:#}");
+                self.notice = Some((trf("Aufnahme abgebrochen: {}", &[&format!("{e:#}")]), now + 8.0));
+            }
+        }
     }
 
     /// Schickt geänderte EQ-Werte an die Engine. Mit Bass-Swap sind während einer Überblendung erst
@@ -796,6 +876,13 @@ impl FadeWerkDjApp {
         let st: Vec<(f64, bool)> = (0..2).map(|d| (self.ctl.shared.decks[d].position_secs(), self.ctl.shared.decks[d].is_playing())).collect();
         // Kopfhörergerät nur wieder öffnen, wenn es lief (siehe `start_head_audio`)
         let head_was_on = self.head_audio.is_some();
+        // Eine laufende Aufnahme gehört zur alten Ausgabe: sauber abschließen
+        if let Some(rec) = &self.recording
+            && !rec.is_stopping()
+        {
+            rec.stop();
+            self.notify(tr("Aufnahme beendet, weil die Audio-Ausgabe neu startet"), now);
+        }
         // Alte Geräte zuerst freigeben, manche Treiber erlauben nur einen Stream
         self.release_exclusive();
         self.head_audio = None;
@@ -803,6 +890,8 @@ impl FadeWerkDjApp {
         let (audio, ctl, err) = audio::start(self.settings.output_device.as_deref(), self.settings.buffer_frames);
         self.audio = audio;
         self.ctl = ctl;
+        self.audio_gen += 1;
+        self.record_rx = self.ctl.take_recording();
         self.audio_error = err.clone();
         self.push_mixer_state();
         self.start_head_audio(now, head_was_on);
@@ -879,6 +968,24 @@ impl FadeWerkDjApp {
             SettingsAction::OpenGl(on) => self.settings.opengl = on,
             SettingsAction::RecordHistory(on) => self.settings.record_history = on,
             SettingsAction::KeepAwake(on) => self.settings.keep_awake = on,
+            SettingsAction::RecordFormat(f) => self.settings.record_format = f,
+            SettingsAction::RecordPickDir => {
+                let start = self.settings.record_dir.clone().unwrap_or_else(crate::recorder::default_dir);
+                let mut dialog = rfd::FileDialog::new().set_title(tr("Ordner für Aufnahmen"));
+                if start.is_dir() {
+                    dialog = dialog.set_directory(&start);
+                }
+                if let Some(dir) = dialog.pick_folder() {
+                    self.settings.record_dir = Some(dir);
+                }
+            }
+            SettingsAction::RecordDirDefault => self.settings.record_dir = None,
+            SettingsAction::RecordRevealDir => {
+                let dir = self.settings.record_dir.clone().unwrap_or_else(crate::recorder::default_dir);
+                if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| reveal(&dir)) {
+                    self.notify(trf("Ordner lässt sich nicht öffnen: {}", &[&e]), now);
+                }
+            }
             SettingsAction::MuteOthers(on) => {
                 self.settings.mute_others = on;
                 if let Some(q) = &self.quiet {
@@ -1510,7 +1617,7 @@ impl FadeWerkDjApp {
 
     /// Hält Bildschirm und Rechner wach, solange ein Player oder das Vorhören spielt (und kurz danach).
     fn keep_awake(&mut self, now: f64) {
-        if self.ctl.shared.decks.iter().any(|s| s.is_playing()) {
+        if self.ctl.shared.decks.iter().any(|s| s.is_playing()) || self.recording.is_some() {
             self.last_sound = now;
         }
         let want = self.settings.keep_awake && now - self.last_sound < AWAKE_HOLD_SECS && self.last_sound > 0.0;
@@ -2173,6 +2280,11 @@ impl FadeWerkDjApp {
             }
             MixerAction::Eq { deck, band, db } => self.eq_db[deck][band] = db,
             MixerAction::EqKill { deck, band, on } => self.eq_kill[deck][band] = on,
+            MixerAction::Filter { deck, value } => {
+                self.filter[deck] = value;
+                self.ctl.send(Command::SetFilter { deck, value });
+            }
+            MixerAction::Record => self.toggle_recording(now),
             MixerAction::Fx { slot, to_master } => self.trigger_fx(slot, to_master, now),
             MixerAction::FxVolume(v) => {
                 self.fx_volume = v;
@@ -2600,6 +2712,7 @@ impl eframe::App for FadeWerkDjApp {
         self.poll_fx(now);
         self.poll_fade_preview(now);
         self.poll_import(now);
+        self.poll_recording(now);
         self.record_plays();
         self.keep_awake(now);
         self.handle_track_ends();
@@ -2904,6 +3017,8 @@ impl eframe::App for FadeWerkDjApp {
             head_device: self.head_audio.is_some(),
             eq_db: self.eq_db,
             eq_kill: self.eq_kill,
+            filter: self.filter,
+            recording: self.recording.as_ref().map(|r| (r.secs(), r.is_stopping(), r.bytes())),
             fx_labels: &fx_labels,
             fx_icons: std::array::from_fn(|i| self.settings.fx_slot(i).icon(i)),
             fx_playing: self.ctl.shared.fx_playing(),
@@ -3280,6 +3395,13 @@ fn curve_from(i: u8, points: [f32; 4]) -> Curve {
 
 impl Drop for FadeWerkDjApp {
     fn drop(&mut self) {
+        // Laufende Aufnahme beim Beenden abschließen, damit die Datei vollständig ist
+        if let Some(rec) = self.recording.take() {
+            self.ctl.send(Command::SetRecording(false));
+            if let (_, Err(e)) = rec.finish() {
+                log::warn!("Aufnahme beim Beenden: {e:#}");
+            }
+        }
         self.save_settings();
         self.save_session_if_changed();
         if self.persist {
@@ -3388,4 +3510,15 @@ mod tests {
         // Roh wären es 0, 1 oder 2 Blöcke je Bild (0 bis 21 ms); geglättet bleibt es nahe 8,3 ms
         assert!(min > frame * 0.7 && max < frame * 1.3, "Schritte {min:.4}…{max:.4}");
     }
+}
+
+/// Dateiname ohne Ordner, für Hinweise.
+fn file_label(path: &Path) -> String {
+    path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+/// Dauer als „1:02:03“ bzw. „4:05“.
+fn format_duration(secs: f64) -> String {
+    let s = secs.max(0.0) as u64;
+    if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) }
 }

@@ -124,6 +124,10 @@ pub struct Settings {
     pub mute_others: bool,
     /// macOS: Ausgabegerät exklusiv belegen, andere Programme bleiben darauf stumm.
     pub exclusive_output: bool,
+    /// Dateiformat für Mix-Aufnahmen.
+    pub record_format: crate::recorder::RecordFormat,
+    /// Ordner für Mix-Aufnahmen; `None` = Musik/FadeWerk DJ Aufnahmen.
+    pub record_dir: Option<PathBuf>,
 }
 
 impl Default for Settings {
@@ -182,6 +186,8 @@ impl Default for Settings {
             keep_awake: true,
             mute_others: false,
             exclusive_output: false,
+            record_format: Default::default(),
+            record_dir: None,
         }
     }
 }

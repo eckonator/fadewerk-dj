@@ -99,6 +99,9 @@ fn audio_thread_never_allocates() {
         Command::SetSplitFade(true),
         Command::SetEq { deck: 0, band: 0, gain: 0.0 },
         Command::SetEq { deck: 1, band: 2, gain: 1.5 },
+        Command::SetFilter { deck: 0, value: -0.6 },
+        Command::SetFilter { deck: 1, value: 0.8 },
+        Command::SetRecording(true),
         Command::SetHeadMode(HeadMode::Split),
     ]);
     check(&mut engine, &mut ctl, "Scratch", vec![
