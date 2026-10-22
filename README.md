@@ -1,4 +1,4 @@
-# FadeWerk DJ
+<p align="center"><img src="docs/banner.png" alt="FadeWerk DJ: two decks, two playlists, auto-fade"></p>
 
 **Two decks, two playlists, auto-fade.** A DJ player for macOS, Windows and Linux,
 written in Rust. Click a folder and start playing: no database, no library import.
