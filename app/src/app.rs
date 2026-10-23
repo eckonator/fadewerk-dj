@@ -877,7 +877,8 @@ impl FadeWerkDjApp {
     }
 
     /// Startet die Audio-Ausgabe mit den aktuellen Einstellungen neu. Geladene Titel laufen an derselben Stelle weiter.
-    fn restart_audio(&mut self, now: f64) {
+    /// `done`: Hinweis bei Erfolg statt „Audiogerät gewechselt“.
+    fn restart_audio(&mut self, now: f64, done: Option<String>) {
         let st: Vec<(f64, bool)> = (0..2).map(|d| (self.ctl.shared.decks[d].position_secs(), self.ctl.shared.decks[d].is_playing())).collect();
         // Kopfhörergerät nur wieder öffnen, wenn es lief (siehe `start_head_audio`)
         let head_was_on = self.head_audio.is_some();
@@ -900,9 +901,6 @@ impl FadeWerkDjApp {
         self.audio_error = err.clone();
         self.push_mixer_state();
         self.start_head_audio(now, head_was_on);
-        if self.quiet.is_some() {
-            self.apply_exclusive(now);
-        }
         for (d, &(pos, playing)) in st.iter().enumerate() {
             self.decks[d].ended_seen = 0;
             self.decks[d].reverse_ended_seen = 0;
@@ -921,8 +919,12 @@ impl FadeWerkDjApp {
             Some(e) => self.notify(e, now),
             None => {
                 let name = self.audio.as_ref().map_or(String::new(), |a| a.device.clone());
-                self.notify(trf("Audiogerät gewechselt: {}", &[&name]), now);
+                self.notify(done.unwrap_or_else(|| trf("Audiogerät gewechselt: {}", &[&name])), now);
             }
+        }
+        // Zuletzt, damit ein Fehler dabei den Hinweis oben ersetzt
+        if self.quiet.is_some() {
+            self.apply_exclusive(now);
         }
     }
 
@@ -931,7 +933,7 @@ impl FadeWerkDjApp {
             SettingsAction::Device(id) => {
                 if self.settings.output_device != id {
                     self.settings.output_device = id;
-                    self.restart_audio(now);
+                    self.restart_audio(now, None);
                 }
             }
             SettingsAction::HeadDevice(id) => {
@@ -945,7 +947,7 @@ impl FadeWerkDjApp {
             SettingsAction::Buffer(b) => {
                 if self.settings.buffer_frames != b {
                     self.settings.buffer_frames = b;
-                    self.restart_audio(now);
+                    self.restart_audio(now, None);
                 }
             }
             SettingsAction::Language(l) => {
@@ -1000,11 +1002,10 @@ impl FadeWerkDjApp {
             SettingsAction::Exclusive(on) => {
                 self.settings.exclusive_output = on;
                 if self.quiet.is_some() {
-                    if on {
-                        self.apply_exclusive(now);
-                    } else {
-                        self.release_exclusive();
-                    }
+                    // Belegen und Freigeben bringen bei manchen Geräten den laufenden Stream aus dem Tritt
+                    // (danach starteten die Player nicht mehr): Ausgabe dabei neu öffnen
+                    let done = if on { tr("Lautsprecher exklusiv belegt") } else { tr("Lautsprecher wieder für alle frei") };
+                    self.restart_audio(now, Some(done.to_owned()));
                 }
             }
             SettingsAction::FxName(slot, name) => {

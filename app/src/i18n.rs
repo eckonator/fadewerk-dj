@@ -460,6 +460,8 @@ fn en(de: &str) -> Option<&'static str> {
         "Zu weit auseinander ({} ↔ {} BPM), Pitch reicht nur ±{} %" => "Too far apart ({} ↔ {} BPM), pitch only covers ±{} %",
         "Kein Ton: {}" => "No sound: {}",
         "{} Titel aus den Playlists gibt es nicht mehr" => "{} playlist tracks no longer exist",
+        "Lautsprecher exklusiv belegt" => "Speakers in exclusive use",
+        "Lautsprecher wieder für alle frei" => "Speakers free for everyone again",
         "Audiogerät gewechselt: {}" => "Audio device changed: {}",
         // Einstellungen
         "Einstellungen" => "Settings",

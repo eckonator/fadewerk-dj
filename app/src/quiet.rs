@@ -154,6 +154,11 @@ fn osascript(script: &str) -> Option<String> {
 pub fn set_exclusive(id: &str, on: bool) -> Result<(), String> {
     let uid = id.strip_prefix("coreaudio:").unwrap_or(id);
     let device = coreaudio::device_by_uid(uid).ok_or_else(|| format!("Gerät {uid} nicht gefunden"))?;
+    // AirPlay-Geräte (Nutzerbericht 2026-10-23, Pioneer über AirPlay): nach dem Belegen kam kein Ton mehr,
+    // auch nicht nach dem Freigeben. Darum gar nicht erst versuchen.
+    if on && coreaudio::is_airplay(device) {
+        return Err("AirPlay wird nicht unterstützt".into());
+    }
     let pid: i32 = if on { std::process::id() as i32 } else { -1 };
     // Nur wenn nötig: Setzen schaltet bei manchen Treibern hin und her
     let owner = coreaudio::hog_owner(device);
@@ -188,6 +193,8 @@ mod coreaudio {
     const DEVICES: u32 = u32::from_be_bytes(*b"dev#");
     const DEVICE_UID: u32 = u32::from_be_bytes(*b"uid ");
     const HOG_MODE: u32 = u32::from_be_bytes(*b"oink");
+    const TRANSPORT_TYPE: u32 = u32::from_be_bytes(*b"tran");
+    const TRANSPORT_AIRPLAY: u32 = u32::from_be_bytes(*b"airp");
     const SCOPE_GLOBAL: u32 = u32::from_be_bytes(*b"glob");
     const UTF8: u32 = 0x0800_0100;
 
@@ -241,6 +248,15 @@ mod coreaudio {
         }
         let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
         Some(String::from_utf8_lossy(&buf[..end]).into_owned())
+    }
+
+    pub fn is_airplay(device: ObjectId) -> bool {
+        let a = addr(TRANSPORT_TYPE);
+        let mut kind = 0u32;
+        let mut size = 4u32;
+        // SAFETY: vier Bytes für den Übertragungsweg (FourCC)
+        let status = unsafe { AudioObjectGetPropertyData(device, &a, 0, std::ptr::null(), &mut size, (&mut kind as *mut u32).cast()) };
+        status == 0 && kind == TRANSPORT_AIRPLAY
     }
 
     pub fn hog_owner(device: ObjectId) -> Option<i32> {
