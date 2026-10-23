@@ -54,6 +54,9 @@ pub enum BrowserAction {
     Analyze { paths: Vec<PathBuf>, force: bool },
     /// Wartende Analysen verwerfen.
     StopBpm,
+    /// Fenster „Tags online ergänzen“ aus dem Hintergrund zurückholen bzw. die Erkennung dort stoppen.
+    ShowTagBatch,
+    StopTagBatch,
     /// Tags dieser Titel online ergänzen (Fenster mit Übersicht).
     OnlineTags(Vec<PathBuf>),
     /// Gemerkte Einstellungen „Mit Unterordnern“ je Ordner (nur Abweichungen vom Standard).
@@ -190,6 +193,8 @@ pub struct BrowserCtx<'a> {
     pub keys: &'a HashMap<PathBuf, Option<Camelot>>,
     /// Laufende Analyse: (fertig, gesamt).
     pub bpm_progress: Option<(usize, usize)>,
+    /// „Tags online ergänzen“ läuft im Hintergrund.
+    pub tag_batch: Option<crate::tag_batch::BatchStatus>,
     pub preview: Option<&'a Path>,
     pub preview_pos: f64,
     pub preview_dur: f64,
@@ -2631,6 +2636,31 @@ fn fit_widths(cols: &[TrackColumn], saved: impl Fn(TrackColumn) -> Option<f32>, 
 
 /// Lupe für die erweiterte Suche, selbst gezeichnet (das Zeichen fehlt in den Schriften).
 /// Leuchtet in der Auswahlfarbe, solange Filter aktiv sind oder das Fenster offen ist.
+/// Stand von „Tags online ergänzen“ im Hintergrund (Layout von rechts nach links): Stopp, Text, Drehrad;
+/// ist es fertig, eine hervorgehobene Taste zum Ansehen. Klick auf den Text holt das Fenster zurück.
+fn tag_batch_status(ui: &mut egui::Ui, st: crate::tag_batch::BatchStatus, out: &mut Vec<BrowserAction>) {
+    if st.finished {
+        let accent = theme::select_accent();
+        let button = Button::new(RichText::new(tr("Tags online: fertig – ansehen")).size(12.0).color(accent)).fill(accent.gamma_multiply(0.14));
+        if ui.add(button).on_hover_text(tr("Ergebnisse prüfen und schreiben")).clicked() {
+            out.push(BrowserAction::ShowTagBatch);
+        }
+        return;
+    }
+    if ui.small_button(tr("Stopp")).on_hover_text(tr("Erkennung stoppen; Erkanntes bleibt zum Schreiben")).clicked() {
+        out.push(BrowserAction::StopTagBatch);
+    }
+    let mut text = trf("Tags online {} von {}", &[&st.done, &st.total]);
+    if let Some(rest) = st.rest_secs {
+        text += &format!(" · {}", crate::tag_batch::rest_text(rest));
+    }
+    let label = egui::Label::new(RichText::new(text).size(12.0).color(theme::dim())).sense(Sense::click());
+    if ui.add(label).on_hover_cursor(CursorIcon::PointingHand).on_hover_text(tr("Fenster wieder öffnen")).clicked() {
+        out.push(BrowserAction::ShowTagBatch);
+    }
+    ui.add(egui::Spinner::new().size(14.0));
+}
+
 fn search_button(ui: &mut egui::Ui, active: bool) -> egui::Response {
     let h = ui.spacing().interact_size.y;
     let tip = if cfg!(target_os = "macos") { tr("Erweiterte Suche (⇧⌘F)") } else { tr("Erweiterte Suche (Strg+Umschalt+F)") };
@@ -2674,6 +2704,9 @@ impl Browser {
             }
             ui.label(RichText::new(trf("Analyse {} von {}", &[&done, &total])).size(12.0).color(theme::dim()));
             ui.add(egui::Spinner::new().size(14.0));
+        }
+        if let Some(st) = ctx.tag_batch {
+            tag_batch_status(ui, st, out);
         }
         if !compact {
             self.header_path(ui);

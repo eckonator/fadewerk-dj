@@ -13,7 +13,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::time::Instant;
 
-use eframe::egui::{self, Align2, Frame, Margin, RichText, vec2};
+use eframe::egui::{self, Align2, Frame, Margin, RichText};
 use fw_library::{CoverChange, TagFields, has_cover, read_tags, write_tags_ext};
 use serde::{Deserialize, Serialize};
 
@@ -570,6 +570,22 @@ pub enum BatchEvent {
     Review(PathBuf),
     /// Diese Dateien wurden geändert (Tags neu einlesen).
     Changed(Vec<PathBuf>),
+    /// Die Erkennung im Hintergrund ist fertig: (sicher, unsicher).
+    BackgroundDone(usize, usize),
+}
+
+/// Stand für die Browser-Kopfzeile, solange das Fenster im Hintergrund ist.
+#[derive(Clone, Copy)]
+pub struct BatchStatus {
+    pub done: usize,
+    pub total: usize,
+    pub rest_secs: Option<f64>,
+    pub finished: bool,
+}
+
+/// „noch ca. … s/min“ für die geschätzte Restzeit.
+pub fn rest_text(rest: f64) -> String {
+    if rest < 90.0 { trf("noch ca. {} s", &[&(rest.round().max(1.0) as u64)]) } else { trf("noch ca. {} Min.", &[&((rest / 60.0).round() as u64)]) }
 }
 
 pub struct TagBatch {
@@ -584,6 +600,12 @@ pub struct TagBatch {
     writing: Option<(Receiver<WriteMsg>, bool)>,
     report: Option<String>,
     journal: Option<(PathBuf, String, usize)>,
+    /// Fenster ausgeblendet, die Erkennung läuft weiter (Stand in der Browser-Kopfzeile).
+    background: bool,
+    /// Hinweis „fertig“ für den Hintergrund-Durchlauf schon gegeben.
+    announced: bool,
+    /// Fenster beim nächsten Zeichnen mittig setzen (danach frei verschiebbar).
+    place: bool,
 }
 
 impl TagBatch {
@@ -600,7 +622,48 @@ impl TagBatch {
             writing: None,
             report: None,
             journal: latest_journal(),
+            background: false,
+            announced: false,
+            place: true,
         }
+    }
+
+    pub fn status(&self) -> Option<BatchStatus> {
+        self.background.then(|| BatchStatus {
+            done: self.done(),
+            total: self.items.len(),
+            rest_secs: self.rest_secs(),
+            finished: self.rx.is_none(),
+        })
+    }
+
+    /// Fenster ausblenden, die Erkennung läuft weiter.
+    pub fn send_to_background(&mut self) {
+        self.background = true;
+        self.announced = false;
+    }
+
+    /// Fenster wieder zeigen.
+    pub fn bring_back(&mut self) {
+        if self.background {
+            self.background = false;
+            self.place = true;
+        }
+    }
+
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+
+    fn done(&self) -> usize {
+        self.items.iter().filter(|i| i.state != State::Waiting).count()
+    }
+
+    /// Geschätzte Restzeit der Erkennung (ab 5 Titeln, ohne die Genre/Cover-Phase).
+    fn rest_secs(&self) -> Option<f64> {
+        let (done, total) = (self.done(), self.items.len());
+        let t = self.started?;
+        (self.rx.is_some() && done >= 5 && done < total).then(|| t.elapsed().as_secs_f64() / done as f64 * (total - done) as f64)
     }
 
     fn begin(&mut self, ctx: &egui::Context) {
@@ -689,13 +752,26 @@ impl TagBatch {
         if self.rx.is_some() || self.writing.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
+        if self.background {
+            if self.rx.is_none() && !self.announced {
+                self.announced = true;
+                let count = |s: State| self.items.iter().filter(|i| i.state == s).count();
+                event = event.or(Some(BatchEvent::BackgroundDone(count(State::Sure), count(State::Unsure))));
+            }
+            return event;
+        }
         let mut open = true;
-        egui::Window::new(tr("Tags online ergänzen"))
+        // Mittig geöffnet, danach verschiebbar (z. B. weg von den Playern)
+        let mut window = egui::Window::new(tr("Tags online ergänzen"))
             .id(egui::Id::new("tag-batch"))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
-            .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .pivot(Align2::CENTER_CENTER);
+        if std::mem::take(&mut self.place) {
+            window = window.current_pos(ctx.content_rect().center());
+        }
+        window
             .frame(Frame::window(&ctx.global_style()).fill(theme::panel()).inner_margin(Margin::same(16)))
             .show(ctx, |ui| {
                 ui.set_width(720.0);
@@ -736,25 +812,26 @@ impl TagBatch {
         }
 
         // Fortschritt
-        let done = self.items.iter().filter(|i| i.state != State::Waiting).count();
+        let done = self.done();
         let total = self.items.len().max(1);
         ui.horizontal(|ui| {
-            ui.add(egui::ProgressBar::new(done as f32 / total as f32).desired_width(420.0).desired_height(8.0));
+            ui.add(egui::ProgressBar::new(done as f32 / total as f32).desired_width(360.0).desired_height(8.0));
             let mut text = format!("{done} / {}", self.items.len());
-            if self.rx.is_some()
-                && let Some(t) = self.started
-                && done >= 5
-                && done < total
-            {
-                let rest = t.elapsed().as_secs_f64() / done as f64 * (total - done) as f64;
-                text += &if rest < 90.0 { trf("  · noch ca. {} s", &[&(rest.round() as u64)]) } else { trf("  · noch ca. {} min", &[&((rest / 60.0).round() as u64)]) };
+            if let Some(rest) = self.rest_secs() {
+                text += &format!("  · {}", rest_text(rest));
             }
             if self.rx.is_some() && done == self.items.len() {
                 text += &format!("  · {}", tr("Lädt Genres und Cover …"));
             }
             ui.label(RichText::new(text).color(theme::dim()));
             if self.rx.is_some() && ui.button(tr("Stopp")).clicked() {
-                self.stop.store(true, Ordering::Relaxed);
+                self.stop();
+            }
+            if self.rx.is_some()
+                && self.writing.is_none()
+                && ui.button(tr("Im Hintergrund")).on_hover_text(tr("Fenster schließen, die Erkennung läuft weiter; Stand und Rückkehr über die Kopfzeile des Ordnerbrowsers")).clicked()
+            {
+                self.send_to_background();
             }
         });
         ui.add_space(6.0);

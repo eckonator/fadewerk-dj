@@ -637,7 +637,12 @@ impl FadeWerkDjApp {
             }
             // FW_BATCH=1: Ordner-Durchlauf „Tags online ergänzen“ für die Demo-Titel (mit FW_ONLINE=1 ohne Rückfrage)
             if std::env::var_os("FW_BATCH").is_some() {
-                app.tag_batch = Some(crate::tag_batch::TagBatch::new(tracks.clone()));
+                let mut batch = crate::tag_batch::TagBatch::new(tracks.clone());
+                // FW_BATCH=hintergrund: gleich im Hintergrund (Stand in der Browser-Kopfzeile)
+                if std::env::var("FW_BATCH").is_ok_and(|v| v == "hintergrund") {
+                    batch.send_to_background();
+                }
+                app.tag_batch = Some(batch);
                 if std::env::var_os("FW_ONLINE").is_some() {
                     app.settings.online_lookup = true;
                 }
@@ -2548,8 +2553,10 @@ impl FadeWerkDjApp {
             }
             BrowserAction::EditTags(path) => self.tag_editor = Some(TagEditor::open(path)),
             BrowserAction::OnlineTags(paths) => {
-                if self.tag_batch.is_none() {
-                    self.tag_batch = Some(crate::tag_batch::TagBatch::new(paths));
+                match &mut self.tag_batch {
+                    None => self.tag_batch = Some(crate::tag_batch::TagBatch::new(paths)),
+                    // Läuft schon (evtl. im Hintergrund): erst den laufenden Durchlauf zeigen
+                    Some(b) => b.bring_back(),
                 }
             }
             BrowserAction::SearchMemory(remember, hide_duplicates, whole_words, search) => {
@@ -2608,6 +2615,16 @@ impl FadeWerkDjApp {
                         self.bpm_total += 1;
                         self.lib.analyze(p, force);
                     }
+                }
+            }
+            BrowserAction::ShowTagBatch => {
+                if let Some(b) = &mut self.tag_batch {
+                    b.bring_back();
+                }
+            }
+            BrowserAction::StopTagBatch => {
+                if let Some(b) = &self.tag_batch {
+                    b.stop();
                 }
             }
             BrowserAction::StopBpm => {
@@ -2808,6 +2825,7 @@ impl eframe::App for FadeWerkDjApp {
             bpms: &self.bpms,
             keys: &self.keys,
             bpm_progress: (self.bpm_total > 0).then(|| (self.bpm_total - self.bpm_pending.len(), self.bpm_total)),
+            tag_batch: self.tag_batch.as_ref().and_then(|b| b.status()),
             preview: self.preview.as_ref().filter(|p| p.clip.is_none()).map(|p| p.path.as_path()),
             preview_pos: preview_st.position_secs(),
             preview_dur: preview_st.duration_secs(),
@@ -3282,6 +3300,7 @@ impl eframe::App for FadeWerkDjApp {
             use crate::tag_batch::BatchEvent;
             match event {
                 BatchEvent::Close => self.tag_batch = None,
+                BatchEvent::BackgroundDone(sure, unsure) => self.notify(trf("Tags online fertig: {} sicher, {} unsicher", &[&sure, &unsure]), now),
                 BatchEvent::AllowOnline => {
                     self.settings.online_lookup = true;
                     self.save_settings();
