@@ -66,7 +66,7 @@ impl CrossDrag {
         let label = match &item {
             DragItem::Files(paths) if paths.len() == 1 => paths[0].file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
             DragItem::Files(paths) => trf("{} Titel", &[&paths.len()]),
-            DragItem::Row { .. } => String::new(),
+            DragItem::Row { .. } | DragItem::Rows { .. } => String::new(),
         };
         ctx.data_mut(|d| d.insert_temp(data_id(), Foreign { pos, released: self.released, item }));
         if !self.released && !label.is_empty() {

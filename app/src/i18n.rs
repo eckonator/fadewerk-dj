@@ -230,6 +230,11 @@ fn en(de: &str) -> Option<&'static str> {
         "Vorhören nicht möglich, der Titel lässt sich nicht lesen" => "Cannot preview, the track cannot be read",
         "Leer. Titel aus dem Ordner hierher ziehen." => "Empty. Drag tracks here from the folder below.",
         "Aus der Playlist entfernen" => "Remove from playlist",
+        "{} Titel aus der Playlist entfernen" => "Remove {} tracks from playlist",
+        "{} Titel in Playlist {} verschieben" => "Move {} tracks to playlist {}",
+        "Entf" => "Delete",
+        "Alle markieren" => "Select all",
+        "Markiert alle Treffer in der Playlist (⌘A im Suchfeld). Danach mit Entf entfernen oder gemeinsam verschieben." => "Selects all matches in the playlist (⌘A in the search field). Then press Delete to remove them or drag them together.",
         "In Player {} laden" => "Load into deck {}",
         // Ordnerbrowser
         "ORDNER" => "FOLDERS",

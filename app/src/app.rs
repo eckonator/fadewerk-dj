@@ -2385,6 +2385,13 @@ impl FadeWerkDjApp {
             PlaylistAction::Remove(i) => {
                 self.playlists[d].remove(i);
             }
+            PlaylistAction::RemoveMany(indices) => {
+                let indices = self.without_loaded(d, indices, now);
+                self.playlists[d].remove_many(&indices);
+            }
+            PlaylistAction::MoveManyToOther(indices) => {
+                self.playlist_action(1 - d, PlaylistAction::Drop { item: DragItem::Rows { list: d, indices }, before: usize::MAX }, now)
+            }
             PlaylistAction::Harmonic => self.harmonic_start(now),
             PlaylistAction::SortUndo => {
                 if let Some((before, _, _)) = self.sort_undo.take() {
@@ -2454,8 +2461,29 @@ impl FadeWerkDjApp {
                         self.fill_if_empty(d, at);
                     }
                 }
+                DragItem::Rows { list, indices } if list == d => self.playlists[d].move_entries(&indices, before),
+                DragItem::Rows { list, indices } => {
+                    let indices = self.without_loaded(list, indices, now);
+                    let items = self.playlists[list].remove_many(&indices);
+                    if !items.is_empty() {
+                        let at = before.min(self.playlists[d].entries.len());
+                        self.playlists[d].insert_with_fades(at, items);
+                        self.fill_if_empty(d, at);
+                    }
+                }
             },
         }
+    }
+
+    /// Mehrere Einträge der Playlist `d` ohne den Titel, der im Player liegt: der bleibt in seiner Playlist.
+    fn without_loaded(&mut self, d: usize, mut indices: Vec<usize>, now: f64) -> Vec<usize> {
+        if let Some(c) = self.playlists[d].current.filter(|_| self.has_track(d))
+            && indices.contains(&c)
+        {
+            indices.retain(|&i| i != c);
+            self.notify(trf("Der Titel ist in Player {} geladen und bleibt in dessen Playlist", &[&theme::deck_letter(d)]), now);
+        }
+        indices
     }
 
     /// Titel per Drag & Drop auf einen Player gezogen. Aus der eigenen Playlist wird direkt geladen;
@@ -2466,6 +2494,14 @@ impl FadeWerkDjApp {
             self.notify(trf("Player {} spielt gerade. Erst stoppen.", &[&theme::deck_letter(d)]), now);
             return;
         }
+        // Mehrere Zeilen: der Player nimmt die erste
+        let item = match item {
+            DragItem::Rows { list, indices } => match indices.first() {
+                Some(&index) => DragItem::Row { list, index },
+                None => return,
+            },
+            item => item,
+        };
         let paths = match item {
             DragItem::Row { list, index } if list == d => {
                 self.load_index(d, index, false, false);
@@ -2483,6 +2519,7 @@ impl FadeWerkDjApp {
                 None => return,
             },
             DragItem::Files(paths) => paths,
+            DragItem::Rows { .. } => return,
         };
         if paths.is_empty() {
             return;

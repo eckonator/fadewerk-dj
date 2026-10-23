@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 use std::hash::Hash;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Selection<T> {
     items: HashSet<T>,
     /// Ausgangspunkt für ⇧-Klick.
@@ -23,6 +23,26 @@ impl<T> Default for Selection<T> {
 impl<T: Clone + Eq + Hash> Selection<T> {
     pub fn contains(&self, item: &T) -> bool {
         self.items.contains(item)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    /// Die ausgewählten Einträge in beliebiger Reihenfolge.
+    pub fn items(&self) -> impl Iterator<Item = &T> {
+        self.items.iter()
+    }
+
+    /// Einträge umschreiben oder herausnehmen (`None`), etwa wenn sich die Liste darunter verändert hat.
+    pub fn remap(&mut self, mut f: impl FnMut(&T) -> Option<T>) {
+        self.items = self.items.iter().filter_map(&mut f).collect();
+        self.anchor = self.anchor.as_ref().and_then(&mut f);
+        self.cursor = self.cursor.as_ref().and_then(&mut f);
     }
 
     pub fn clear(&mut self) {

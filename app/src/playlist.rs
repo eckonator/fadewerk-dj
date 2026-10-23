@@ -12,6 +12,8 @@ pub enum DragItem {
     Files(Vec<PathBuf>),
     /// Eine Zeile aus einer Playlist.
     Row { list: usize, index: usize },
+    /// Mehrere markierte Zeilen aus einer Playlist, aufsteigend.
+    Rows { list: usize, indices: Vec<usize> },
 }
 
 #[derive(Default, Debug, Clone)]
@@ -142,6 +144,32 @@ impl Playlist {
                 }
             }
         }
+    }
+
+    /// Verschiebt mehrere Einträge als Block in ihrer bisherigen Reihenfolge. `before` ist die Einfügestelle
+    /// in der Liste vor dem Entfernen. Der laufende Titel bleibt markiert.
+    pub fn move_entries(&mut self, indices: &[usize], before: usize) {
+        self.sync();
+        let n = self.entries.len();
+        let mut picked = vec![false; n];
+        indices.iter().filter(|&&i| i < n).for_each(|&i| picked[i] = true);
+        let current = self.current;
+        let items = self.entries.drain(..).zip(self.fades.drain(..)).enumerate();
+        let (mut block, mut rest): (Vec<_>, Vec<_>) = items.map(|(i, (p, f))| (p, f, current == Some(i), picked[i])).partition(|e| e.3);
+        let at = (0..before.min(n)).filter(|&i| !picked[i]).count();
+        rest.splice(at..at, block.drain(..));
+        self.current = rest.iter().position(|e| e.2);
+        (self.entries, self.fades) = rest.into_iter().map(|(p, f, _, _)| (p, f)).unzip();
+    }
+
+    /// Nimmt mehrere Einträge heraus und liefert sie samt Fade-Bereichen in ihrer bisherigen Reihenfolge.
+    pub fn remove_many(&mut self, indices: &[usize]) -> Vec<(PathBuf, TrackFade)> {
+        let mut sorted: Vec<usize> = indices.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        let mut out: Vec<_> = sorted.into_iter().rev().filter_map(|i| self.remove_with_fade(i)).collect();
+        out.reverse();
+        out
     }
 
     /// Mischt die kommenden Titel zufällig. Der geladene Titel und die schon gespielten davor bleiben,
@@ -278,6 +306,31 @@ mod tests {
         p.move_entry(1, 4);
         assert_eq!(names(&p), "0231");
         assert_eq!(p.current, Some(3));
+    }
+
+    #[test]
+    fn moving_several_keeps_their_order_and_the_current_track() {
+        let mut p = pl(6, Some(2));
+        // 1, 2 (läuft) und 4 hinter die 5
+        p.move_entries(&[4, 1, 2], 6);
+        assert_eq!(names(&p), "035124");
+        assert_eq!(p.current, Some(4));
+        // zurück an den Anfang
+        p.move_entries(&[3, 4, 5], 0);
+        assert_eq!(names(&p), "124035");
+        assert_eq!(p.current, Some(1));
+        // Einfügestelle mitten im Block
+        p.move_entries(&[0, 2], 1);
+        assert_eq!(names(&p), "142035");
+    }
+
+    #[test]
+    fn removing_several() {
+        let mut p = pl(5, Some(3));
+        let gone = p.remove_many(&[4, 0, 9, 0]);
+        assert_eq!(gone.iter().map(|(e, _)| e.to_string_lossy().into_owned()).collect::<String>(), "04");
+        assert_eq!(names(&p), "123");
+        assert_eq!(p.current, Some(2));
     }
 
     #[test]

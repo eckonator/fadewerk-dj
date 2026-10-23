@@ -17,12 +17,15 @@ use crate::playlist::{DragItem, Playlist};
 use crate::i18n::{count_tracks, tr, trf};
 use crate::crossdrag;
 use crate::keynav::{self, KeyList};
+use crate::selection::Selection;
 use crate::theme;
 use crate::{fonts, hw};
 
 pub enum PlaylistAction {
     Load(usize),
     Remove(usize),
+    /// Markierte Titel entfernen (der geladene bleibt).
+    RemoveMany(Vec<usize>),
     Clear,
     Shuffle,
     /// Kommende Titel beider Playlists harmonisch ordnen (siehe `harmonic.rs`).
@@ -43,6 +46,8 @@ pub enum PlaylistAction {
     PlayNext(usize),
     /// Titel ans Ende der anderen Playlist verschieben.
     MoveToOther(usize),
+    /// Markierte Titel ans Ende der anderen Playlist verschieben.
+    MoveManyToOther(Vec<usize>),
     /// Kleine Wellenform für die Zeile anfordern (FadeWerk-Modus).
     NeedSketch(PathBuf),
     /// FadeWerk-Modus ein- oder ausschalten (gilt für beide Playlists).
@@ -81,6 +86,9 @@ pub fn open_editor(ctx: &egui::Context) -> Option<(usize, usize)> {
 pub fn demo_open_editor(ctx: &egui::Context, list: usize, index: usize, path: PathBuf) {
     ctx.data_mut(|d| d.insert_temp(editor_id(), OpenEditor { list, index, path, reveal: false }));
 }
+
+/// Markierte Zeilen einer Playlist als (Stelle, Titel), damit sie ihrem Eintrag folgen, wenn sich die Liste ändert.
+type Marked = Selection<(usize, PathBuf)>;
 
 const ROW_H: f32 = 44.0;
 /// Höhe von Suchfeld, „Sortieren“ und „Leeren“ in der Kopfzeile.
@@ -133,6 +141,18 @@ pub fn show(
         if pl.entries.get(c) == Some(&path) { Some(c) } else { pl.entries.iter().position(|p| *p == path) }
     });
     let keys = keynav::take(ui.ctx(), me);
+    let sel_id = egui::Id::new(("pl_sel", list));
+    let mut sel: Marked = ui.data(|d| d.get_temp(sel_id)).unwrap_or_default();
+    // Hat sich die Liste darunter geändert (Ziehen, Entfernen, Sortieren), folgt die Markierung ihren Titeln
+    if sel.items().any(|(i, p)| pl.entries.get(*i) != Some(p)) {
+        sel.remap(|(i, p)| match pl.entries.get(*i) == Some(p) {
+            true => Some((*i, p.clone())),
+            false => pl.entries.iter().position(|e| e == p).map(|j| (j, p.clone())),
+        });
+    }
+    let all_rows = || pl.entries.iter().cloned().enumerate().collect::<Vec<_>>();
+    // Treffer der Schnellsuche, die markiert werden sollen („Alle markieren“)
+    let mut mark_hits: Option<Vec<usize>> = None;
     // Ausrichtung beim Scrollen zur Markierung: Pfeiltasten nur bis sichtbar, Suchtreffer in die Mitte
     let mut scroll_to_cursor: Option<Option<egui::Align>> = None;
     // Gesamtdauer und fehlende Tags nur neu durchgehen, wenn sich Länge der Liste oder Tag-Bestand ändern
@@ -165,13 +185,19 @@ pub fn show(
     let tools_w = clear_w + SORT_W + SEARCH_MIN_W + 3.0 * gap;
     let avail_w = ui.available_width();
     let narrow = avail_w < left_w + tools_w;
+    // Platz für Suchfeld, Trefferzahl und „Alle markieren“ zwischen FADEWERK und „Sortieren“
+    let search_room = avail_w - left_w - (tools_w - SEARCH_MIN_W);
     // Ohne Feld: passt es mit Lupe statt Feld, sonst fällt zusätzlich die Titelzahl weg (steht dann im Tooltip)
     let lupe_w = theme::ICON_BTN_W;
     let show_count = !narrow || avail_w >= left_w + clear_w + SORT_W - 18.0 + lupe_w + 4.0 * gap;
     let open_id = egui::Id::new(("pl_search_open", list));
     let field_id = egui::Id::new(("pl_search_field", list));
     let query_active = ui.data(|d| d.get_temp::<String>(egui::Id::new(("pl_search", list)))).is_some_and(|q| !q.trim().is_empty());
-    let search_open = narrow && (ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false) || query_active);
+    // Beim Suchen braucht der Kopf Platz für Trefferzahl und „Alle markieren“; fehlt er, bekommt die Suche
+    // die ganze Zeile wie nach Klick auf die Lupe
+    let (hits_w, mark_w) = hits_widths(ui);
+    let cramped = query_active && search_room < SEARCH_MIN_SEARCHING_W + hits_w + mark_w;
+    let search_open = (narrow && ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false)) || ((narrow || cramped) && query_active);
 
     // Ein Schalter für beide Playlists: beide Tasten leuchten gemeinsam
     let fadewerk_on = sketches.is_some();
@@ -193,12 +219,14 @@ pub fn show(
     // `search`: Feld zeigen (`Some(fill)`, mit `fill` über den ganzen Rest) oder gar nicht (`None`)
     let mut tools = |ui: &mut egui::Ui, sort: bool, search: Option<(bool, bool)>| {
         if !sort {
-            if let Some((fill, focus)) = search
-                && let Some(hit) = quick_search(ui, list, pl, metas, cursor, fill, focus)
-            {
-                cursor = Some(hit);
-                scroll_to_cursor = Some(Some(egui::Align::Center));
-                keynav::focus(ui.ctx(), me);
+            if let Some((fill, focus)) = search {
+                let (jump, mark) = quick_search(ui, list, pl, metas, cursor, fill, focus, f32::INFINITY);
+                if let Some(hit) = jump {
+                    cursor = Some(hit);
+                    scroll_to_cursor = Some(Some(egui::Align::Center));
+                    keynav::focus(ui.ctx(), me);
+                }
+                mark_hits = mark.or(mark_hits.take());
             }
             return;
         }
@@ -233,12 +261,14 @@ pub fn show(
             combo.response.on_hover_text(tr("Fehlende Tonarten werden ermittelt, danach wird sortiert."));
         }
         // Schnellsuche: springt zum ersten Treffer ab dem geladenen Titel, Enter zum nächsten, ⇧Enter zurück
-        if let Some((fill, focus)) = search
-            && let Some(hit) = quick_search(ui, list, pl, metas, cursor, fill, focus)
-        {
-            cursor = Some(hit);
-            scroll_to_cursor = Some(Some(egui::Align::Center));
-            keynav::focus(ui.ctx(), me);
+        if let Some((fill, focus)) = search {
+            let (jump, mark) = quick_search(ui, list, pl, metas, cursor, fill, focus, search_room);
+            if let Some(hit) = jump {
+                cursor = Some(hit);
+                scroll_to_cursor = Some(Some(egui::Align::Center));
+                keynav::focus(ui.ctx(), me);
+            }
+            mark_hits = mark.or(mark_hits.take());
         }
     };
     let right_to_left = egui::Layout::right_to_left(egui::Align::Center);
@@ -264,7 +294,7 @@ pub fn show(
             ui.data_mut(|d| {
                 d.insert_temp(open_id, false);
                 d.insert_temp(egui::Id::new(("pl_search", list)), String::new());
-                d.remove::<(usize, usize)>(egui::Id::new(("pl_search", list)).with("hits"));
+                d.remove::<(usize, usize, usize)>(egui::Id::new(("pl_search", list)).with("hits"));
             });
         }
     } else if narrow {
@@ -316,11 +346,40 @@ pub fn show(
     let scroll_to_current = seen != Some(pl.current);
     ui.data_mut(|d| d.insert_temp(seen_id, pl.current));
     let mut current_top: Option<f32> = None;
+    if let Some(hits) = mark_hits {
+        sel.clear();
+        sel.select_all(&hits.iter().filter_map(|&i| Some((i, pl.entries.get(i)?.clone()))).collect::<Vec<_>>());
+        keynav::focus(ui.ctx(), me);
+    }
+    // ⌘A markiert alle Titel, Esc hebt die Markierung auf, Entf/⌫ entfernt die markierten
+    // (nach einem Klick in diese Liste, nicht beim Tippen)
+    if keynav::focused(ui.ctx()) == Some(me) && !ui.ctx().egui_wants_keyboard_input() && !egui::Popup::is_any_open(ui.ctx()) {
+        let (all, esc, del) = ui.input_mut(|i| {
+            let all = i.consume_key(egui::Modifiers::COMMAND, egui::Key::A);
+            let del = i.consume_key(egui::Modifiers::NONE, egui::Key::Delete) | i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace);
+            (all, i.key_pressed(egui::Key::Escape), del)
+        });
+        if all {
+            sel.select_all(&all_rows());
+        }
+        if esc {
+            sel.clear();
+        }
+        if del && !sel.is_empty() {
+            out.push(PlaylistAction::RemoveMany(marked_indices(&sel)));
+            sel.clear();
+        }
+    }
     if let Some(k) = keys {
         if k.steps != 0 {
             // Ohne Markierung beginnt sie beim geladenen Titel
             cursor = keynav::step(cursor.or(pl.current), k.steps, pl.entries.len());
             scroll_to_cursor = Some(None);
+            // Mit ⇧ wird der Bereich ab dem zuletzt geklickten Titel markiert
+            if let Some(c) = cursor {
+                let row = (c, pl.entries[c].clone());
+                if k.extend { sel.click(&all_rows(), &row, false, true) } else { sel.select_only(&row) }
+            }
         }
         if k.enter
             && let Some(c) = cursor
@@ -405,10 +464,14 @@ pub fn show(
             };
             let is_now = current == Some(i);
             let done = pl.current.is_some_and(|c| i < c);
+            let marked = !sel.is_empty() && sel.contains(&(i, path.clone()));
             let p = ui.painter();
             if is_now {
                 p.rect_filled(rect, 4.0, color.gamma_multiply(0.16));
-            } else if resp.hovered() {
+            }
+            if marked {
+                p.rect_filled(rect, 4.0, theme::row_selected());
+            } else if resp.hovered() && !is_now {
                 p.rect_filled(rect, 4.0, theme::row_hover());
             }
             let alpha = if done { 0.45 } else { 1.0 };
@@ -466,7 +529,11 @@ pub fn show(
                 out.push(if previewing { PlaylistAction::StopPreview } else { PlaylistAction::Preview(path.clone()) });
             }
 
-            resp.dnd_set_drag_payload(DragItem::Row { list, index: i });
+            // Gehört die Zeile zu mehreren markierten, wandern alle mit
+            if resp.drag_started() {
+                let item = if marked && sel.len() > 1 { DragItem::Rows { list, indices: marked_indices(&sel) } } else { DragItem::Row { list, index: i } };
+                egui::DragAndDrop::set_payload(ui.ctx(), item);
+            }
             // Zeiger beim Ziehen: eigener oder einer aus dem ausgeklinkten Ordnerfenster
             let foreign = foreign.filter(|&pt| rect.contains(pt));
             let upper = |r: &egui::Response| foreign.or_else(|| r.hover_pos()).or_else(|| ui.ctx().pointer_hover_pos()).is_some_and(|pt| pt.y < rect.center().y);
@@ -481,12 +548,20 @@ pub fn show(
             if show_cursor && cursor == Some(i) {
                 ui.painter().rect_stroke(rect.shrink(0.75), 4.0, Stroke::new(1.5, theme::select_accent()), egui::StrokeKind::Inside);
             }
+            let mods = ui.input(|i| i.modifiers);
+            if resp.clicked() {
+                sel.click(&all_rows(), &(i, path.clone()), mods.command, mods.shift);
+            }
+            if resp.secondary_clicked() && !marked {
+                sel.select_only(&(i, path.clone()));
+            }
             if resp.clicked() || resp.secondary_clicked() {
                 cursor = Some(i);
                 keynav::focus(ui.ctx(), me);
             }
-            // Im FadeWerk-Modus öffnet ein Klick den Fade-Editor dieser Zeile (ein anderer schließt dabei)
-            if sketches.is_some() && resp.clicked() && edit != Some(i) {
+            // Im FadeWerk-Modus öffnet ein Klick den Fade-Editor dieser Zeile (ein anderer schließt dabei),
+            // nicht beim Markieren mit ⌘ oder ⇧
+            if sketches.is_some() && resp.clicked() && !mods.command && !mods.shift && edit != Some(i) {
                 // Erst im nächsten Bild aufklappen, die Zeilen dieses Bilds liegen schon fest
                 open = Some(OpenEditor { list, index: i, path: path.clone(), reveal: true });
                 ui.ctx().request_repaint();
@@ -494,6 +569,8 @@ pub fn show(
             if resp.double_clicked() {
                 out.push(PlaylistAction::Load(i));
             }
+            // Rechtsklick in eine Markierung mehrerer Titel: Verschieben und Entfernen gelten für alle
+            let several = (marked && sel.len() > 1).then(|| marked_indices(&sel));
             resp.context_menu(|ui| {
                 let load = ui.add_enabled(!deck_playing, egui::Button::new(trf("In Player {} laden", &[&theme::deck_letter(list)])));
                 if load.on_disabled_hover_text(tr("Spielt gerade. Erst stoppen.")).clicked() {
@@ -509,10 +586,17 @@ pub fn show(
                 // Ein geladener Titel bleibt in seiner Playlist (wie beim Ziehen)
                 let loaded = pl.current == Some(i) && deck_has_track;
                 let other = theme::deck_letter(1 - list);
-                let b = ui.add_enabled(!loaded, egui::Button::new(trf("In Playlist {} verschieben", &[&other])));
-                if b.on_disabled_hover_text(trf("Der Titel ist in Player {} geladen und bleibt in dessen Playlist", &[&theme::deck_letter(list)])).clicked() {
-                    out.push(PlaylistAction::MoveToOther(i));
-                    ui.close();
+                if let Some(several) = &several {
+                    if ui.button(trf("{} Titel in Playlist {} verschieben", &[&several.len(), &other])).clicked() {
+                        out.push(PlaylistAction::MoveManyToOther(several.clone()));
+                        ui.close();
+                    }
+                } else {
+                    let b = ui.add_enabled(!loaded, egui::Button::new(trf("In Playlist {} verschieben", &[&other])));
+                    if b.on_disabled_hover_text(trf("Der Titel ist in Player {} geladen und bleibt in dessen Playlist", &[&theme::deck_letter(list)])).clicked() {
+                        out.push(PlaylistAction::MoveToOther(i));
+                        ui.close();
+                    }
                 }
                 ui.separator();
                 if ui.button(tr("Titelinfo & Tags …")).clicked() {
@@ -541,7 +625,12 @@ pub fn show(
                     });
                 }
                 ui.separator();
-                if ui.button(tr("Aus der Playlist entfernen")).clicked() {
+                if let Some(several) = &several {
+                    if ui.button(trf("{} Titel aus der Playlist entfernen", &[&several.len()])).on_hover_text(tr("Entf")).clicked() {
+                        out.push(PlaylistAction::RemoveMany(several.clone()));
+                        ui.close();
+                    }
+                } else if ui.button(tr("Aus der Playlist entfernen")).clicked() {
                     out.push(PlaylistAction::Remove(i));
                     ui.close();
                 }
@@ -601,6 +690,7 @@ pub fn show(
         }),
         None => ui.data_mut(|d| d.remove::<(usize, PathBuf)>(cursor_id)),
     }
+    ui.data_mut(|d| d.insert_temp(sel_id, sel));
     if close_editor {
         open = None;
     }
@@ -994,6 +1084,13 @@ fn close_button(ui: &mut egui::Ui) -> egui::Response {
     resp
 }
 
+/// Stellen der markierten Titel, aufsteigend.
+fn marked_indices(sel: &Marked) -> Vec<usize> {
+    let mut v: Vec<usize> = sel.items().map(|(i, _)| *i).collect();
+    v.sort_unstable();
+    v
+}
+
 /// Breite der FADEWERK-Taste, des Sortieren-Felds und kleinste Breite der Schnellsuche in der Kopfzeile.
 const FADEWERK_W: f32 = 84.0;
 const SORT_W: f32 = 130.0;
@@ -1002,21 +1099,33 @@ const SEARCH_MIN_W: f32 = 80.0;
 /// Schnellsuche in der Kopfzeile einer Playlist. Liefert den Titel, zu dem gesprungen werden soll: beim Tippen
 /// der erste Treffer ab dem geladenen Titel (die kommenden zuerst), mit Enter der nächste, mit ⇧Enter der vorige.
 /// Esc leert das Feld. Gesucht wird mit allen Wörtern in Titel, Interpret, Album und Dateiname.
+/// Dazu, falls „Alle markieren“ (oder ⌘A im Feld) gedrückt wurde, alle Treffer.
 /// `fill` = so breit wie der ganze restliche Platz (eigene Zeile in schmalen Köpfen).
 /// `focus` = Feld gleich zum Tippen bereit machen (nach Klick auf die Lupe).
-fn quick_search(ui: &mut egui::Ui, list: usize, pl: &Playlist, metas: &HashMap<PathBuf, TrackMeta>, cursor: Option<usize>, fill: bool, focus: bool) -> Option<usize> {
+/// `limit` = Platz für Feld, Trefferzahl und „Alle markieren“ zusammen; reicht er nicht, entfällt die Taste
+/// (⌘A im Feld geht weiter).
+#[allow(clippy::too_many_arguments)]
+fn quick_search(ui: &mut egui::Ui, list: usize, pl: &Playlist, metas: &HashMap<PathBuf, TrackMeta>, cursor: Option<usize>, fill: bool, focus: bool, limit: f32) -> (Option<usize>, Option<Vec<usize>>) {
     let id = egui::Id::new(("pl_search", list));
     let mut query: String = ui.data(|d| d.get_temp(id)).unwrap_or_default();
-    // Trefferzahl der letzten Suche, als (Stelle, Anzahl)
+    // Trefferzahl der letzten Suche, als (Stelle, Anzahl, Länge der Playlist dabei)
     let hits_id = id.with("hits");
     // In schmalen Köpfen nur so breit wie der Platz vor der FADEWERK-Taste, ganz ohne Platz gar nicht
     let room = ui.available_width() - 6.0;
     if room < 40.0 {
-        return None;
+        return (None, None);
     }
-    // Mit `fill` Platz für die Trefferzahl „k/n“ lassen, sobald etwas gesucht wird
-    let w = if fill { (room - if query.trim().is_empty() { 0.0 } else { 56.0 }).max(40.0) } else { (ui.available_width() * 0.45).clamp(SEARCH_MIN_W, 200.0).min(room) };
+    let searching = !query.trim().is_empty();
+    let limit = limit.min(room);
+    // Platz für die Trefferzahl „k/n“ und „Alle markieren“ lassen, sobald etwas gesucht wird
+    let (hits_w, mark_w) = hits_widths(ui);
+    // Beim Suchen darf das Feld schmaler werden, damit die Taste noch Platz hat
+    let mark_button = !searching || limit >= SEARCH_MIN_SEARCHING_W + hits_w + mark_w;
+    let extra = if !searching { 0.0 } else if mark_button { hits_w + mark_w } else { hits_w };
+    let w = if fill { (room - extra).max(40.0) } else { (ui.available_width() * 0.45).clamp(SEARCH_MIN_W, 200.0).min(limit - extra).max(SEARCH_MIN_SEARCHING_W.min(room)) };
     let field_id = egui::Id::new(("pl_search_field", list));
+    // ⌘A im Feld markiert alle Treffer in der Liste (statt den Suchtext)
+    let mut mark = searching && ui.memory(|m| m.has_focus(field_id)) && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A));
     let resp = ui.add(
         egui::TextEdit::singleline(&mut query)
             .id(field_id)
@@ -1038,24 +1147,7 @@ fn quick_search(ui: &mut egui::Ui, list: usize, pl: &Playlist, metas: &HashMap<P
             // Feld behalten, damit man weiter Enter drücken oder nachtippen kann
             resp.request_focus();
         }
-        let words: Vec<String> = query.split_whitespace().map(crate::browser::fold).collect();
-        let hits: Vec<usize> = if words.is_empty() {
-            Vec::new()
-        } else {
-            pl.entries
-                .iter()
-                .enumerate()
-                .filter(|(_, p)| {
-                    let file = p.file_name().unwrap_or_default().to_string_lossy();
-                    let hay = match metas.get(*p) {
-                        Some(m) => crate::browser::fold(&format!("{} {} {} {}", m.title, m.artist, m.album, file)),
-                        None => crate::browser::fold(&file),
-                    };
-                    words.iter().all(|w| hay.contains(w.as_str()))
-                })
-                .map(|(i, _)| i)
-                .collect()
-        };
+        let hits = search_hits(pl, metas, &query);
         let from = if next { cursor } else { pl.current };
         jump = match (next, from) {
             _ if hits.is_empty() => None,
@@ -1065,15 +1157,62 @@ fn quick_search(ui: &mut egui::Ui, list: usize, pl: &Playlist, metas: &HashMap<P
             (_, None) => Some(hits[0]),
         };
         let pos = jump.and_then(|j| hits.iter().position(|&h| h == j)).map_or(0, |p| p + 1);
-        ui.data_mut(|d| d.insert_temp(hits_id, (pos, hits.len())));
+        ui.data_mut(|d| d.insert_temp(hits_id, (pos, hits.len(), pl.entries.len())));
     }
     if query.trim().is_empty() {
-        ui.data_mut(|d| d.remove::<(usize, usize)>(hits_id));
-    } else if let Some((pos, n)) = ui.data(|d| d.get_temp::<(usize, usize)>(hits_id)) {
-        let text = if n == 0 { tr("kein Treffer").to_owned() } else { format!("{pos}/{n}") };
+        ui.data_mut(|d| d.remove::<(usize, usize, usize)>(hits_id));
+    } else if let Some((pos, mut n, len)) = ui.data(|d| d.get_temp::<(usize, usize, usize)>(hits_id)) {
+        // Titel entfernt oder hinzugekommen: Trefferzahl neu zählen
+        if len != pl.entries.len() {
+            n = search_hits(pl, metas, &query).len();
+            ui.data_mut(|d| d.insert_temp(hits_id, (pos.min(n), n, pl.entries.len())));
+        }
+        let text = if n == 0 { tr("kein Treffer").to_owned() } else { format!("{}/{n}", pos.min(n)) };
         ui.label(RichText::new(text).size(11.5).color(if n == 0 { theme::cue() } else { theme::dim() }));
+        if n > 0 && mark_button {
+            let b = ui.add(egui::Button::new(RichText::new(tr("Alle markieren")).font(FontId::proportional(11.5))).min_size(vec2(0.0, HEADER_CTRL_H)));
+            mark |= b.on_hover_text(tr("Markiert alle Treffer in der Playlist (⌘A im Suchfeld). Danach mit Entf entfernen oder gemeinsam verschieben.")).clicked();
+        }
     }
     resp.on_hover_text(tr("Springt zum passenden Titel. Enter: nächster Treffer, ⇧Enter: voriger, Esc: leeren"));
+    let marked = mark.then(|| search_hits(pl, metas, &query)).filter(|h| !h.is_empty());
+    if marked.is_some() {
+        // Das Feld gibt die Tasten ab, damit Entf die markierten Titel entfernt
+        ui.memory_mut(|m| m.surrender_focus(field_id));
+    }
     ui.data_mut(|d| d.insert_temp(id, query));
-    jump
+    (jump, marked)
+}
+
+/// Platz für die Trefferzahl „k/n“ und die Taste „Alle markieren“ daneben.
+const HITS_W: f32 = 56.0;
+/// Kleinste Breite des Suchfelds, solange gesucht wird.
+const SEARCH_MIN_SEARCHING_W: f32 = 56.0;
+
+/// Breiten von Trefferzahl und „Alle markieren“ neben dem Suchfeld (samt Abstand).
+fn hits_widths(ui: &egui::Ui) -> (f32, f32) {
+    let gap = ui.spacing().item_spacing.x;
+    let text_w = |t: &str| ui.painter().layout_no_wrap(t.to_owned(), FontId::proportional(11.5), egui::Color32::WHITE).size().x;
+    (HITS_W.min(text_w("888/888") + gap), text_w(tr("Alle markieren")) + 2.0 * ui.spacing().button_padding.x + gap)
+}
+
+/// Stellen aller Titel, die alle Wörter von `query` in Titel, Interpret, Album oder Dateiname enthalten.
+fn search_hits(pl: &Playlist, metas: &HashMap<PathBuf, TrackMeta>, query: &str) -> Vec<usize> {
+    let words: Vec<String> = query.split_whitespace().map(crate::browser::fold).collect();
+    if words.is_empty() {
+        return Vec::new();
+    }
+    pl.entries
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| {
+            let file = p.file_name().unwrap_or_default().to_string_lossy();
+            let hay = match metas.get(*p) {
+                Some(m) => crate::browser::fold(&format!("{} {} {} {}", m.title, m.artist, m.album, file)),
+                None => crate::browser::fold(&file),
+            };
+            words.iter().all(|w| hay.contains(w.as_str()))
+        })
+        .map(|(i, _)| i)
+        .collect()
 }
