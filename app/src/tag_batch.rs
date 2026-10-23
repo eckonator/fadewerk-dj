@@ -444,6 +444,14 @@ fn apply(fields: &mut TagFields, field: Field, old: &str, new: &str) -> bool {
     }
 }
 
+/// Entwicklerschalter: langsames Netzlaufwerk nachstellen (Millisekunden je Datei).
+fn slow_write() {
+    #[cfg(debug_assertions)]
+    if let Some(ms) = std::env::var("FW_WRITE_SLOW").ok().and_then(|v| v.parse().ok()) {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
+}
+
 fn write_all(jobs: Vec<WriteJob>, dir: Option<PathBuf>, ctx: egui::Context) -> Receiver<WriteMsg> {
     let (tx, rx) = mpsc::channel();
     std::thread::Builder::new()
@@ -464,6 +472,7 @@ fn write_all(jobs: Vec<WriteJob>, dir: Option<PathBuf>, ctx: egui::Context) -> R
             };
             let mut written = Vec::new();
             for job in jobs {
+                slow_write();
                 let result = (|| -> Result<(), String> {
                     let (mut fields, _) = read_tags(&job.path).map_err(|e| format!("{e:#}"))?;
                     let mut entry = JournalEntry { path: job.path.clone(), changes: Vec::new(), cover_added: false };
@@ -510,6 +519,7 @@ fn undo(journal_path: PathBuf, ctx: egui::Context) -> Receiver<WriteMsg> {
             let journal: Journal = std::fs::read_to_string(&journal_path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
             let mut restored = Vec::new();
             for (i, e) in journal.entries.iter().enumerate() {
+                slow_write();
                 let result = (|| -> Result<(), String> {
                     let (mut fields, _) = read_tags(&e.path).map_err(|e| format!("{e:#}"))?;
                     for (key, old, new) in &e.changes {
@@ -570,17 +580,25 @@ pub enum BatchEvent {
     Review(PathBuf),
     /// Diese Dateien wurden geändert (Tags neu einlesen).
     Changed(Vec<PathBuf>),
-    /// Die Erkennung im Hintergrund ist fertig: (sicher, unsicher).
-    BackgroundDone(usize, usize),
+    /// Im Hintergrund ist etwas fertig geworden (Erkennung, Schreiben, Rückgängig).
+    Notice(String),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum BatchPhase {
+    Recognize,
+    Write,
+    Undo,
+    Done,
 }
 
 /// Stand für die Browser-Kopfzeile, solange das Fenster im Hintergrund ist.
 #[derive(Clone, Copy)]
 pub struct BatchStatus {
+    pub phase: BatchPhase,
     pub done: usize,
     pub total: usize,
     pub rest_secs: Option<f64>,
-    pub finished: bool,
 }
 
 /// „noch ca. … s/min“ für die geschätzte Restzeit.
@@ -600,10 +618,12 @@ pub struct TagBatch {
     writing: Option<(Receiver<WriteMsg>, bool)>,
     report: Option<String>,
     journal: Option<(PathBuf, String, usize)>,
-    /// Fenster ausgeblendet, die Erkennung läuft weiter (Stand in der Browser-Kopfzeile).
+    /// Schreiben/Rückgängig: (erledigt, gesamt).
+    write_count: (usize, usize),
+    /// Fenster ausgeblendet, Erkennung bzw. Schreiben laufen weiter (Stand in der Browser-Kopfzeile).
     background: bool,
-    /// Hinweis „fertig“ für den Hintergrund-Durchlauf schon gegeben.
-    announced: bool,
+    /// Hinweis, sobald im Hintergrund etwas fertig ist.
+    notice: Option<String>,
     /// Fenster beim nächsten Zeichnen mittig setzen (danach frei verschiebbar).
     place: bool,
 }
@@ -622,25 +642,35 @@ impl TagBatch {
             writing: None,
             report: None,
             journal: latest_journal(),
+            write_count: (0, 0),
             background: false,
-            announced: false,
+            notice: None,
             place: true,
         }
     }
 
     pub fn status(&self) -> Option<BatchStatus> {
-        self.background.then(|| BatchStatus {
-            done: self.done(),
-            total: self.items.len(),
-            rest_secs: self.rest_secs(),
-            finished: self.rx.is_none(),
-        })
+        if !self.background {
+            return None;
+        }
+        let (phase, (done, total)) = match &self.writing {
+            Some((_, false)) => (BatchPhase::Write, self.write_count),
+            Some((_, true)) => (BatchPhase::Undo, self.write_count),
+            None if self.rx.is_some() => (BatchPhase::Recognize, (self.done(), self.items.len())),
+            None => (BatchPhase::Done, (0, 0)),
+        };
+        Some(BatchStatus { phase, done, total, rest_secs: if phase == BatchPhase::Recognize { self.rest_secs() } else { None } })
     }
 
-    /// Fenster ausblenden, die Erkennung läuft weiter.
+    /// Fenster ausblenden, Erkennung bzw. Schreiben laufen weiter.
     pub fn send_to_background(&mut self) {
         self.background = true;
-        self.announced = false;
+    }
+
+    fn start_writing(&mut self, rx: Receiver<WriteMsg>, is_undo: bool, total: usize) {
+        self.report = None;
+        self.write_count = (0, total);
+        self.writing = Some((rx, is_undo));
     }
 
     /// Fenster wieder zeigen.
@@ -705,6 +735,10 @@ impl TagBatch {
                     Msg::Finished => {
                         self.finished = true;
                         self.rx = None;
+                        if self.background {
+                            let count = |s: State| self.items.iter().filter(|i| i.state == s).count();
+                            self.notice = Some(trf("Tags online fertig: {} sicher, {} unsicher", &[&count(State::Sure), &count(State::Unsure)]));
+                        }
                         // Was beim Stoppen noch wartete, gilt als nicht geprüft
                         for item in &mut self.items {
                             item.details_pending = false;
@@ -721,6 +755,7 @@ impl TagBatch {
         while let Ok(msg) = rx.try_recv() {
             match msg {
                 WriteMsg::Done(i, r) => {
+                    self.write_count.0 += 1;
                     if !is_undo && let Some(item) = self.items.get_mut(i) {
                         item.written = Some(r);
                     }
@@ -733,6 +768,9 @@ impl TagBatch {
                         if failed > 0 { trf("{} Titel geschrieben, {} Fehler.", &[&paths.len(), &failed]) } else { trf("{} Titel geschrieben.", &[&paths.len()]) }
                     });
                     self.journal = latest_journal();
+                    if self.background {
+                        self.notice = self.report.as_ref().map(|r| format!("{}: {r}", tr("Tags online")));
+                    }
                     changed = Some(BatchEvent::Changed(paths));
                 }
             }
@@ -753,13 +791,15 @@ impl TagBatch {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
         if self.background {
-            if self.rx.is_none() && !self.announced {
-                self.announced = true;
-                let count = |s: State| self.items.iter().filter(|i| i.state == s).count();
-                event = event.or(Some(BatchEvent::BackgroundDone(count(State::Sure), count(State::Unsure))));
+            // Ein Ereignis je Bild: der Hinweis wartet notfalls bis zum nächsten
+            if event.is_none()
+                && let Some(n) = self.notice.take()
+            {
+                event = Some(BatchEvent::Notice(n));
             }
             return event;
         }
+        self.notice = None;
         let mut open = true;
         // Mittig geöffnet, danach verschiebbar (z. B. weg von den Playern)
         let mut window = egui::Window::new(tr("Tags online ergänzen"))
@@ -808,6 +848,7 @@ impl TagBatch {
                 }
             });
             self.undo_row(ui, ctx);
+            self.undo_status(ui);
             return event;
         }
 
@@ -827,11 +868,8 @@ impl TagBatch {
             if self.rx.is_some() && ui.button(tr("Stopp")).clicked() {
                 self.stop();
             }
-            if self.rx.is_some()
-                && self.writing.is_none()
-                && ui.button(tr("Im Hintergrund")).on_hover_text(tr("Fenster schließen, die Erkennung läuft weiter; Stand und Rückkehr über die Kopfzeile des Ordnerbrowsers")).clicked()
-            {
-                self.send_to_background();
+            if self.rx.is_some() && self.writing.is_none() {
+                self.background_button(ui);
             }
         });
         ui.add_space(6.0);
@@ -894,12 +932,15 @@ impl TagBatch {
                         recording_id: i.recording_id.clone(),
                         release_id: i.release_id.clone(),
                     })
-                    .collect();
-                self.report = None;
-                self.writing = Some((write_all(jobs, journal_dir(), ctx.clone()), false));
+                    .collect::<Vec<_>>();
+                let total = jobs.len();
+                self.start_writing(write_all(jobs, journal_dir(), ctx.clone()), false, total);
             }
-            if locked {
+            if let Some((_, is_undo)) = &self.writing {
+                let text = if *is_undo { tr("Setzt zurück {} von {}") } else { tr("Schreibt {} von {}") };
+                ui.label(RichText::new(trf(text, &[&self.write_count.0, &self.write_count.1])).color(theme::dim()));
                 ui.add(egui::Spinner::new().size(14.0));
+                self.background_button(ui);
             }
             if let Some(r) = &self.report {
                 ui.label(RichText::new(r).color(theme::dim()));
@@ -914,6 +955,25 @@ impl TagBatch {
         event
     }
 
+    /// Vor dem Start der Erkennung: Stand bzw. Ergebnis von „Rückgängig machen“.
+    fn undo_status(&mut self, ui: &mut egui::Ui) {
+        if self.writing.is_some() {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(trf(tr("Setzt zurück {} von {}"), &[&self.write_count.0, &self.write_count.1])).color(theme::dim()));
+                ui.add(egui::Spinner::new().size(14.0));
+                self.background_button(ui);
+            });
+        } else if let Some(r) = &self.report {
+            ui.label(RichText::new(r).size(12.0).color(theme::dim()));
+        }
+    }
+
+    fn background_button(&mut self, ui: &mut egui::Ui) {
+        if ui.button(tr("Im Hintergrund")).on_hover_text(tr("Fenster schließen, die Arbeit läuft weiter; Stand und Rückkehr über die Kopfzeile des Ordnerbrowsers")).clicked() {
+            self.send_to_background();
+        }
+    }
+
     /// Hinweis auf den letzten Durchlauf mit „Rückgängig machen“.
     fn undo_row(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let Some((path, date, n)) = self.journal.clone() else { return };
@@ -922,9 +982,8 @@ impl TagBatch {
             ui.label(RichText::new(trf("Letzter Durchlauf: {} · {} Titel", &[&date, &n])).size(12.0).color(theme::dim()));
             let free = self.writing.is_none();
             if ui.add_enabled(free, egui::Button::new(tr("Rückgängig machen"))).on_hover_text(tr("Setzt die damals geschriebenen Felder zurück, sofern sie seitdem niemand geändert hat, und entfernt ergänzte Cover")).clicked() {
-                self.report = None;
                 self.journal = None;
-                self.writing = Some((undo(path, ctx.clone()), true));
+                self.start_writing(undo(path, ctx.clone()), true, n);
             }
         });
     }

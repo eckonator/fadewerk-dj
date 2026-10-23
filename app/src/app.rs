@@ -3300,7 +3300,7 @@ impl eframe::App for FadeWerkDjApp {
             use crate::tag_batch::BatchEvent;
             match event {
                 BatchEvent::Close => self.tag_batch = None,
-                BatchEvent::BackgroundDone(sure, unsure) => self.notify(trf("Tags online fertig: {} sicher, {} unsicher", &[&sure, &unsure]), now),
+                BatchEvent::Notice(text) => self.notify(text, now),
                 BatchEvent::AllowOnline => {
                     self.settings.online_lookup = true;
                     self.save_settings();

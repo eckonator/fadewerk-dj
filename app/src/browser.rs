@@ -2639,18 +2639,25 @@ fn fit_widths(cols: &[TrackColumn], saved: impl Fn(TrackColumn) -> Option<f32>, 
 /// Stand von „Tags online ergänzen“ im Hintergrund (Layout von rechts nach links): Stopp, Text, Drehrad;
 /// ist es fertig, eine hervorgehobene Taste zum Ansehen. Klick auf den Text holt das Fenster zurück.
 fn tag_batch_status(ui: &mut egui::Ui, st: crate::tag_batch::BatchStatus, out: &mut Vec<BrowserAction>) {
-    if st.finished {
+    use crate::tag_batch::BatchPhase;
+    if st.phase == BatchPhase::Done {
         let accent = theme::select_accent();
         let button = Button::new(RichText::new(tr("Tags online: fertig – ansehen")).size(12.0).color(accent)).fill(accent.gamma_multiply(0.14));
-        if ui.add(button).on_hover_text(tr("Ergebnisse prüfen und schreiben")).clicked() {
+        if ui.add(button).on_hover_text(tr("Ergebnisse ansehen")).clicked() {
             out.push(BrowserAction::ShowTagBatch);
         }
         return;
     }
-    if ui.small_button(tr("Stopp")).on_hover_text(tr("Erkennung stoppen; Erkanntes bleibt zum Schreiben")).clicked() {
+    // Schreiben läuft bis zum Ende (das Journal hält jeden Schritt fest), nur die Erkennung lässt sich stoppen
+    if st.phase == BatchPhase::Recognize && ui.small_button(tr("Stopp")).on_hover_text(tr("Erkennung stoppen; Erkanntes bleibt zum Schreiben")).clicked() {
         out.push(BrowserAction::StopTagBatch);
     }
-    let mut text = trf("Tags online {} von {}", &[&st.done, &st.total]);
+    let what = match st.phase {
+        BatchPhase::Write => tr("Tags schreiben {} von {}"),
+        BatchPhase::Undo => tr("Tags zurücksetzen {} von {}"),
+        _ => tr("Tags online {} von {}"),
+    };
+    let mut text = trf(what, &[&st.done, &st.total]);
     if let Some(rest) = st.rest_secs {
         text += &format!(" · {}", crate::tag_batch::rest_text(rest));
     }
