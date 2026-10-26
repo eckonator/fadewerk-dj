@@ -412,48 +412,67 @@ pub fn parse_acoustid(json: &Value) -> Vec<Candidate> {
 pub fn parse_mb_search(json: &Value) -> Vec<Candidate> {
     let mut out = Vec::new();
     for rec in json["recordings"].as_array().into_iter().flatten() {
-        let score = rec["score"].as_f64().unwrap_or(0.0) as f32 / 100.0;
-        if score < MIN_SCORE {
-            continue;
+        let c = mb_recording(rec);
+        if c.score >= MIN_SCORE {
+            add(&mut out, c);
         }
-        // Je Album nur die früheste Ausgabe (verglichen am ganzen Datum)
-        let mut albums: Vec<(String, AlbumChoice)> = Vec::new();
-        for r in rec["releases"].as_array().into_iter().flatten() {
-            let g = &r["release-group"];
-            let kind = group_kind(g["primary-type"].as_str(), g["secondary-types"].as_array().into_iter().flatten().filter_map(Value::as_str));
-            let date = r["date"].as_str().unwrap_or_default().to_string();
-            let choice = AlbumChoice {
-                title: g["title"].as_str().or(r["title"].as_str()).unwrap_or_default().to_string(),
-                album_artist: join_artists(&r["artist-credit"], "name"),
-                kind,
-                year: year_of(&date),
-                track: r["media"][0]["track"][0]["number"].as_str().unwrap_or_default().to_string(),
-                group_id: g["id"].as_str().unwrap_or_default().to_string(),
-                release_id: r["id"].as_str().unwrap_or_default().to_string(),
-            };
-            match albums.iter_mut().find(|(_, a)| a.group_id == choice.group_id) {
-                Some(slot) if !date.is_empty() && (slot.0.is_empty() || date < slot.0) => *slot = (date, choice),
-                Some(_) => {}
-                None => albums.push((date, choice)),
-            }
-        }
-        let albums = albums.into_iter().map(|(_, a)| a).collect();
-        add(
-            &mut out,
-            Candidate {
-                score,
-                by_sound: false,
-                title: rec["title"].as_str().unwrap_or_default().to_string(),
-                artist: join_artists(&rec["artist-credit"], "name"),
-                year: year_of(rec["first-release-date"].as_str().unwrap_or_default()),
-                recording_id: rec["id"].as_str().unwrap_or_default().to_string(),
-                artist_ids: rec["artist-credit"].as_array().into_iter().flatten().filter_map(|c| c["artist"]["id"].as_str()).map(str::to_string).collect(),
-                albums,
-                durations: rec["length"].as_f64().map(|ms| ms / 1000.0).into_iter().collect(),
-            },
-        );
     }
     finish(out)
+}
+
+/// Fragt mehrere Aufnahmen über ihre MusicBrainz-Kennung auf einmal ab (eine Suche „rid:… OR rid:…“).
+/// Jede gefundene Aufnahme kommt einzeln zurück, auch gleichnamige Fassungen.
+pub fn lookup_recordings(ids: &[String]) -> Result<Vec<Candidate>, String> {
+    let query = ids.iter().map(|id| format!("rid:{}", id.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', ""))).collect::<Vec<_>>().join(" OR ");
+    let body = mb_get(&format!("{MB_URL}/recording?query={}&fmt=json&limit=100", url_encode(&query)))?;
+    let json: Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
+    Ok(parse_mb_lookup(&json))
+}
+
+pub fn parse_mb_lookup(json: &Value) -> Vec<Candidate> {
+    let mut out: Vec<Candidate> = json["recordings"].as_array().into_iter().flatten().map(mb_recording).filter(|c| !c.recording_id.is_empty()).collect();
+    for c in &mut out {
+        c.score = 1.0;
+    }
+    finish_albums(&mut out);
+    out
+}
+
+/// Eine Aufnahme aus der MusicBrainz-Suche.
+fn mb_recording(rec: &Value) -> Candidate {
+    let score = rec["score"].as_f64().unwrap_or(0.0) as f32 / 100.0;
+    // Je Album nur die früheste Ausgabe (verglichen am ganzen Datum)
+    let mut albums: Vec<(String, AlbumChoice)> = Vec::new();
+    for r in rec["releases"].as_array().into_iter().flatten() {
+        let g = &r["release-group"];
+        let kind = group_kind(g["primary-type"].as_str(), g["secondary-types"].as_array().into_iter().flatten().filter_map(Value::as_str));
+        let date = r["date"].as_str().unwrap_or_default().to_string();
+        let choice = AlbumChoice {
+            title: g["title"].as_str().or(r["title"].as_str()).unwrap_or_default().to_string(),
+            album_artist: join_artists(&r["artist-credit"], "name"),
+            kind,
+            year: year_of(&date),
+            track: r["media"][0]["track"][0]["number"].as_str().unwrap_or_default().to_string(),
+            group_id: g["id"].as_str().unwrap_or_default().to_string(),
+            release_id: r["id"].as_str().unwrap_or_default().to_string(),
+        };
+        match albums.iter_mut().find(|(_, a)| a.group_id == choice.group_id) {
+            Some(slot) if !date.is_empty() && (slot.0.is_empty() || date < slot.0) => *slot = (date, choice),
+            Some(_) => {}
+            None => albums.push((date, choice)),
+        }
+    }
+    Candidate {
+        score,
+        by_sound: false,
+        title: rec["title"].as_str().unwrap_or_default().to_string(),
+        artist: join_artists(&rec["artist-credit"], "name"),
+        year: year_of(rec["first-release-date"].as_str().unwrap_or_default()),
+        recording_id: rec["id"].as_str().unwrap_or_default().to_string(),
+        artist_ids: rec["artist-credit"].as_array().into_iter().flatten().filter_map(|c| c["artist"]["id"].as_str()).map(str::to_string).collect(),
+        albums: albums.into_iter().map(|(_, a)| a).collect(),
+        durations: rec["length"].as_f64().map(|ms| ms / 1000.0).into_iter().collect(),
+    }
 }
 
 /// Fügt einen Vorschlag hinzu; dieselbe Aufnahme (Interpret + Titel) wird mit dem vorhandenen zusammengelegt.
@@ -482,7 +501,14 @@ fn add(out: &mut Vec<Candidate>, c: Candidate) {
 /// Alben sortieren (Studioalbum vor Single/EP vor Zusammenstellungen, dann älteste zuerst), Jahr der
 /// ersten Veröffentlichung bestimmen, nach Trefferquote ordnen.
 fn finish(mut out: Vec<Candidate>) -> Vec<Candidate> {
-    for c in &mut out {
+    finish_albums(&mut out);
+    out.sort_by(|a, b| b.score.total_cmp(&a.score));
+    out.truncate(MAX_CANDIDATES);
+    out
+}
+
+fn finish_albums(out: &mut [Candidate]) {
+    for c in out {
         c.albums.sort_by(|a, b| (kind_rank(&a.kind), a.year.is_empty(), &a.year).cmp(&(kind_rank(&b.kind), b.year.is_empty(), &b.year)));
         if let Some(first) = c.albums.iter().map(|a| &a.year).filter(|y| !y.is_empty()).min()
             && (c.year.is_empty() || *first < c.year)
@@ -490,9 +516,6 @@ fn finish(mut out: Vec<Candidate>) -> Vec<Candidate> {
             c.year = first.clone();
         }
     }
-    out.sort_by(|a, b| b.score.total_cmp(&a.score));
-    out.truncate(MAX_CANDIDATES);
-    out
 }
 
 /// Bei (fast) gleicher Trefferquote zuerst, was zu den vorhandenen Angaben passt: Ein Fingerabdruck trifft
@@ -646,6 +669,19 @@ mod tests {
         assert_eq!(c[0].albums.len(), 2);
         assert_eq!((c[0].albums[0].title.as_str(), c[0].albums[0].release_id.as_str(), c[0].albums[0].track.as_str()), ("Discovery", "d1", "A1"));
         assert_eq!(c[1].artist, "A feat. B");
+    }
+
+    #[test]
+    fn musicbrainz_lookup_keeps_every_recording() {
+        // Gleichnamige Fassungen werden nicht zusammengelegt, die Quote spielt keine Rolle
+        let answer = json!({"recordings": [
+            {"id": "a", "score": 97, "title": "Keeper", "artist-credit": [{"name": "X"}]},
+            {"id": "b", "score": 40, "title": "Keeper", "artist-credit": [{"name": "X"}]},
+            {"score": 100, "title": "ohne Kennung"},
+        ]});
+        let c = parse_mb_lookup(&answer);
+        let ids: Vec<_> = c.iter().map(|c| (c.recording_id.as_str(), c.score)).collect();
+        assert_eq!(ids, [("a", 1.0), ("b", 1.0)]);
     }
 
     #[test]

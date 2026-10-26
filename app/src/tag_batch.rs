@@ -50,6 +50,9 @@ pub struct Plan {
     pub candidate: Candidate,
     pub album: Option<usize>,
     pub changes: Vec<Change>,
+    /// Die vorhandenen Tags nennen einen anderen Titel. Wird der Treffer trotzdem angenommen (Häkchen),
+    /// ersetzt er auch Titel, Interpret und Album, sonst bliebe nur die Kennung zu falschen Angaben.
+    pub conflict: bool,
     pub need_genre: bool,
     pub need_cover: bool,
 }
@@ -130,7 +133,8 @@ pub fn plan(fields: &TagFields, stem: &str, file_has_cover: bool, duration: f64,
     if !length_ok {
         doubts.push("Länge weicht ab");
     }
-    if has_hint && !hint_matches {
+    let conflict = has_hint && !hint_matches;
+    if conflict {
         doubts.push(if title_ok { "Tags nennen etwas anderes" } else { "Dateiname nennt etwas anderes" });
     }
     if !has_hint && rival {
@@ -162,7 +166,8 @@ pub fn plan(fields: &TagFields, stem: &str, file_has_cover: bool, duration: f64,
             Field::Genre | Field::Cover => continue,
         };
         let old = field.slot(&mut fields.clone()).cloned().unwrap_or_default();
-        if !new.is_empty() && new != old && is_bad(field, &old, stem) {
+        let overrule = conflict && matches!(field, Field::Title | Field::Artist | Field::Album | Field::AlbumArtist | Field::Track) && norm(&new) != norm(&old);
+        if !new.is_empty() && new != old && (is_bad(field, &old, stem) || overrule) {
             changes.push(Change { field, old, new });
         }
     }
@@ -176,6 +181,7 @@ pub fn plan(fields: &TagFields, stem: &str, file_has_cover: bool, duration: f64,
         candidate: top,
         album,
         changes,
+        conflict,
     })
 }
 
@@ -209,6 +215,8 @@ pub struct Item {
     pub details_pending: bool,
     /// Schon erkannt, nur das Cover wird nachgeholt.
     pub cover_only: bool,
+    /// Schon erkannt, aber die Tags passen nicht zur gespeicherten Kennung: wird berichtigt.
+    pub repair: bool,
     /// Beim Schreiben dabei (Häkchen).
     pub write: bool,
     pub written: Option<Result<(), String>>,
@@ -229,6 +237,7 @@ impl Item {
             cover: None,
             details_pending: false,
             cover_only: false,
+            repair: false,
             write: false,
             written: None,
         }
@@ -250,21 +259,33 @@ struct DetailJob {
     cover: bool,
 }
 
+/// Datei mit MusicBrainz-Kennung: wird gesammelt bei MusicBrainz nachgeschlagen (`check_known`).
+struct CheckJob {
+    index: usize,
+    path: PathBuf,
+    fields: TagFields,
+    duration: f64,
+}
+
+/// So viele Kennungen fragt `check_known` in einer Suche ab.
+const CHECK_BATCH: usize = 25;
+
 /// Startet die Erkennung aller Dateien im Hintergrund.
 fn start(paths: Vec<PathBuf>, stop: Arc<AtomicBool>, ctx: egui::Context) -> Receiver<Msg> {
     let (tx, rx) = mpsc::channel();
     let (detail_tx, detail_rx) = mpsc::channel::<DetailJob>();
+    let (check_tx, check_rx) = mpsc::channel::<CheckJob>();
     let paths = Arc::new(paths);
     let next = Arc::new(AtomicUsize::new(0));
     for n in 0..THREADS {
-        let (paths, next, stop, tx, detail_tx, ctx) = (paths.clone(), next.clone(), stop.clone(), tx.clone(), detail_tx.clone(), ctx.clone());
+        let (paths, next, stop, tx, detail_tx, check_tx, ctx) = (paths.clone(), next.clone(), stop.clone(), tx.clone(), detail_tx.clone(), check_tx.clone(), ctx.clone());
         std::thread::Builder::new()
             .name(format!("fw-tag-batch-{n}"))
             .spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     let Some(path) = paths.get(i) else { break };
-                    let (item, job) = identify(i, path);
+                    let Some((item, job)) = identify(i, path, &check_tx) else { continue };
                     if let Some(job) = job {
                         let _ = detail_tx.send(job);
                     }
@@ -276,12 +297,21 @@ fn start(paths: Vec<PathBuf>, stop: Arc<AtomicBool>, ctx: egui::Context) -> Rece
             })
             .ok();
     }
+    drop(check_tx);
+    // Endet, wenn alle Erkennungs-Threads fertig sind; danach endet der Detail-Thread
+    {
+        let (stop, tx, detail_tx, ctx) = (stop.clone(), tx.clone(), detail_tx.clone(), ctx.clone());
+        std::thread::Builder::new()
+            .name("fw-tag-batch-check".into())
+            .spawn(move || check_known(check_rx, &stop, &tx, &detail_tx, &ctx))
+            .ok();
+    }
     drop(detail_tx);
     std::thread::Builder::new()
         .name("fw-tag-batch-details".into())
         .spawn(move || {
             let mut covers: HashMap<String, Option<Arc<Vec<u8>>>> = HashMap::new();
-            // Endet, wenn alle Erkennungs-Threads fertig sind
+            // Endet, wenn Erkennungs- und Prüf-Threads fertig sind
             while let Ok(job) = detail_rx.recv() {
                 if stop.load(Ordering::Relaxed) {
                     continue;
@@ -302,38 +332,31 @@ fn start(paths: Vec<PathBuf>, stop: Arc<AtomicBool>, ctx: egui::Context) -> Rece
     rx
 }
 
-/// Erkennt eine Datei und stuft sie ein; liefert ggf. den Auftrag für Genre und Cover.
-fn identify(index: usize, path: &Path) -> (Item, Option<DetailJob>) {
+/// Erkennt eine Datei und stuft sie ein; liefert ggf. den Auftrag für Genre und Cover. `None`: Die Datei
+/// trägt schon eine Kennung und ging an `check_known`.
+fn identify(index: usize, path: &Path, check: &mpsc::Sender<CheckJob>) -> Option<(Item, Option<DetailJob>)> {
     let mut item = Item::waiting(path.to_owned());
     let (fields, info) = match read_tags(path) {
         Ok(t) => t,
         Err(e) => {
             item.state = State::Failed(format!("{e:#}"));
-            return (item, None);
+            return Some((item, None));
         }
     };
     if !fields.mb_recording_id.is_empty() {
-        // Schon erkannt. Fehlt (noch) ein brauchbares Cover, wird es über die gespeicherte Albumkennung
-        // nachgeholt; ohne die geht es über die Erkennung unten.
-        if has_cover(path) {
-            item.state = State::Known;
-            return (item, None);
-        }
+        let job = CheckJob { index, path: path.to_owned(), fields, duration: info.duration_secs };
+        return match check.send(job) {
+            Ok(()) => None,
+            Err(mpsc::SendError(job)) => Some(known(job, None)),
+        };
     }
-    if !fields.mb_recording_id.is_empty() && !fields.mb_release_id.is_empty() {
-        item.state = State::Sure;
-        item.write = true;
-        item.artist = fields.artist.clone();
-        item.title = fields.title.clone();
-        item.score = 1.0;
-        item.recording_id = fields.mb_recording_id.clone();
-        item.release_id = fields.mb_release_id.clone();
-        item.details_pending = true;
-        item.cover_only = true;
-        let job = DetailJob { index, group_id: String::new(), release_id: fields.mb_release_id.clone(), artist_id: None, genre: false, cover: true };
-        return (item, Some(job));
-    }
-    let found = match online_tags::identify_by_sound(path) {
+    Some(identify_by_sound(item, index, &fields, info.duration_secs))
+}
+
+/// Fingerabdruck → AcoustID → einstufen.
+fn identify_by_sound(mut item: Item, index: usize, fields: &TagFields, duration: f64) -> (Item, Option<DetailJob>) {
+    let path = item.path.clone();
+    let found = match online_tags::identify_by_sound(&path) {
         Ok(f) => f,
         Err(e) => {
             log::info!("Ordner-Erkennung {}: {e}", path.display());
@@ -342,21 +365,28 @@ fn identify(index: usize, path: &Path) -> (Item, Option<DetailJob>) {
         }
     };
     let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let Some(p) = plan(&fields, &stem, has_cover(path), info.duration_secs, &found) else {
+    let Some(p) = plan(fields, &stem, has_cover(&path), duration, &found) else {
         item.state = State::NotFound;
         return (item, None);
     };
+    if !p.sure {
+        log::info!("Unsicher {}: {:?} (Tags „{} – {}“, Treffer „{} – {}“, {:.1} s / {:?} s)", path.display(), p.doubts, fields.artist, fields.title, p.candidate.artist, p.candidate.title, duration, p.candidate.durations);
+    }
+    let sure = p.sure;
+    let job = take_plan(&mut item, index, fields, p);
+    item.state = if sure { State::Sure } else { State::Unsure };
+    item.write = sure;
+    (item, job)
+}
+
+/// Überträgt den Plan in die Zeile; liefert ggf. den Auftrag für Genre und Cover.
+fn take_plan(item: &mut Item, index: usize, fields: &TagFields, p: Plan) -> Option<DetailJob> {
     let c = &p.candidate;
     let album = p.album.and_then(|i| c.albums.get(i)).or(c.albums.first());
-    item.state = if p.sure { State::Sure } else { State::Unsure };
-    item.write = p.sure;
     item.artist = c.artist.clone();
     item.title = c.title.clone();
     item.score = c.score;
     item.doubts = p.doubts.clone();
-    if !p.sure {
-        log::info!("Unsicher {}: {:?} (Tags „{} – {}“, Treffer „{} – {}“, {:.1} s / {:?} s)", path.display(), p.doubts, fields.artist, fields.title, c.artist, c.title, info.duration_secs, c.durations);
-    }
     item.recording_id = c.recording_id.clone();
     // Albumkennung nur, wenn das Album im Tag dazu passt (das Cover kann von einem anderen kommen)
     item.release_id = p.album.and_then(|i| c.albums.get(i)).map(|a| a.release_id.clone()).unwrap_or_default();
@@ -374,7 +404,83 @@ fn identify(index: usize, path: &Path) -> (Item, Option<DetailJob>) {
         // Platz für das Genre merken; der Wert kommt mit den Details
         item.changes.push(Change { field: Field::Genre, old: fields.genre.clone(), new: String::new() });
     }
-    (item, job)
+    job
+}
+
+/// Schlägt Dateien mit Kennung gesammelt bei MusicBrainz nach. Passen ihre Tags nicht zur Kennung (z. B.
+/// früher ein unsicherer Treffer angenommen, der nur die Kennung schrieb), wird die Berichtigung angeboten.
+fn check_known(rx: Receiver<CheckJob>, stop: &AtomicBool, tx: &mpsc::Sender<Msg>, detail_tx: &mpsc::Sender<DetailJob>, ctx: &egui::Context) {
+    while let Ok(first) = rx.recv() {
+        let mut jobs = vec![first];
+        // Kurz sammeln, die Erkennungs-Threads lesen gerade weitere Tags
+        while jobs.len() < CHECK_BATCH
+            && let Ok(job) = rx.recv_timeout(std::time::Duration::from_millis(300))
+        {
+            jobs.push(job);
+        }
+        if stop.load(Ordering::Relaxed) {
+            continue;
+        }
+        let mut ids: Vec<String> = jobs.iter().map(|j| j.fields.mb_recording_id.trim().to_owned()).collect();
+        ids.dedup();
+        let found = online_tags::lookup_recordings(&ids).unwrap_or_else(|e| {
+            log::info!("Kennungen nachschlagen: {e}");
+            Vec::new()
+        });
+        for job in jobs {
+            let index = job.index;
+            let c = found.iter().find(|c| c.recording_id == job.fields.mb_recording_id.trim()).cloned();
+            let (item, detail) = known(job, c);
+            if let Some(d) = detail {
+                let _ = detail_tx.send(d);
+            }
+            if tx.send(Msg::Item(index, Box::new(item))).is_err() {
+                return;
+            }
+        }
+        ctx.request_repaint();
+    }
+}
+
+/// Einstufung einer Datei mit Kennung; `found` = die Aufnahme zur Kennung laut MusicBrainz.
+fn known(job: CheckJob, found: Option<Candidate>) -> (Item, Option<DetailJob>) {
+    let CheckJob { index, path, fields, duration } = job;
+    let mut item = Item::waiting(path.clone());
+    let file_has_cover = has_cover(&path);
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    if let Some(p) = found.and_then(|c| plan(&fields, &stem, file_has_cover, duration, &[c])).filter(|p| p.conflict) {
+        log::info!("Tags passen nicht zur Kennung {}: „{} – {}“, Kennung „{} – {}“", path.display(), fields.artist, fields.title, p.candidate.artist, p.candidate.title);
+        let job = take_plan(&mut item, index, &fields, p);
+        item.doubts.clear();
+        item.recording_id = fields.mb_recording_id.clone();
+        if !fields.mb_release_id.is_empty() {
+            item.release_id = fields.mb_release_id.clone();
+        }
+        item.state = State::Sure;
+        item.repair = true;
+        item.write = true;
+        return (item, job);
+    }
+    // Passt. Fehlt (noch) ein brauchbares Cover, wird es über die gespeicherte Albumkennung nachgeholt;
+    // ohne die geht es über den Fingerabdruck.
+    if file_has_cover {
+        item.state = State::Known;
+        return (item, None);
+    }
+    if fields.mb_release_id.is_empty() {
+        return identify_by_sound(item, index, &fields, duration);
+    }
+    item.state = State::Sure;
+    item.write = true;
+    item.artist = fields.artist.clone();
+    item.title = fields.title.clone();
+    item.score = 1.0;
+    item.recording_id = fields.mb_recording_id.clone();
+    item.release_id = fields.mb_release_id.clone();
+    item.details_pending = true;
+    item.cover_only = true;
+    let job = DetailJob { index, group_id: String::new(), release_id: fields.mb_release_id.clone(), artist_id: None, genre: false, cover: true };
+    (item, Some(job))
 }
 
 // ---------------------------------------------------------------- Journal und Schreiben
@@ -891,7 +997,7 @@ impl TagBatch {
         });
         ui.label(RichText::new(match self.view {
             View::Sure => tr("Treffer passt zu Länge und vorhandenen Angaben. Ergänzt werden nur leere oder offensichtlich falsche Felder."),
-            View::Unsure => tr("Nicht eindeutig (z. B. Remix, B-Seite oder Angaben passen nicht). Mit „Prüfen …“ im Tag-Fenster ansehen."),
+            View::Unsure => tr("Nicht eindeutig (z. B. Remix, B-Seite oder Angaben passen nicht). Mit „Prüfen …“ im Tag-Fenster ansehen. Angehakt gilt der Treffer: Nennen die Tags etwas anderes, werden auch Titel, Interpret und Album ersetzt."),
             View::NotFound => tr("Die Dienste kennen diese Aufnahmen nicht. Hier ändert sich nichts."),
             View::Skipped => tr("Schon früher erkannt (MusicBrainz-Kennung in der Datei) oder nicht lesbar."),
         }).size(12.0).color(theme::dim()));
@@ -1002,6 +1108,7 @@ impl TagBatch {
                     ui.add(egui::Label::new(RichText::new(&name).size(12.0).color(theme::dim())).truncate());
                     let line = match &item.state {
                         State::Sure if item.cover_only => format!("{} – {}  ·  {}", item.artist, item.title, tr("schon erkannt, Cover fehlt")),
+                        State::Sure if item.repair => format!("{} – {}  ·  {}", item.artist, item.title, tr("Tags passen nicht zur gespeicherten Kennung")),
                         State::Sure => format!("{} – {}   {} %", item.artist, item.title, (item.score * 100.0).round()),
                         State::Unsure => {
                             let why: Vec<&str> = item.doubts.iter().map(|d| tr(d)).collect();
@@ -1145,6 +1252,32 @@ mod tests {
         let rivals = [cand("Personal Jesus", 0.98), cand("Dangerous", 0.97)];
         assert!(!plan(&tags("", "", ""), "Track01", false, 223.0, &rivals).unwrap().sure);
         assert!(plan(&tags("", "", ""), "x", false, 223.0, &[]).is_none());
+    }
+
+    /// Wie beim Album „Am I My Brother's Keeper?“: Tags aus dem Ordnernamen geraten, der Klang erkennt den
+    /// Titel. Angenommen ersetzt der Treffer auch die falschen, aber nicht leeren Felder.
+    #[test]
+    fn accepted_conflict_replaces_wrong_tags() {
+        let mut c = cand("Will We Ever Know?", 0.97);
+        c.artist = "Brothers Keepers".into();
+        c.albums = vec![album("Am I My Brother’s Keeper?", "Brothers Keepers", "Album", "2001", "2")];
+        let wrong = TagFields { title: "Keepers".into(), artist: "Brothers".into(), album_artist: "Brothers".into(), album: "Brothers Keepers_Am I my Brothers Keepers".into(), track: "2".into(), year: "2005".into(), ..tags("", "", "") };
+        let p = plan(&wrong, "02 Keepers", true, 223.0, std::slice::from_ref(&c)).unwrap();
+        assert!(!p.sure && p.conflict);
+        let changed: Vec<_> = p.changes.iter().map(|c| (c.field, c.new.as_str())).collect();
+        assert_eq!(changed, [(Field::Title, "Will We Ever Know?"), (Field::Artist, "Brothers Keepers"), (Field::Album, "Am I My Brother’s Keeper?"), (Field::AlbumArtist, "Brothers Keepers")]);
+
+        // Schon mit Kennung (früher nur die Kennung geschrieben): wird als Berichtigung angeboten
+        let job = CheckJob { index: 0, path: PathBuf::from("/gibt/es/nicht/02 Keepers.mp3"), fields: TagFields { mb_recording_id: "rec".into(), ..wrong.clone() }, duration: 223.0 };
+        let (item, _) = known(job, Some(c.clone()));
+        assert!(item.state == State::Sure && item.repair && item.write);
+        assert_eq!(item.recording_id, "rec");
+        assert_eq!(item.changes.iter().filter(|c| c.field == Field::Title).count(), 1);
+
+        // Passende Tags mit Kennung und Cover-Albumkennung: nur das Cover wird nachgeholt
+        let fine = TagFields { title: "Will We Ever Know?".into(), artist: "Brothers Keepers".into(), mb_recording_id: "rec".into(), mb_release_id: "rel".into(), ..Default::default() };
+        let (item, detail) = known(CheckJob { index: 0, path: PathBuf::from("/gibt/es/nicht/x.mp3"), fields: fine, duration: 223.0 }, Some(c));
+        assert!(item.cover_only && !item.repair && detail.is_some());
     }
 
     #[test]
