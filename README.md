@@ -102,6 +102,10 @@ written in Rust. Click a folder and start playing: no database, no library impor
   playlists to share the height, and zoom with ⌘/Ctrl +, − and 0 (70 to 150 %). **Full screen** via the button
   in the folder browser, F11 or ⌃⌘F on macOS. On wide monitors, the button next to it moves the
   folder browser from below the decks to their right (folder tree above the track list).
+  On **small screens** such as 1024×600 netbooks, the **compact view** (Settings → Appearance, automatic for low
+  windows) shows flat decks without platters and single-line playlist rows; the folder browser slides in from
+  the left edge over the whole window (click “FOLDERS” or ⌘/Ctrl+B) with a status line of both decks on top,
+  and slides away while you drag a track into a playlist.
   For two monitors, **detach the folder browser into a window of its own**: its position and size are
   remembered, folders sit above or to the left of the tracks, and tracks can be dragged from there onto
   the playlists and decks in the main window (not on Wayland). Closing the window docks it again.
@@ -219,6 +223,8 @@ Code comments are in German; issues and contributions in English are welcome.
 | `FW_DEMO=1` | Spreads the tracks of the start folder across both playlists and starts deck A. |
 | `FW_SCREENSHOT=/path/image.bmp` | Saves a screenshot of the window shortly after start, then quits. |
 | `FW_SIZE=1600x1000` | Window size. |
+| `FW_SCREEN=1024x600` | Pretends the screen has this size (logical pixels), e.g. to check the compact view on small screens. |
+| `FW_SLIDE=1` | Starts the compact view with the folder browser slid in. |
 | `FW_SKIN=anthrazit\|silber\|nacht\|classic\|tag\|neon`, `FW_STEEL=1`, `FW_LITE=1`, `FW_LANG=de\|en` | Look (`FW_LITE` = lightweight display) and language. |
 | `FW_PREVIEW=1` | Pre-listens to the second track in the demo. |
 | `FW_SELECT=1` | Selects tracks 2 to 4 in the folder browser. |

@@ -25,6 +25,8 @@ pub struct MixerModel<'a> {
     pub head_volume: f32,
     pub master_volume: f32,
     pub audio_ok: bool,
+    /// Kompakte Ansicht: flachere Pegelbrücke.
+    pub compact: bool,
     /// Ein eigenes Kopfhörergerät ist offen: dann gibt es „Gerät“ statt „Ausg. 3/4“.
     pub head_device: bool,
     /// EQ je Player in dB und Kill-Tasten, Reihenfolge Bässe, Mitten, Höhen.
@@ -89,7 +91,7 @@ pub fn show_mixer(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerActi
     // Maße wachsen mit der Breite der Mittelspalte
     let w = ui.available_width();
     // Etwas flacher seit der EQ darüber sitzt, damit die Spalte auf kleinen Fenstern nicht überläuft
-    let h = (w * 0.4).clamp(110.0, 180.0);
+    let h = if m.compact { (w * 0.3).clamp(70.0, 90.0) } else { (w * 0.4).clamp(110.0, 180.0) };
     let (rect, _) = ui.allocate_exact_size(vec2(w, h + 18.0), Sense::hover());
     let led_w = (w * 0.055).clamp(14.0, 24.0);
     let bar = Rect::from_min_size(rect.min, vec2(w, h));

@@ -37,6 +37,19 @@ const PLAYLIST_MIN: f32 = 150.0;
 const ZOOM_MIN: f32 = 0.7;
 const ZOOM_MAX: f32 = 1.5;
 const ZOOM_STEP: f32 = 0.1;
+/// Kleinstes Fenster bei Zoom 1 in Punkten; auf kleineren Bildschirmen höchstens so groß wie der Bildschirm.
+const MIN_WINDOW: egui::Vec2 = egui::vec2(1100.0, 620.0);
+/// Kleinstes Fenster, solange die kompakte Ansicht möglich ist (Netbook 1024×600 ohne Zoom).
+const MIN_WINDOW_COMPACT: egui::Vec2 = egui::vec2(1000.0, 480.0);
+/// Unter dieser Fensterhöhe (Punkte) schaltet „Kompakte Ansicht: Automatisch“ ein.
+const COMPACT_AUTO_H: f32 = 720.0;
+/// Breite der Leiste „ORDNER“ am linken Rand und Dauer des Hereingleitens (kompakte Ansicht).
+const SLIDE_STRIP_W: f32 = 24.0;
+const SLIDE_SECS: f32 = 0.25;
+/// Höhe der Statuszeile über dem eingeschobenen Ordnerbereich.
+const SLIDE_STATUS_H: f32 = 26.0;
+/// So viel Bildschirmhöhe bleibt für Fensterleiste und Taskleiste frei (logische Pixel).
+const SCREEN_RESERVE_H: f32 = 60.0;
 /// So viele Sekunden vor Titelende beginnt der Rahmen eines laufenden Players zu blinken.
 const END_WARNING_SECS: f64 = 15.0;
 /// In den letzten Sekunden blinkt er doppelt so schnell.
@@ -186,6 +199,12 @@ struct ClipView {
 pub struct FadeWerkDjApp {
     audio: Option<AudioOut>,
     audio_error: Option<String>,
+    /// Zuletzt gesetztes Mindestfenster in Punkten (`fit_screen`).
+    min_window: Option<egui::Vec2>,
+    /// Kompakte Ansicht: Ordnerbereich eingeschoben (gleitet von links über die ganze Oberfläche).
+    browser_slid: bool,
+    /// Beim Ziehen eines Titels zurückgeglitten; nach dem Ablegen kommt er wieder herein.
+    browser_slid_for_drag: bool,
     head_audio: Option<HeadOut>,
     ctl: Controller,
     lib: Library,
@@ -357,6 +376,10 @@ impl FadeWerkDjApp {
             audio,
             head_audio: None,
             audio_error: audio_error.clone(),
+            min_window: None,
+            // FW_SLIDE=1 (nur Debug): Ordnerbereich der kompakten Ansicht gleich eingeschoben
+            browser_slid: cfg!(debug_assertions) && std::env::var_os("FW_SLIDE").is_some(),
+            browser_slid_for_drag: false,
             ctl,
             lib,
             decks: Default::default(),
@@ -970,6 +993,7 @@ impl FadeWerkDjApp {
                 theme::apply(ctx);
             }
             SettingsAction::Platters(on) => self.settings.platters = on,
+            SettingsAction::Compact(c) => self.settings.compact = c,
             SettingsAction::Zoom(z) => self.set_zoom(ctx, z),
             // Wirkt erst beim nächsten Start
             SettingsAction::OpenGl(on) => self.settings.opengl = on,
@@ -1123,6 +1147,55 @@ impl FadeWerkDjApp {
             self.save_settings();
             self.save_due = None;
         }
+    }
+
+    /// Mindestfenster an den Bildschirm anpassen (z. B. Netbook mit 1024×600). Ist er kleiner als das
+    /// Layout, wird der Zoom einmalig so gesetzt, dass alles hineinpasst; danach entscheidet der Nutzer.
+    fn fit_screen(&mut self, ctx: &egui::Context) {
+        let zoom = ctx.zoom_factor();
+        // Bildschirm in logischen Pixeln (ohne Zoom), abzüglich Fenster- und Taskleiste
+        let Some(screen) = crate::devtools::fake_screen().or_else(|| ctx.input(|i| i.viewport().monitor_size).map(|m| m * zoom)) else {
+            return;
+        };
+        let screen = screen - egui::vec2(0.0, SCREEN_RESERVE_H);
+        if screen.x < 1.0 || screen.y < 1.0 {
+            return;
+        }
+        // Kleiner als das normale Layout (Netbook): einmal auf Vollbild hinweisen, das spart Fenster- und Taskleiste
+        let small = screen.x < MIN_WINDOW.x || screen.y < MIN_WINDOW.y;
+        if small && !self.settings.fullscreen_hinted && !ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)) {
+            self.settings.fullscreen_hinted = true;
+            let now = ctx.input(|i| i.time);
+            let text = if cfg!(target_os = "macos") {
+                tr("Kleiner Bildschirm: Vollbild (Ctrl+⌘+F) schafft mehr Platz. Die Ordner gleiten mit ⌘B von links herein.")
+            } else {
+                tr("Kleiner Bildschirm: Vollbild (F11) schafft mehr Platz. Die Ordner gleiten mit Strg+B von links herein.")
+            };
+            self.notice = Some((text.to_owned(), now + 12.0));
+            self.save_due = Some(now + 1.0);
+        }
+        let min_window = if self.settings.compact == Some(false) { MIN_WINDOW } else { MIN_WINDOW_COMPACT };
+        if !self.settings.zoom_fitted && (screen.x < min_window.x || screen.y < min_window.y) {
+            self.settings.zoom_fitted = true;
+            let fit = (screen.x / min_window.x).min(screen.y / min_window.y);
+            let fit = ((fit * 20.0).floor() / 20.0).max(ZOOM_MIN);
+            if fit < zoom {
+                log::info!("Kleiner Bildschirm ({:.0}×{:.0}): Zoom {:.0} %", screen.x, screen.y + SCREEN_RESERVE_H, fit * 100.0);
+                self.set_zoom(ctx, fit);
+                return;
+            }
+            self.save_due = Some(ctx.input(|i| i.time) + 1.0);
+        }
+        let min = min_window.min(screen) / zoom;
+        if self.min_window != Some(min) {
+            self.min_window = Some(min);
+            ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(min));
+        }
+    }
+
+    /// Kompakte Ansicht: fest eingestellt oder (automatisch) bei niedrigem Fenster.
+    fn compact(&self, ctx: &egui::Context) -> bool {
+        self.settings.compact.unwrap_or_else(|| ctx.content_rect().height() < COMPACT_AUTO_H)
     }
 
     /// Zoom der ganzen Oberfläche setzen (begrenzt, auf 5 % gerundet) und merken.
@@ -2743,6 +2816,62 @@ fn end_warning(ui: &egui::Ui, rect: egui::Rect, m: &DeckModel<'_>) {
     ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
 }
 
+/// Was ein Player gerade spielt, für die Statuszeile des eingeschobenen Ordnerbereichs.
+struct SlideStatus {
+    title: String,
+    left: f64,
+    playing: bool,
+}
+
+/// Senkrechte Leiste „ORDNER“ am linken Rand der kompakten Ansicht; Klick schiebt den Ordnerbereich ein oder aus.
+fn slide_strip(ui: &mut egui::Ui, open: bool) -> egui::Response {
+    let rect = ui.max_rect();
+    let resp = ui.interact(rect, ui.id().with("browser_strip"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+    let p = ui.painter();
+    if resp.hovered() {
+        p.rect_filled(rect, 0.0, theme::row_hover());
+    }
+    let color = if open { theme::select_accent() } else if resp.hovered() { theme::ink() } else { theme::dim() };
+    // Von unten nach oben lesbar, mittig in der Leiste
+    let galley = p.layout_no_wrap(tr("ORDNER").to_owned(), crate::fonts::bold(13.0), color);
+    let size = galley.size();
+    let pos = pos2(rect.center().x - size.y / 2.0, rect.center().y + size.x / 2.0);
+    p.add(egui::epaint::TextShape::new(pos, galley, color).with_angle(-std::f32::consts::FRAC_PI_2));
+    let tip = if cfg!(target_os = "macos") { tr("Ordner einblenden oder ausblenden (⌘B)") } else { tr("Ordner einblenden oder ausblenden (Strg+B)") };
+    resp.on_hover_text(tip)
+}
+
+/// Statuszeile oben im eingeschobenen Ordnerbereich: Titel und Restzeit beider Player, kurz vor Titelende
+/// blinkend wie der Rahmen des Players (der jetzt verdeckt ist).
+fn slide_status_line(ui: &mut egui::Ui, status: &[SlideStatus; 2]) {
+    let now = ui.input(|i| i.time);
+    ui.horizontal(|ui| {
+        let half = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
+        for (d, s) in status.iter().enumerate() {
+            let (rect, _) = ui.allocate_exact_size(vec2(half, SLIDE_STATUS_H), Sense::hover());
+            let p = ui.painter();
+            crate::hw::well(p, rect, 4.0);
+            let warn = s.playing && s.left > 0.0 && s.left <= END_WARNING_SECS;
+            let period = if s.left <= END_WARNING_FAST_SECS { 0.4 } else { 0.8 };
+            if warn {
+                if now % period < period * 0.6 {
+                    crate::hw::alert_border(p, rect, theme::cue());
+                }
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+            }
+            let color = theme::deck_color(d);
+            p.text(pos2(rect.left() + 10.0, rect.center().y), Align2::LEFT_CENTER, theme::deck_letter(d), crate::fonts::bold(15.0), color);
+            let time = if s.left > 0.0 { format!("-{}", deck_ui::fmt_time(s.left)) } else { String::new() };
+            let time_w = 56.0;
+            crate::hw::lcd_text(p, pos2(rect.right() - 8.0, rect.center().y), Align2::RIGHT_CENTER, &time, 13.0, if warn { theme::cue() } else { color });
+            let mut job = egui::text::LayoutJob::single_section(s.title.clone(), egui::TextFormat::simple(crate::fonts::bold(13.0), theme::well_ink()));
+            job.wrap = egui::text::TextWrapping { max_width: (rect.width() - 36.0 - time_w).max(1.0), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
+            let galley = p.layout_job(job);
+            p.galley(pos2(rect.left() + 30.0, rect.center().y - galley.size().y / 2.0), galley, theme::well_ink());
+        }
+    });
+}
+
 fn panel_frame(ui: &egui::Ui) -> Frame {
     crate::hw::panel(ui.painter(), ui.max_rect().shrink(3.0));
     Frame::new().inner_margin(Margin::same(15))
@@ -2829,6 +2958,7 @@ impl eframe::App for FadeWerkDjApp {
         let dt = (now - self.last_time).clamp(0.0, 0.1) as f32;
         self.last_time = now;
 
+        self.fit_screen(&ctx);
         self.fx_keys(&ctx, now);
         let levels = self.ctl.shared.take_levels();
         for (m, l) in self.meters.iter_mut().zip(levels) {
@@ -2856,7 +2986,38 @@ impl eframe::App for FadeWerkDjApp {
             self.lib.scan(token, dirs);
         }
 
-        // Ordnerbrowser unten oder rechts
+        // Ordnerbrowser unten oder rechts; in der kompakten Ansicht gleitet er von links über die Oberfläche
+        let compact = self.compact(&ctx);
+        let slide = compact && !self.settings.browser_detached;
+        if slide {
+            // Ein Titel wird gezogen: Player und Playlists freigeben, nach dem Ablegen wieder herein
+            let dragging_item = egui::DragAndDrop::has_any_payload(&ctx);
+            if self.browser_slid && dragging_item {
+                self.browser_slid = false;
+                self.browser_slid_for_drag = true;
+            } else if self.browser_slid_for_drag && !dragging_item {
+                self.browser_slid_for_drag = false;
+                self.browser_slid = true;
+            }
+            // ⌘B / Strg+B schiebt ein und aus, Esc schiebt zurück (nicht beim Tippen)
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::B)) {
+                self.browser_slid = !self.browser_slid;
+            }
+            if self.browser_slid && ctx.memory(|m| m.focused().is_none()) && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+                self.browser_slid = false;
+            }
+        } else {
+            self.browser_slid = false;
+            self.browser_slid_for_drag = false;
+        }
+        // Statuszeile im eingeschobenen Bereich: was läuft und wie lange noch
+        let slide_status: [SlideStatus; 2] = std::array::from_fn(|d| {
+            let st = &self.ctl.shared.decks[d];
+            let v = &self.decks[d];
+            let title = if v.loaded_id == 0 { tr("Kein Titel geladen").to_owned() } else { v.meta.as_ref().map_or_else(String::new, |m| m.title.clone()) };
+            SlideStatus { title, left: st.duration_secs() - st.position_secs(), playing: st.is_playing() }
+        });
+        let mut slid = self.browser_slid;
         let preview_st = &self.ctl.shared.decks[PREVIEW];
         let bctx = BrowserCtx {
             metas: &self.metas,
@@ -2957,6 +3118,40 @@ impl eframe::App for FadeWerkDjApp {
             });
             detach_closed = closed;
             0.0
+        } else if slide {
+            // Leiste „ORDNER“ am linken Rand; der Bereich gleitet darüber hinaus über die ganze Oberfläche
+            egui::Panel::left("browser_strip")
+                .resizable(false)
+                .exact_size(SLIDE_STRIP_W)
+                .show_separator_line(false)
+                .frame(Frame::new().fill(theme::panel()).stroke(Stroke::new(1.0, theme::line())))
+                .show(ui, |ui| {
+                    if slide_strip(ui, slid).clicked() {
+                        slid = !slid;
+                    }
+                });
+            let t = ctx.animate_bool_with_time(egui::Id::new("browser_slide"), slid, if theme::lite() { 0.0 } else { SLIDE_SECS });
+            if t > 0.0 {
+                let full = ctx.content_rect();
+                let area = Rect::from_min_max(pos2(full.left() + SLIDE_STRIP_W, full.top()), full.max);
+                let x = area.left() - (1.0 - t) * area.width();
+                egui::Area::new(egui::Id::new("browser_slide_area")).fixed_pos(pos2(x, area.top())).order(egui::Order::Middle).constrain(false).show(&ctx, |ui| {
+                    ui.set_clip_rect(area);
+                    let rect = Rect::from_min_size(pos2(x, area.top()), area.size());
+                    // Fängt Klicks ab, damit nichts darunter reagiert
+                    ui.allocate_rect(rect, Sense::click_and_drag());
+                    ui.painter().rect_filled(rect, 0.0, theme::panel());
+                    // Kante beim Hereingleiten sichtbar machen
+                    ui.painter().vline(rect.right() - 0.5, rect.y_range(), Stroke::new(1.0, theme::line()));
+                    // Statuszeile oben, darunter der Browser. Die Zeile wird danach gezeichnet, weil der Browser
+                    // (Stahl, Alu) seine Oberfläche etwas über den eigenen Rand hinaus malt
+                    let inner = rect.shrink(10.0);
+                    let (status_rect, browser_rect) = inner.split_top_bottom_at_y(inner.top() + SLIDE_STATUS_H);
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(browser_rect.with_min_y(browser_rect.top() + 6.0)), |ui| show_browser(ui));
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(status_rect), |ui| slide_status_line(ui, &slide_status));
+                });
+            }
+            0.0
         } else if side {
             let browser_w = if self.settings.browser_width > 0.0 { self.settings.browser_width } else { (total_w * 0.27).max(SIDE_BROWSER_MIN) };
             egui::Panel::right("browser_side")
@@ -2997,7 +3192,7 @@ impl eframe::App for FadeWerkDjApp {
         self.cross.publish(&ctx);
         let content = ctx.content_rect();
         let sizes = (side, if side { content.width() } else { content.height() }.round(), size.round());
-        let dragging = dragging_edge(&ctx) && !self.settings.browser_detached;
+        let dragging = dragging_edge(&ctx) && !self.settings.browser_detached && !slide;
         let last = self.last_sizes;
         if dragging && last.0 == sizes.0 && last.1 == sizes.1 && last.2 > 0.0 && (last.2 - sizes.2).abs() >= 1.0 {
             if side {
@@ -3058,6 +3253,7 @@ impl eframe::App for FadeWerkDjApp {
                     key_fits: key_ref.is_some_and(|(r, rk)| r != d && deck_keys[d].0.is_some_and(|k| k.compatible(rk))),
                     scratching: v.scratching,
                     platter: self.settings.platters,
+                    compact,
                 }
             })
             .collect();
@@ -3071,6 +3267,7 @@ impl eframe::App for FadeWerkDjApp {
             head_volume: self.head_volume,
             master_volume: self.master_volume,
             audio_ok: self.audio_error.is_none(),
+            compact,
             head_device: self.head_audio.is_some(),
             eq_db: self.eq_db,
             eq_kill: self.eq_kill,
@@ -3124,7 +3321,7 @@ impl eframe::App for FadeWerkDjApp {
             let avail_h = ui.available_height();
             let deck_max = DECK_ROW_HEIGHT * deck_ui::deck_scale(deck_inner);
             let wanted = if deck_height_setting > 0.0 { deck_height_setting } else { deck_max.min(avail_h * 0.58) };
-            let deck_h = wanted.min(deck_max).min(avail_h - PLAYLIST_MIN).max(DECK_ROW_MIN);
+            let deck_h = if compact { deck_ui::COMPACT_ROW } else { wanted.min(deck_max).min(avail_h - PLAYLIST_MIN).max(DECK_ROW_MIN) };
             StripBuilder::new(ui).size(Size::remainder()).size(Size::exact(center_w)).size(Size::remainder()).horizontal(|mut cols| {
                 for side in [0usize, 2] {
                     let d = side / 2;
@@ -3162,7 +3359,7 @@ impl eframe::App for FadeWerkDjApp {
                                 split_bounds[d].1 = ui.max_rect().top();
                                 panel_frame(ui).show(ui, |ui| {
                                     ui.set_min_size(ui.available_size());
-                                    let info = playlist_ui::TrackInfo { metas, bpms, keys: keys_map, reference: key_ref_track, harmonic };
+                                    let info = playlist_ui::TrackInfo { metas, bpms, keys: keys_map, reference: key_ref_track, harmonic, compact };
                                     playlist_ui::show(ui, d, &playlists[d], has[d], playing[d], preview_path, &info, sketches, &editor_audio, &mut pl_actions[d]);
                                 });
                             });
@@ -3171,7 +3368,7 @@ impl eframe::App for FadeWerkDjApp {
                 }
             });
             // Griff zwischen Player und Playlist: ziehen ändert die Höhe der Player, Doppelklick = automatisch
-            for (d, (cell, list_top)) in split_bounds.iter().enumerate() {
+            for (d, (cell, list_top)) in split_bounds.iter().enumerate().filter(|_| !compact) {
                 let y = (cell.bottom() + list_top) / 2.0;
                 let rect = Rect::from_min_max(pos2(cell.left() + 6.0, y - 4.0), pos2(cell.right() - 6.0, y + 4.0));
                 let resp = ui.interact(rect, egui::Id::new(("deck_split", d)), Sense::click_and_drag()).on_hover_cursor(egui::CursorIcon::ResizeRow);
@@ -3188,6 +3385,7 @@ impl eframe::App for FadeWerkDjApp {
             }
         });
         drop(decks_models);
+        self.browser_slid = slid;
         if let Some(h) = split_change {
             self.settings.deck_height = h;
             self.save_due = Some(now + 1.0);

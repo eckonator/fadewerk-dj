@@ -28,6 +28,8 @@
 //!   `text:abc` tippt Text.
 //! - `FW_MINIMIZE=1` minimiert das Fenster kurz nach dem Start (Abspiel-Logik ohne sichtbares Fenster prüfen).
 //! - `FW_SIZE=2400x1350` setzt die Fenstergröße (in `main.rs`).
+//! - `FW_SLIDE=1` startet in der kompakten Ansicht mit eingeschobenem Ordnerbereich (in `app.rs`).
+//! - `FW_SCREEN=1024x600` täuscht einen so großen Bildschirm vor (logische Pixel, für `fit_screen` in app.rs).
 //! - `FW_UPDATE_ASK=1` zeigt die Frage nach der Update-Prüfung; `FW_UPDATE_URL=file:///…json` prüft gegen eine
 //!   eigene Release-Antwort (in `app.rs` bzw. `update.rs`).
 //! - Bei diesen Schaltern wird nichts gespeichert; `FW_PERSIST=1` erzwingt Speichern (Test mit anderem `HOME`).
@@ -44,6 +46,13 @@ use crate::theme::SkinId;
 const SCREENSHOT_AFTER_FRAMES: u64 = 240;
 /// Mindestwartezeit, damit kurze Hinweise (3 s) wieder verschwunden sind.
 const SCREENSHOT_AFTER_SECS: f32 = 4.5;
+
+/// Vorgetäuschte Bildschirmgröße aus `FW_SCREEN` (nur Debug).
+pub fn fake_screen() -> Option<egui::Vec2> {
+    let s = std::env::var("FW_SCREEN").ok().filter(|_| cfg!(debug_assertions))?;
+    let (w, h) = s.split_once('x')?;
+    Some(egui::vec2(w.parse().ok()?, h.parse().ok()?))
+}
 
 /// Wartezeit bis zum Bildschirmfoto, mit `FW_SHOT_SECS` verlängerbar (etwa um eine Überblendung abzuwarten).
 fn shot_secs() -> f32 {
@@ -118,7 +127,7 @@ impl DevTools {
     pub fn isolated(&self) -> bool {
         // FW_PERSIST=1 erzwingt Speichern trotzdem, etwa zum Testen mit einem anderen HOME
         std::env::var_os("FW_PERSIST").is_none()
-            && (self.screenshot.is_some() || self.demo || self.skin.is_some() || self.lang.is_some() || self.steel || self.lite || self.settings_tab.is_some())
+            && (self.screenshot.is_some() || self.demo || self.skin.is_some() || self.lang.is_some() || self.steel || self.lite || self.settings_tab.is_some() || fake_screen().is_some())
     }
 
     /// Speist die Mausbewegung aus `FW_POINTER` ein (aufgerufen vor jedem Bild).

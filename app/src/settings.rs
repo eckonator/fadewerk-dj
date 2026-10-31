@@ -31,6 +31,8 @@ pub struct Settings {
     pub brushed_steel: bool,
     /// Plattenteller samt Tonarm in den Playern zeigen.
     pub platters: bool,
+    /// Kompakte Ansicht für kleine Bildschirme: `None` = automatisch nach Fensterhöhe, sonst fest an/aus.
+    pub compact: Option<bool>,
     /// Höhe des Ordnerbrowsers in Punkten, 0 = automatisch (ein knappes Drittel des Fensters).
     pub browser_height: f32,
     /// Ordnerbrowser rechts neben Playern und Playlists statt darunter (für breite Monitore).
@@ -110,6 +112,10 @@ pub struct Settings {
     pub opengl: bool,
     /// Zoom der ganzen Oberfläche (⌘/Strg + Plus/Minus), 1 = normal.
     pub ui_zoom: f32,
+    /// Auf einem zu kleinen Bildschirm wurde der Zoom schon einmal passend gesetzt (danach nicht mehr ungefragt).
+    pub zoom_fitted: bool,
+    /// Auf einem kleinen Bildschirm wurde schon einmal auf Vollbild hingewiesen.
+    pub fullscreen_hinted: bool,
     /// Höhe der Player-Zeile in Punkten, vom Nutzer gezogen; 0 = automatisch.
     pub deck_height: f32,
     /// Beim Start bei GitHub nach einer neuen Version fragen; `None` = noch nicht gefragt.
@@ -137,6 +143,7 @@ impl Default for Settings {
             skin: SkinId::Anthrazit,
             brushed_steel: false,
             platters: true,
+            compact: None,
             browser_height: 0.0,
             browser_side: false,
             browser_width: 0.0,
@@ -179,6 +186,8 @@ impl Default for Settings {
             lite_ui: false,
             opengl: false,
             ui_zoom: 1.0,
+            zoom_fitted: false,
+            fullscreen_hinted: false,
             deck_height: 0.0,
             update_check: None,
             online_lookup: false,

@@ -44,6 +44,8 @@ pub enum SettingsAction {
     Brushed(bool),
     Lite(bool),
     Platters(bool),
+    /// Kompakte Ansicht: `None` = automatisch.
+    Compact(Option<bool>),
     OpenGl(bool),
     UpdateCheck(bool),
     OnlineLookup(bool),
@@ -706,6 +708,25 @@ fn look_tab(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction
     }
     ui.label(
         RichText::new(tr("Ohne Plattenteller bekommen die Bedienelemente mehr Platz. Scratchen geht weiter in der Wellenform."))
+            .size(11.5)
+            .color(theme::dim()),
+    );
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(tr("Kompakte Ansicht")).size(14.0));
+        ui.add_space(6.0);
+        let font = egui::FontId::proportional(13.0);
+        for (value, label) in [(None, tr("Automatisch")), (Some(true), tr("An")), (Some(false), tr("Aus"))] {
+            let on = c.settings.compact == value;
+            let w = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), theme::ink()).size().x + 24.0;
+            let look = if on { crate::hw::Look::Color(theme::select_accent()) } else { crate::hw::Look::Plain };
+            if crate::hw::button(ui, vec2(w, 26.0), label, font.clone(), look, on, true).clicked() {
+                out.push(SettingsAction::Compact(value));
+            }
+        }
+    });
+    ui.label(
+        RichText::new(tr("Für kleine Bildschirme wie Netbooks: flache Player ohne Teller, die Ordner gleiten bei Bedarf von links herein (⌘B bzw. Strg+B). Automatisch schaltet sie bei niedrigem Fenster ein."))
             .size(11.5)
             .color(theme::dim()),
     );

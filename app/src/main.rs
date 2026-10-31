@@ -115,7 +115,8 @@ fn run(renderer: eframe::Renderer, settings: settings::Settings, start_dir: Opti
             // Wayland sucht Icon und Namen über die .desktop-Datei mit diesem Namen (assets/fadewerk-dj.desktop)
             .with_app_id("fadewerk-dj")
             .with_inner_size(size)
-            .with_min_inner_size([1100.0, 620.0])
+            // Vorläufig; sobald der Bildschirm bekannt ist, setzt die App ihr Mindestmaß (`fit_screen` in app.rs)
+            .with_min_inner_size([640.0, 400.0])
             .with_icon(eframe::icon_data::from_png_bytes(include_bytes!("../../assets/icon-256.png")).unwrap_or_default()),
         renderer,
         wgpu_options: wgpu_options(),

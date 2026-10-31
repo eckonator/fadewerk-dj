@@ -91,6 +91,8 @@ pub fn demo_open_editor(ctx: &egui::Context, list: usize, index: usize, path: Pa
 type Marked = Selection<(usize, PathBuf)>;
 
 const ROW_H: f32 = 44.0;
+/// Zeilenhöhe der kompakten Ansicht (Titel und Interpret in einer Zeile).
+const ROW_H_COMPACT: f32 = 30.0;
 /// Höhe von Suchfeld, „Sortieren“ und „Leeren“ in der Kopfzeile.
 const HEADER_CTRL_H: f32 = theme::CTRL_H;
 const ROW_GAP: f32 = 2.0;
@@ -104,6 +106,8 @@ pub struct TrackInfo<'a> {
     pub reference: Option<(Camelot, &'a Path)>,
     /// Zustand des Auswahlfelds „Sortieren“ (gilt für beide Playlists).
     pub harmonic: Harmonic,
+    /// Kompakte Ansicht: einzeilige, flachere Zeilen (Titel · Interpret).
+    pub compact: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -190,6 +194,9 @@ pub fn show(
     // Ohne Feld: passt es mit Lupe statt Feld, sonst fällt zusätzlich die Titelzahl weg (steht dann im Tooltip)
     let lupe_w = theme::ICON_BTN_W;
     let show_count = !narrow || avail_w >= left_w + clear_w + SORT_W - 18.0 + lupe_w + 4.0 * gap;
+    // Sehr schmal (kompakte Ansicht auf Netbooks): „Sortieren“ schrumpft auf sein Pfeilchen
+    let left_no_count = left_w - text_w(&count, egui::TextStyle::Body.resolve(ui.style())) - gap;
+    let tiny = narrow && avail_w < left_no_count + clear_w + SORT_W - 18.0 + lupe_w + 4.0 * gap;
     let open_id = egui::Id::new(("pl_search_open", list));
     let field_id = egui::Id::new(("pl_search_field", list));
     let query_active = ui.data(|d| d.get_temp::<String>(egui::Id::new(("pl_search", list)))).is_some_and(|q| !q.trim().is_empty());
@@ -233,8 +240,9 @@ pub fn show(
         // Ein Auswahlfeld für beide Sortierarten spart Platz in der Kopfzeile; „Rückgängig“ nimmt die letzte
         // Sortierung zurück (gilt für beide Playlists)
         let analyzing = key_info.harmonic == Harmonic::Analyzing;
-        let shown = if analyzing { tr("Analysiert …") } else { tr("Sortieren") };
-        let combo = egui::ComboBox::from_id_salt(("pl_sort", list)).selected_text(shown).width(if narrow { SORT_W - 44.0 } else { SORT_W - 26.0 }).show_ui(ui, |ui| {
+        let shown = if tiny { "" } else if analyzing { tr("Analysiert …") } else { tr("Sortieren") };
+        let combo_w = if tiny { 14.0 } else if narrow { SORT_W - 44.0 } else { SORT_W - 26.0 };
+        let combo = egui::ComboBox::from_id_salt(("pl_sort", list)).selected_text(shown).width(combo_w).show_ui(ui, |ui| {
             let harmonic = ui
                 .add_enabled(!analyzing && pl.upcoming() > 0, egui::Button::selectable(false, tr("Harmonisch (Tonart, Tempo)")))
                 .on_hover_text(tr("Ordnet die kommenden Titel beider Playlists so, dass jeder Übergang im Wechsel A – B – A passt: zuerst nach Tonart, dann nach Tempo. Fehlende Tonarten werden vorher ermittelt."));
@@ -259,6 +267,8 @@ pub fn show(
         });
         if analyzing {
             combo.response.on_hover_text(tr("Fehlende Tonarten werden ermittelt, danach wird sortiert."));
+        } else if tiny {
+            combo.response.on_hover_text(tr("Sortieren"));
         }
         // Schnellsuche: springt zum ersten Treffer ab dem geladenen Titel, Enter zum nächsten, ⇧Enter zurück
         if let Some((fill, focus)) = search {
@@ -419,7 +429,8 @@ pub fn show(
         ui.spacing_mut().item_spacing.y = ROW_GAP;
         // Nur die sichtbaren Zeilen bauen; die übrigen sind ein leerer Block gleicher Höhe
         let spacing = ui.spacing().item_spacing.y;
-        let stride = ROW_H + spacing;
+        let row_h = if key_info.compact { ROW_H_COMPACT } else { ROW_H };
+        let stride = row_h + spacing;
         let n = pl.entries.len();
         let top = ui.cursor().top();
         let clip = ui.clip_rect();
@@ -438,7 +449,7 @@ pub fn show(
         }
         .min(n);
         if let Some(c) = pl.current.filter(|&c| c < n) {
-            let rect = Rect::from_min_size(pos2(ui.cursor().left(), y_of(c)), vec2(width, ROW_H));
+            let rect = Rect::from_min_size(pos2(ui.cursor().left(), y_of(c)), vec2(width, row_h));
             current_top = Some(rect.top());
             if scroll_to_current {
                 // egui lässt beim Scrollen einen Zeilenabstand frei; ohne Ausgleich lugt die vorige Zeile hervor
@@ -446,13 +457,13 @@ pub fn show(
             }
         }
         if let (Some(c), Some(align)) = (cursor, scroll_to_cursor) {
-            ui.scroll_to_rect(Rect::from_min_size(pos2(ui.cursor().left(), y_of(c)), vec2(width, ROW_H)), align);
+            ui.scroll_to_rect(Rect::from_min_size(pos2(ui.cursor().left(), y_of(c)), vec2(width, row_h)), align);
         }
         if first > 0 {
             ui.allocate_space(vec2(width, y_of(first) - top - spacing));
         }
         for (i, path) in pl.entries.iter().enumerate().take(last).skip(first) {
-            let (rect, resp) = ui.allocate_exact_size(vec2(width, ROW_H), Sense::click_and_drag());
+            let (rect, resp) = ui.allocate_exact_size(vec2(width, row_h), Sense::click_and_drag());
             let fallback;
             let m = match metas.get(path) {
                 Some(m) => m,
@@ -496,8 +507,20 @@ pub fn show(
             let text_right = rect.right() - if fade.is_empty() { 168.0 } else { 202.0 };
             let clip = Rect::from_min_max(pos2(text_left, rect.top()), pos2(text_right, rect.bottom()));
             let pc = p.with_clip_rect(clip);
-            pc.text(pos2(text_left, rect.top() + 5.0), Align2::LEFT_TOP, &m.title, fonts::bold(14.0), theme::ink().gamma_multiply(alpha));
-            pc.text(pos2(text_left, rect.bottom() - 5.0), Align2::LEFT_BOTTOM, &m.artist, fonts::list(12.0), theme::dim().gamma_multiply(alpha));
+            if key_info.compact {
+                // Einzeilig: Titel, dahinter schwächer der Interpret
+                let mut job = egui::text::LayoutJob::default();
+                job.append(&m.title, 0.0, egui::TextFormat::simple(fonts::bold(13.0), theme::ink().gamma_multiply(alpha)));
+                if !m.artist.is_empty() {
+                    job.append(&format!(" · {}", m.artist), 0.0, egui::TextFormat::simple(fonts::list(11.5), theme::dim().gamma_multiply(alpha)));
+                }
+                job.wrap = egui::text::TextWrapping { max_width: (text_right - text_left).max(1.0), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
+                let galley = pc.layout_job(job);
+                pc.galley(pos2(text_left, rect.center().y - galley.size().y / 2.0), galley, theme::ink());
+            } else {
+                pc.text(pos2(text_left, rect.top() + 5.0), Align2::LEFT_TOP, &m.title, fonts::bold(14.0), theme::ink().gamma_multiply(alpha));
+                pc.text(pos2(text_left, rect.bottom() - 5.0), Align2::LEFT_BOTTOM, &m.artist, fonts::list(12.0), theme::dim().gamma_multiply(alpha));
+            }
             // Tonart als Plakette in der Farbe des Camelot-Rades; passt sie zum Titel auf Sendung, grün umrandet
             if let Some(key) = crate::browser::key_of(key_info.metas, key_info.keys, path) {
                 let pill = Rect::from_center_size(pos2(rect.right() - 104.0, rect.center().y), vec2(32.0, 18.0));
@@ -664,7 +687,7 @@ pub fn show(
         // Freie Fläche unter den Titeln: Ablegen ans Ende
         // So hoch, dass auch einer der letzten Titel ganz nach oben rücken kann
         let below_current = current_top.map_or(0.0, |top| top + view_h - ui.cursor().top());
-        let rest = ui.available_height().max(below_current).max(ROW_H);
+        let rest = ui.available_height().max(below_current).max(row_h);
         let (rect, resp) = ui.allocate_exact_size(vec2(width, rest), Sense::hover());
         if pl.entries.is_empty() {
             ui.painter().text(rect.center_top() + vec2(0.0, 30.0), Align2::CENTER_CENTER, tr("Leer. Titel aus dem Ordner hierher ziehen."), FontId::proportional(12.5), theme::faint());

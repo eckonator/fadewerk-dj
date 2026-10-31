@@ -81,6 +81,8 @@ pub struct DeckModel<'a> {
     pub scratching: bool,
     /// Plattenteller und Tonarm zeigen (Einstellung); ohne sie bekommt das Bedienfeld den Platz.
     pub platter: bool,
+    /// Kompakte Ansicht für kleine Bildschirme: flach, ohne Teller (`show_compact`).
+    pub compact: bool,
     /// Gerade ausgeworfene Platte, die noch aus dem Player gleitet.
     pub leaving: Option<Leaving<'a>>,
 }
@@ -143,7 +145,16 @@ const CONTROLS_MAX_W_NO_PLATTER: f32 = 440.0;
 /// Kleinste Vergrößerung: so weit schrumpft ein Player auf niedrigen Bildschirmen.
 const MIN_SCALE: f32 = 0.75;
 
+/// Höhe der Player-Zeile in der kompakten Ansicht (Inhalt plus Rahmen des Panels).
+pub const COMPACT_ROW: f32 = 214.0;
+/// Vergrößerung der kompakten Ansicht für Kopfzeile und Schriften.
+const COMPACT_SCALE: f32 = 0.85;
+
 pub fn show(ui: &mut egui::Ui, m: &DeckModel<'_>, out: &mut Vec<DeckAction>) {
+    if m.compact {
+        show_compact(ui, m, out);
+        return;
+    }
     // Nicht größer, als die Höhe erlaubt: bei 1,0 braucht der Inhalt etwa 390 Punkte
     let scale = deck_scale(ui.available_width()).min((ui.available_height() / 390.0).max(MIN_SCALE));
     SCALE.with(|s| s.set(scale));
@@ -207,6 +218,111 @@ pub fn show(ui: &mut egui::Ui, m: &DeckModel<'_>, out: &mut Vec<DeckAction>) {
     tonearm(ui, m, plat_rect, out);
     ui.scope_builder(UiBuilder::new().max_rect(ctrl_rect), |ui| controls(ui, m, color, out));
     ui.scope_builder(UiBuilder::new().max_rect(pitch_rect), |ui| pitch(ui, m, out));
+}
+
+/// Flacher Player für kleine Bildschirme: Kopfzeile, darunter Wellenform, Übersicht mit Zeiten und zwei
+/// Tastenreihen; außen (bei B links) eine Spalte mit Filter und Pitch über die ganze Höhe.
+fn show_compact(ui: &mut egui::Ui, m: &DeckModel<'_>, out: &mut Vec<DeckAction>) {
+    SCALE.with(|s| s.set(COMPACT_SCALE));
+    let color = theme::deck_color(m.deck);
+    let mirrored = m.deck == 1;
+    let enabled = m.has_track;
+    let gap = 5.0;
+
+    header(ui, m, color, out);
+    ui.add_space(4.0);
+    let avail = ui.available_rect_before_wrap();
+    let (wave_h, over_h, row_a, row_b) = (52.0, 16.0, 32.0, 24.0);
+    let total = wave_h + over_h + row_a + row_b + 3.0 * gap;
+    let pitch_w = 50.0;
+    let (main, pitch_rect) = if !mirrored {
+        let pr = Rect::from_min_size(pos2(avail.right() - pitch_w, avail.top()), vec2(pitch_w, total));
+        (Rect::from_min_max(avail.min, pos2(pr.left() - 8.0, avail.top() + total)), pr)
+    } else {
+        let pr = Rect::from_min_size(avail.min, vec2(pitch_w, total));
+        (Rect::from_min_max(pos2(pr.right() + 8.0, avail.top()), pos2(avail.right(), avail.top() + total)), pr)
+    };
+    ui.allocate_rect(Rect::from_min_max(avail.min, pos2(avail.right(), avail.top() + total)), Sense::hover());
+    ui.scope_builder(UiBuilder::new().max_rect(pitch_rect), |ui| pitch(ui, m, out));
+    ui.scope_builder(UiBuilder::new().max_rect(main), |ui| {
+        ui.spacing_mut().item_spacing = vec2(gap, gap);
+        let w = ui.available_width();
+        waveform_sized(ui, m, color, wave_h, out);
+        // Übersicht mit gespielter Zeit links und Restzeit rechts
+        ui.horizontal(|ui| {
+            let time_w = 46.0;
+            let (lr, _) = ui.allocate_exact_size(vec2(time_w, over_h), Sense::hover());
+            hw::lcd_text(ui.painter(), lr.left_center(), Align2::LEFT_CENTER, &fmt_time(m.position), 12.0, theme::ink());
+            ui.scope(|ui| {
+                ui.set_width(w - 2.0 * (time_w + gap));
+                overview_sized(ui, m, color, over_h, out);
+            });
+            let (rr, _) = ui.allocate_exact_size(vec2(time_w, over_h), Sense::hover());
+            hw::lcd_text(ui.painter(), rr.right_center(), Align2::RIGHT_CENTER, &format!("-{}", fmt_time(m.duration - m.position)), 12.0, color);
+        });
+        // CUE, Play/Pause, Zurück, Stopp, Vor
+        ui.horizontal(|ui| {
+            let unit = (w - 4.0 * gap) / 6.4;
+            if hw::button(ui, vec2(unit * 1.6, row_a), "CUE", fonts::bold(15.0), hw::Look::Color(theme::cue()), false, enabled).clicked() {
+                out.push(DeckAction::Cue);
+            }
+            let spinning_down = !m.playing && m.speed > 0.0;
+            let blink = spinning_down && (ui.input(|i| i.time) * 4.0) as i64 % 2 == 0;
+            if hw::play_pause_button(ui, vec2(unit * 1.8, row_a), 13.0, hw::Look::Color(theme::play()), m.playing || blink, enabled).clicked() {
+                out.push(DeckAction::TogglePlay);
+            }
+            let icon = FontId::proportional(13.0);
+            if hw::button(ui, vec2(unit, row_a), "⏮", icon.clone(), hw::Look::Plain, false, enabled).on_hover_text(tr("Zurück: Titelanfang, in den ersten 3 s voriger Titel")).clicked() {
+                out.push(DeckAction::Prev);
+            }
+            if hw::button(ui, vec2(unit, row_a), "⏹", icon.clone(), hw::Look::Plain, false, enabled).on_hover_text(tr("Stopp: Teller läuft aus, dann zurück zum Cue-Punkt")).clicked() {
+                out.push(DeckAction::Stop);
+            }
+            if hw::button(ui, vec2(unit, row_a), "⏭", icon, hw::Look::Plain, false, enabled).on_hover_text(tr("Nächster Titel der Playlist")).clicked() {
+                out.push(DeckAction::Next);
+            }
+        });
+        // Wiederholen, Vorhören, Sync, Rückwärts, Loops
+        ui.horizontal(|ui| {
+            let unit = (w - 7.0 * gap) / 9.0;
+            let small = fonts::bold(10.0);
+            let label = format!("🔁 {}", m.repeat.label());
+            if hw::button(ui, vec2(unit * 1.8, row_b), &label, small.clone(), hw::Look::Color(color), m.repeat != Repeat::Off, true)
+                .on_hover_text(tr("Wiederholen: aus, Titel, ganze Playlist"))
+                .clicked()
+            {
+                out.push(DeckAction::CycleRepeat);
+            }
+            if hw::button(ui, vec2(unit, row_b), "🎧", FontId::proportional(12.0), hw::Look::Color(color), m.pfl, true)
+                .on_hover_text(tr("Auf dem Kopfhörer vorhören, unabhängig vom Crossfader"))
+                .clicked()
+            {
+                out.push(DeckAction::Pfl(!m.pfl));
+            }
+            let tip = if m.auto_synced { tr("Auto-Sync steuert den Pitch; Pitch anfassen übernimmt von Hand") } else { tr("Tempo an den anderen Player angleichen") };
+            if hw::button(ui, vec2(unit * 1.5, row_b), "SYNC", small.clone(), hw::Look::Color(theme::yellow()), m.auto_synced, enabled && m.bpm.is_some())
+                .on_hover_text(tip)
+                .clicked()
+            {
+                out.push(DeckAction::Sync);
+            }
+            if hw::button(ui, vec2(unit * 1.3, row_b), "REV", small.clone(), hw::Look::Color(theme::cue()), m.reverse, true)
+                .on_hover_text(tr("Rückwärts: der Motor dreht die Platte andersherum"))
+                .clicked()
+            {
+                out.push(DeckAction::Reverse(!m.reverse));
+            }
+            for beats in [4u32, 8, 16] {
+                let on = m.loop_beats == Some(beats);
+                if hw::button(ui, vec2(unit * 1.13, row_b), &beats.to_string(), small.clone(), hw::Look::Color(theme::play()), on, enabled && m.bpm.is_some())
+                    .on_hover_text(trf("Loop über {} Beats", &[&beats]))
+                    .clicked()
+                {
+                    out.push(DeckAction::Loop(beats));
+                }
+            }
+        });
+    });
 }
 
 /// Einzeiliger Text, der mit „…“ abgeschnitten wird, wenn er nicht in `width` passt.
@@ -280,7 +396,11 @@ fn header(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, out: &mut Vec<De
 }
 
 fn waveform(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, out: &mut Vec<DeckAction>) {
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 76.0 * k()), Sense::click_and_drag());
+    waveform_sized(ui, m, color, 76.0 * k(), out);
+}
+
+fn waveform_sized(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, height: f32, out: &mut Vec<DeckAction>) {
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click_and_drag());
     hw::well(ui.painter(), rect, 5.0);
     let p = ui.painter_at(rect.shrink(1.0));
     let Some(wf) = m.waveform.filter(|_| m.has_track) else {
@@ -349,7 +469,11 @@ fn wave_mesh(p: &egui::Painter, left: f32, mid: f32, col_w: f32, cols: usize, mu
 }
 
 fn overview(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, out: &mut Vec<DeckAction>) {
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 16.0 * k().min(1.3)), Sense::click_and_drag());
+    overview_sized(ui, m, color, 16.0 * k().min(1.3), out);
+}
+
+fn overview_sized(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, height: f32, out: &mut Vec<DeckAction>) {
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click_and_drag());
     hw::well(ui.painter(), rect, 3.0);
     let p = ui.painter_at(rect.shrink(1.0));
     let (Some(wf), true) = (m.waveform, m.has_track && m.duration > 0.0) else { return };
