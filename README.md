@@ -105,14 +105,15 @@ written in Rust. Click a folder and start playing: no database, no library impor
   On **small screens** such as 1024×600 netbooks, the **compact view** (Settings → Appearance, automatic for low
   windows) shows flat decks without platters and single-line playlist rows; the folder browser slides in from
   the left edge over the whole window (click “FOLDERS” or ⌘/Ctrl+B) with a status line of both decks on top,
-  and slides away while you drag a track into a playlist.
+  and slides away while you drag a track into a playlist. Full screen and the settings sit at the bottom of that strip.
   For two monitors, **detach the folder browser into a window of its own**: its position and size are
   remembered, folders sit above or to the left of the tracks, and tracks can be dragged from there onto
   the playlists and decks in the main window (not on Wayland). Closing the window docks it again.
   The version number sits next to the MIXER heading; clicking it opens “About”.
 - **Light on resources**: when nothing is playing, the interface only redraws on input. A
-  **lightweight display** for older or slower computers drops shadows, gradients, glow and the
-  spectrum and limits drawing to 30 frames per second.
+  **lightweight display** for older or slower computers drops shadows, gradients, glow, edge smoothing and
+  the spectrum and limits drawing to 30 frames per second; on very slow graphics (such as an Intel GMA 950
+  netbook) it draws less often so that the interface never takes more than about half the CPU from the audio.
 - **Keeps playing in the background**: auto-fade and the next track also work while the window is
   minimised or covered by another app. When one playlist runs out, the other deck plays on alone.
 - **No sleep while playing**: display and computer stay awake as long as a deck or pre-listen is

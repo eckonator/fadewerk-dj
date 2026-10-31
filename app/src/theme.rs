@@ -366,6 +366,9 @@ pub fn apply(ctx: &egui::Context) {
         v.popup_shadow = egui::Shadow::NONE;
     }
     ctx.set_visuals(v);
+    // Sparsam: Kanten nicht weichzeichnen. Halbiert ungefähr die Zahl der Vertices; alte Grafikchips ohne
+    // Vertex-Shader (Intel GMA 950) rechnen jeden Vertex im Treiber auf der CPU
+    ctx.tessellation_options_mut(|o| o.feathering = !lite());
 
     ctx.global_style_mut(|st| {
         st.spacing.item_spacing = egui::vec2(6.0, 6.0);

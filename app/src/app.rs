@@ -44,7 +44,7 @@ const MIN_WINDOW_COMPACT: egui::Vec2 = egui::vec2(1000.0, 480.0);
 /// Unter dieser Fensterhöhe (Punkte) schaltet „Kompakte Ansicht: Automatisch“ ein.
 const COMPACT_AUTO_H: f32 = 720.0;
 /// Breite der Leiste „ORDNER“ am linken Rand und Dauer des Hereingleitens (kompakte Ansicht).
-const SLIDE_STRIP_W: f32 = 24.0;
+const SLIDE_STRIP_W: f32 = 30.0;
 const SLIDE_SECS: f32 = 0.25;
 /// Höhe der Statuszeile über dem eingeschobenen Ordnerbereich.
 const SLIDE_STATUS_H: f32 = 26.0;
@@ -60,6 +60,8 @@ const AUTO_SYNC_RATE: f32 = 0.1;
 const LITE_FRAME: std::time::Duration = std::time::Duration::from_millis(33);
 /// Im Ruhezustand nur so oft neu zeichnen (ohne Eingaben), damit Zustände aus dem Audio-Thread ankommen.
 const IDLE_FRAME: std::time::Duration = std::time::Duration::from_millis(250);
+/// Dasselbe in der sparsamen Darstellung: Eingaben und Antworten aus dem Hintergrund zeichnen ohnehin sofort.
+const IDLE_FRAME_LITE: std::time::Duration = std::time::Duration::from_millis(1000);
 /// Takt der Abspiel-Logik bei verdecktem oder minimiertem Fenster, solange etwas läuft (sonst `IDLE_FRAME`).
 const HIDDEN_TICK: std::time::Duration = std::time::Duration::from_millis(100);
 /// Größter Zeitschritt für Auto-Fade und Auto-Sync; bei verdecktem Fenster kommen die Aufrufe seltener.
@@ -2823,9 +2825,37 @@ struct SlideStatus {
     playing: bool,
 }
 
-/// Senkrechte Leiste „ORDNER“ am linken Rand der kompakten Ansicht; Klick schiebt den Ordnerbereich ein oder aus.
-fn slide_strip(ui: &mut egui::Ui, open: bool) -> egui::Response {
-    let rect = ui.max_rect();
+/// Was in der Leiste der kompakten Ansicht angeklickt wurde.
+enum StripClick {
+    Folders,
+    Fullscreen,
+    Settings,
+}
+
+/// Senkrechte Leiste am linken Rand der kompakten Ansicht: „ORDNER“ schiebt den Ordnerbereich ein oder aus,
+/// unten Vollbild und Einstellungen (sonst nur im eingeschobenen Bereich zu finden).
+fn slide_strip(ui: &mut egui::Ui, open: bool, fullscreen: bool) -> Option<StripClick> {
+    let full = ui.max_rect();
+    let button = vec2(full.width() - 4.0, 28.0);
+    let (rest, tools) = full.split_top_bottom_at_y(full.bottom() - 2.0 * button.y - 10.0);
+    let mut click = None;
+    ui.scope_builder(egui::UiBuilder::new().max_rect(tools).layout(egui::Layout::top_down(egui::Align::Center)), |ui| {
+        ui.spacing_mut().item_spacing.y = 2.0;
+        if crate::browser::fullscreen_button_sized(ui, button, fullscreen).clicked() {
+            click = Some(StripClick::Fullscreen);
+        }
+        if ui.add_sized(button, egui::Button::new(RichText::new("⚙").size(15.0))).on_hover_text(tr("Einstellungen (⌘,)")).clicked() {
+            click = Some(StripClick::Settings);
+        }
+    });
+    if folder_strip(ui, rest, open).clicked() {
+        click = Some(StripClick::Folders);
+    }
+    click
+}
+
+/// Der Teil der Leiste mit der senkrechten Aufschrift „ORDNER“.
+fn folder_strip(ui: &mut egui::Ui, rect: Rect, open: bool) -> egui::Response {
     let resp = ui.interact(rect, ui.id().with("browser_strip"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
     let p = ui.painter();
     if resp.hovered() {
@@ -2837,6 +2867,14 @@ fn slide_strip(ui: &mut egui::Ui, open: bool) -> egui::Response {
     let size = galley.size();
     let pos = pos2(rect.center().x - size.y / 2.0, rect.center().y + size.x / 2.0);
     p.add(egui::epaint::TextShape::new(pos, galley, color).with_angle(-std::f32::consts::FRAC_PI_2));
+    // Winkel über und unter der Schrift zeigen, wohin der Bereich beim Klick gleitet: zu nach rechts, offen nach links
+    let dir = if open { -1.0 } else { 1.0 };
+    let (w, h) = (3.5, 5.0);
+    for y in [rect.center().y - size.x / 2.0 - 14.0, rect.center().y + size.x / 2.0 + 14.0] {
+        let tip = pos2(rect.center().x + dir * w, y);
+        let back = rect.center().x - dir * w;
+        p.line(vec![pos2(back, y - h), tip, pos2(back, y + h)], Stroke::new(1.8, color));
+    }
     let tip = if cfg!(target_os = "macos") { tr("Ordner einblenden oder ausblenden (⌘B)") } else { tr("Ordner einblenden oder ausblenden (Strg+B)") };
     resp.on_hover_text(tip)
 }
@@ -2948,7 +2986,7 @@ impl eframe::App for FadeWerkDjApp {
         self.dev.raw_input(raw_input);
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         // Die ersten Bilder sind gezeichnet: Der Grafikstart hat geklappt
         if ctx.cumulative_frame_nr() >= 2 {
@@ -3018,6 +3056,7 @@ impl eframe::App for FadeWerkDjApp {
             SlideStatus { title, left: st.duration_secs() - st.position_secs(), playing: st.is_playing() }
         });
         let mut slid = self.browser_slid;
+        let mut strip_click: Option<StripClick> = None;
         let preview_st = &self.ctl.shared.decks[PREVIEW];
         let bctx = BrowserCtx {
             metas: &self.metas,
@@ -3032,6 +3071,7 @@ impl eframe::App for FadeWerkDjApp {
             fullscreen: ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)),
             side: false,
             side_possible: false,
+            compact: slide,
             detached: self.settings.browser_detached,
             history: &self.history,
             importing: self.import_rx.is_some(),
@@ -3125,10 +3165,9 @@ impl eframe::App for FadeWerkDjApp {
                 .exact_size(SLIDE_STRIP_W)
                 .show_separator_line(false)
                 .frame(Frame::new().fill(theme::panel()).stroke(Stroke::new(1.0, theme::line())))
-                .show(ui, |ui| {
-                    if slide_strip(ui, slid).clicked() {
-                        slid = !slid;
-                    }
+                .show(ui, |ui| match slide_strip(ui, slid, ctx.input(|i| i.viewport().fullscreen.unwrap_or(false))) {
+                    Some(StripClick::Folders) => slid = !slid,
+                    other => strip_click = other,
                 });
             let t = ctx.animate_bool_with_time(egui::Id::new("browser_slide"), slid, if theme::lite() { 0.0 } else { SLIDE_SECS });
             if t > 0.0 {
@@ -3386,6 +3425,11 @@ impl eframe::App for FadeWerkDjApp {
         });
         drop(decks_models);
         self.browser_slid = slid;
+        match strip_click {
+            Some(StripClick::Settings) => browser_actions.push(BrowserAction::OpenSettings),
+            Some(StripClick::Fullscreen) => browser_actions.push(BrowserAction::ToggleFullscreen),
+            _ => {}
+        }
         if let Some(h) = split_change {
             self.settings.deck_height = h;
             self.save_due = Some(now + 1.0);
@@ -3586,11 +3630,16 @@ impl eframe::App for FadeWerkDjApp {
         // Teller, Wellenform und Pegel laufen, solange etwas spielt (sparsam mit höchstens 30 Bildern/s);
         // im Stillstand nur bei Eingaben und gelegentlich zum Abholen des Engine-Zustands
         if !self.is_moving() {
-            ctx.request_repaint_after(IDLE_FRAME);
+            ctx.request_repaint_after(if theme::lite() { IDLE_FRAME_LITE } else { IDLE_FRAME });
         } else if theme::lite() {
+            // Auf langsamen Rechnern (Netbook mit Intel GMA) dauert ein Bild weit länger als 33 ms. Die Pause
+            // zählt ab hier, das Zeichnen des Bildes fällt schon hinein; mit der doppelten Bildzeit nimmt die
+            // Oberfläche höchstens etwa die Hälfte der Rechenzeit und lässt dem Ton Luft
+            let work = frame.info().cpu_usage.unwrap_or(0.0).clamp(0.0, 0.5);
+            let pause = LITE_FRAME.max(std::time::Duration::from_secs_f32(2.0 * work));
             // egui zieht die Dauer eines Monitorbilds ab, damit es nicht zu spät kommt; hier soll es nicht früher kommen
             let monitor_frame = std::time::Duration::from_secs_f32(ctx.input(|i| i.predicted_dt).clamp(0.0, 0.05));
-            ctx.request_repaint_after(LITE_FRAME + monitor_frame);
+            ctx.request_repaint_after(pause + monitor_frame);
         } else {
             ctx.request_repaint();
         }

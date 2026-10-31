@@ -205,6 +205,9 @@ pub struct BrowserCtx<'a> {
     /// Steht der Browser rechts neben den Playern? Und ist das Fenster breit genug dafür?
     pub side: bool,
     pub side_possible: bool,
+    /// Kompakte Ansicht: Der Browser gleitet über die Oberfläche; Einstellungen und Vollbild stehen schon in der
+    /// Leiste daneben, unten/rechts gibt es nicht.
+    pub compact: bool,
     /// Läuft der Browser in einem eigenen Fenster?
     pub detached: bool,
     pub history: &'a History,
@@ -292,6 +295,9 @@ enum FolderOp {
 pub const DEFAULT_TREE_W: f32 = 250.0;
 /// Ab dieser Breite passt die Kopfzeile des Browsers in eine Zeile.
 const HEADER_ONE_ROW_W: f32 = 1000.0;
+/// Dasselbe in der kompakten Ansicht: Einstellungen, Vollbild und die Lage-Taste stehen in der Leiste,
+/// der Hinweis „Live gelesen“ entfällt.
+const HEADER_ONE_ROW_W_COMPACT: f32 = 700.0;
 const TREE_MIN_W: f32 = 140.0;
 /// Kleinste Höhe des Baums, wenn er über der Titelliste steht.
 const TREE_MIN_H: f32 = 90.0;
@@ -979,7 +985,8 @@ impl Browser {
 
         // Kopfzeile. Ist sie zu schmal (Browser rechts neben den Playern), kommen Suche, Fortschritt und Pfad
         // in eine zweite Zeile, und der Hinweis „Live gelesen“ entfällt.
-        let compact = ctx.side || ui.available_width() < HEADER_ONE_ROW_W;
+        let one_row_w = if ctx.compact { HEADER_ONE_ROW_W_COMPACT } else { HEADER_ONE_ROW_W };
+        let compact = ctx.side || ui.available_width() < one_row_w;
         ui.horizontal(|ui| {
             // Alle Tasten und Felder der Kopfzeile gleich hoch, wie in den Playlists
             ui.spacing_mut().interact_size.y = theme::CTRL_H;
@@ -989,11 +996,11 @@ impl Browser {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let icon_size = vec2(theme::ICON_BTN_W, theme::CTRL_H);
-                if ui.add(Button::new(RichText::new("⚙").size(15.0)).min_size(icon_size)).on_hover_text(tr("Einstellungen (⌘,)")).clicked() {
+                if !ctx.compact && ui.add(Button::new(RichText::new("⚙").size(15.0)).min_size(icon_size)).on_hover_text(tr("Einstellungen (⌘,)")).clicked() {
                     out.push(BrowserAction::OpenSettings);
                 }
                 // Vollbild gilt dem Hauptfenster; im eigenen Fenster wäre die Taste irreführend
-                if !ctx.detached && fullscreen_button(ui, ctx.fullscreen).clicked() {
+                if !ctx.detached && !ctx.compact && fullscreen_button(ui, ctx.fullscreen).clicked() {
                     out.push(BrowserAction::ToggleFullscreen);
                 }
                 if detach_button(ui, ctx.detached).clicked() {
@@ -1004,7 +1011,7 @@ impl Browser {
                     if tree_layout_button(ui, !ctx.side).clicked() {
                         out.push(BrowserAction::TreeLeft(ctx.side));
                     }
-                } else if layout_button(ui, ctx.side, ctx.side_possible).clicked() {
+                } else if !ctx.compact && layout_button(ui, ctx.side, ctx.side_possible).clicked() {
                     out.push(BrowserAction::ToggleSide);
                 }
                 let tip = if cfg!(target_os = "macos") { tr("Ordner neu einlesen (⌘R)") } else { tr("Ordner neu einlesen (F5)") };
@@ -2702,7 +2709,8 @@ impl Browser {
                 .min_size(vec2(search_w, theme::CTRL_H))
                 .vertical_align(egui::Align::Center),
         );
-        if !compact {
+        // Kompakte Ansicht: Platz für Pfad und Suche in einer Zeile
+        if !compact && !ctx.compact {
             ui.label(RichText::new(tr("⏺ Live gelesen, keine Datenbank")).size(12.0).color(theme::play()));
         }
         if let Some((done, total)) = ctx.bpm_progress {
@@ -2826,14 +2834,19 @@ fn detach_button(ui: &mut egui::Ui, detached: bool) -> egui::Response {
 }
 
 fn fullscreen_button(ui: &mut egui::Ui, fullscreen: bool) -> egui::Response {
+    let size = egui::vec2(theme::ICON_BTN_W, ui.spacing().interact_size.y);
+    fullscreen_button_sized(ui, size, fullscreen)
+}
+
+/// Vollbild-Taste in fester Größe (auch für die Leiste der kompakten Ansicht).
+pub fn fullscreen_button_sized(ui: &mut egui::Ui, size: egui::Vec2, fullscreen: bool) -> egui::Response {
     let tip = match (fullscreen, cfg!(target_os = "macos")) {
         (false, true) => tr("Vollbild (⌃⌘F)"),
         (false, false) => tr("Vollbild (F11)"),
         (true, true) => tr("Vollbild beenden (⌃⌘F)"),
         (true, false) => tr("Vollbild beenden (F11)"),
     };
-    let h = ui.spacing().interact_size.y;
-    let resp = ui.add(egui::Button::new("").min_size(egui::vec2(theme::ICON_BTN_W, h))).on_hover_text(tip);
+    let resp = ui.add_sized(size, egui::Button::new("")).on_hover_text(tip);
     let color = ui.style().interact(&resp).fg_stroke.color;
     let stroke = egui::Stroke::new(1.6, color);
     let c = resp.rect.center();
