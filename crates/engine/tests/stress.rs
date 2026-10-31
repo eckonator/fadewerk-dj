@@ -60,7 +60,8 @@ fn random_command(rng: &mut Rng) -> Command {
     match rng.below(36) {
         0 | 1 => Command::Load { deck, id: rng.next(), track: track(rng), keep_playing: rng.below(2) == 0, start_secs: rng.f(0.0, 2.0) as f64 },
         2 => Command::Eject { deck },
-        3 | 4 => Command::Play { deck },
+        3 => Command::Play { deck },
+        4 => Command::Resume { deck },
         5 => Command::Pause { deck },
         6 => Command::TogglePlay { deck },
         7 => Command::Stop { deck },

@@ -37,3 +37,6 @@ winresource = { version = "0.1", default-features = false }
 # Test-Cover in tag_batch.rs (kommt ohnehin über fw-library mit)
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+cpal = { version = "0.18", features = ["pulseaudio"] }

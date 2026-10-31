@@ -121,6 +121,15 @@ impl Deck {
         }
     }
 
+    /// Sofort mit voller Drehzahl weiter, ohne Anlauf: nach einem Neustart der Audio-Ausgabe soll die Musik
+    /// einfach weiterlaufen, nicht hörbar neu anfahren.
+    pub fn resume(&mut self) {
+        if self.track.is_some() {
+            self.play();
+            self.speed = 1.0;
+        }
+    }
+
     /// Pause: der Teller läuft aus und bleibt an der erreichten Stelle stehen.
     pub fn pause(&mut self) {
         self.playing = false;

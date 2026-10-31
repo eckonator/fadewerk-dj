@@ -30,6 +30,8 @@ pub enum Command {
     Load { deck: usize, id: u64, track: Arc<TrackAudio>, keep_playing: bool, start_secs: f64 },
     Eject { deck: usize },
     Play { deck: usize },
+    /// Wie `Play`, aber ohne Motor-Anlauf (Weiterspielen nach einem Neustart der Audio-Ausgabe).
+    Resume { deck: usize },
     Pause { deck: usize },
     TogglePlay { deck: usize },
     Stop { deck: usize },
@@ -334,6 +336,7 @@ impl Engine {
                 self.discard(old);
             }
             Play { deck } if ok(deck) => self.decks[deck].play(),
+            Resume { deck } if ok(deck) => self.decks[deck].resume(),
             Pause { deck } if ok(deck) => self.decks[deck].pause(),
             TogglePlay { deck } if ok(deck) => self.decks[deck].toggle(),
             Stop { deck } if ok(deck) => self.decks[deck].stop(),

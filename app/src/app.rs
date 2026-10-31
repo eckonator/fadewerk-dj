@@ -970,8 +970,9 @@ impl FadeWerkDjApp {
                 self.ctl.send(Command::Load { deck: d, id, track, keep_playing: false, start_secs: pos });
                 let range = self.decks[d].loop_range;
                 self.ctl.send(Command::SetLoop { deck: d, range });
+                // Ohne Anlauf weiter: ein Gerätewechsel oder Neustart soll nicht wie ein neuer Start klingen
                 if playing {
-                    self.ctl.send(Command::Play { deck: d });
+                    self.ctl.send(Command::Resume { deck: d });
                 }
             }
         }
