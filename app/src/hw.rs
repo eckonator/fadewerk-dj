@@ -940,7 +940,8 @@ pub fn knob(ui: &mut egui::Ui, rect: Rect, id: impl std::hash::Hash + std::fmt::
     let angle = |t: f32| (-0.75 + 1.5 * t) * std::f32::consts::PI;
     let at = |a: f32, rr: f32| c + vec2(a.sin(), -a.cos()) * rr;
     let arc = |from: f32, to: f32, rr: f32, stroke: Stroke| {
-        let n = 32;
+        // Sparsam reichen wenige Segmente (jeder Punkt kostet auf alten Grafikchips CPU-Zeit)
+        let n = if theme::lite() { 12 } else { 32 };
         let pts: Vec<Pos2> = (0..=n).map(|i| at(angle(from + (to - from) * i as f32 / n as f32), rr)).collect();
         p.add(egui::Shape::line(pts, stroke));
     };

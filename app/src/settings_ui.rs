@@ -32,6 +32,8 @@ const LICENSE_TEXTS: [(&str, &str); 3] = [
 const SETTINGS_W: f32 = 557.0;
 /// Abstand des Fensters vom oberen Rand beim Öffnen.
 const SETTINGS_TOP: f32 = 48.0;
+/// So viel Platz bleibt unter dem Scrollbereich der Seiten (Rand des Fensters und Abstand zum Bildschirmrand).
+const SETTINGS_BOTTOM_RESERVE: f32 = 40.0;
 
 pub enum SettingsAction {
     Device(Option<String>),
@@ -191,19 +193,27 @@ impl SettingsUi {
                 ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(8.0);
-                match self.tab {
-                    Tab::General => self.general_tab(ui, c, out),
-                    Tab::Audio => self.audio_tab(ui, c, out),
-                    Tab::Recording => recording_tab(ui, c, out),
-                    Tab::Music => self.music_tab(ui, c, out),
-                    Tab::Effects => self.effects_tab(ui, c, out),
-                    Tab::Look => look_tab(ui, c, out),
-                    Tab::About => self.about_tab(ui, out),
-                }
-                if self.tab != Tab::About {
-                    ui.add_space(10.0);
-                    ui.label(RichText::new(tr("Einstellungen werden automatisch gespeichert.")).size(11.5).color(theme::faint()));
-                }
+                // Seiten unter den Reitern scrollbar, höchstens so hoch wie der Bildschirm unter dem Fenster
+                // erlaubt (auf Netbooks mit 600 Pixeln war „Aussehen“ sonst nicht bis unten erreichbar)
+                let max_h = (ctx.content_rect().bottom() - ui.cursor().top() - SETTINGS_BOTTOM_RESERVE).max(160.0);
+                // Feste statt schwebender Leiste: sonst merkt man auf kleinen Bildschirmen nicht, dass es weitergeht
+                ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+                egui::ScrollArea::vertical().id_salt(("einstellungen", self.tab as u8)).max_height(max_h).min_scrolled_height(max_h)
+                    .show(ui, |ui| {
+                    match self.tab {
+                        Tab::General => self.general_tab(ui, c, out),
+                        Tab::Audio => self.audio_tab(ui, c, out),
+                        Tab::Recording => recording_tab(ui, c, out),
+                        Tab::Music => self.music_tab(ui, c, out),
+                        Tab::Effects => self.effects_tab(ui, c, out),
+                        Tab::Look => look_tab(ui, c, out),
+                        Tab::About => self.about_tab(ui, out),
+                    }
+                    if self.tab != Tab::About {
+                        ui.add_space(10.0);
+                        ui.label(RichText::new(tr("Einstellungen werden automatisch gespeichert.")).size(11.5).color(theme::faint()));
+                    }
+                });
             });
         self.open = open;
     }

@@ -249,6 +249,39 @@ pub fn lite() -> bool {
     LITE.load(Ordering::Relaxed)
 }
 
+/// Sparsame Darstellung: das fertige Bild vereinfachen, bevor es tesselliert wird. Rechtecke werden eckig (eine
+/// abgerundete Ecke ist ein Bogen aus vielen Punkten; gemessen machten abgerundete Rechtecke mehr als die Hälfte
+/// aller Vertices aus), Kreise werden zu 16-Ecken. Auf Grafikchips ohne Vertex-Shader (Intel GMA 950) kostet jeder
+/// Vertex CPU-Zeit. Läuft am Ende jedes Bildes.
+pub fn simplify_shapes(ctx: &egui::Context) {
+    fn simplify(shape: &mut egui::Shape) {
+        match shape {
+            egui::Shape::Rect(r) => r.corner_radius = CornerRadius::ZERO,
+            egui::Shape::Circle(c) => {
+                let pts = (0..16)
+                    .map(|i| {
+                        let a = i as f32 / 16.0 * std::f32::consts::TAU;
+                        c.center + egui::vec2(a.cos(), a.sin()) * c.radius
+                    })
+                    .collect();
+                *shape = egui::Shape::convex_polygon(pts, c.fill, c.stroke);
+            }
+            egui::Shape::Vec(shapes) => shapes.iter_mut().for_each(simplify),
+            _ => {}
+        }
+    }
+    let layers: Vec<egui::LayerId> = ctx.memory(|m| m.layer_ids().collect());
+    ctx.graphics_mut(|g| {
+        for layer in layers {
+            if let Some(list) = g.get_mut(layer) {
+                for i in 0..list.next_idx().0 {
+                    list.mutate_shape(egui::layers::ShapeIdx(i), |cs| simplify(&mut cs.shape));
+                }
+            }
+        }
+    });
+}
+
 /// Einheitliche Höhe von Tasten, Suchfeldern und Auswahlfeldern in den Kopfzeilen (Ordnerbrowser, Playlists).
 pub const CTRL_H: f32 = 26.0;
 /// Breite der Symboltasten in diesen Kopfzeilen (Lupe, Ansicht, Einstellungen …).

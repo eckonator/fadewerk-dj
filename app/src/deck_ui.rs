@@ -424,7 +424,8 @@ fn waveform_sized(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, height: 
             p.line_segment([pos2(x, rect.top()), pos2(x, rect.bottom())], Stroke::new(w, Color32::from_white_alpha(14)));
         }
     }
-    let cols = (rect.width() / 2.0) as usize;
+    // Sparsam halb so viele Spalten: auf kleinen Bildschirmen kaum zu sehen, spart Vertices
+    let cols = (rect.width() / if theme::lite() { 4.0 } else { 2.0 }) as usize;
     wave_mesh(&p, rect.left(), mid, rect.width() / cols as f32, cols, |i| {
         let t = t0 + (i as f64 / cols as f64) * WAVE_SPAN;
         if t < 0.0 || t > m.duration {
@@ -478,7 +479,8 @@ fn overview_sized(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, height: 
     let p = ui.painter_at(rect.shrink(1.0));
     let (Some(wf), true) = (m.waveform, m.has_track && m.duration > 0.0) else { return };
     let frac = (m.position / m.duration) as f32;
-    let cols = (rect.width() / 2.0) as usize;
+    // Sparsam halb so viele Spalten: auf kleinen Bildschirmen kaum zu sehen, spart Vertices
+    let cols = (rect.width() / if theme::lite() { 4.0 } else { 2.0 }) as usize;
     wave_mesh(&p, rect.left(), rect.center().y, rect.width() / cols as f32, cols, |i| {
         let f0 = i as f64 / cols as f64;
         let v = wf.max_in(f0 * m.duration, (f0 + 1.0 / cols as f64) * m.duration) * rect.height() * 0.45;

@@ -111,8 +111,8 @@ written in Rust. Click a folder and start playing: no database, no library impor
   the playlists and decks in the main window (not on Wayland). Closing the window docks it again.
   The version number sits next to the MIXER heading; clicking it opens “About”.
 - **Light on resources**: when nothing is playing, the interface only redraws on input. A
-  **lightweight display** for older or slower computers drops shadows, gradients, glow, edge smoothing and
-  the spectrum and limits drawing to 30 frames per second; on very slow graphics (such as an Intel GMA 950
+  **lightweight display** for older or slower computers drops shadows, gradients, glow, edge smoothing, rounded
+  corners, the pad icons and the spectrum, shows the level meters as plain bars and limits drawing to 30 frames per second; on very slow graphics (such as an Intel GMA 950
   netbook) it draws less often so that the interface never takes more than about half the CPU from the audio.
 - **Keeps playing in the background**: auto-fade and the next track also work while the window is
   minimised or covered by another app. When one playlist runs out, the other deck plays on alone.

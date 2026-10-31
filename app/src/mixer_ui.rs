@@ -458,13 +458,17 @@ fn pads(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerAction>) {
                 let lit = m.fx_playing & (1 << slot) != 0;
                 let label = &m.fx_labels[slot];
                 let icon = m.fx_icons[slot];
-                // Symbol oben, Name klein darunter
+                // Symbol oben, Name klein darunter; sparsam nur der Name, mittig (die Linien-Symbole kosten Vertices)
+                let lite = theme::lite();
                 let b = hw::custom_button(ui, vec2(bw, 46.0 * k), hw::Look::Color(theme::select_accent()), lit, true, |p, r, color| {
-                    let icon_rect = Rect::from_center_size(pos2(r.center().x, r.top() + r.height() * 0.38), vec2(r.height() * 0.42, r.height() * 0.42));
-                    icon.paint(p, icon_rect, color);
+                    if !lite {
+                        let icon_rect = Rect::from_center_size(pos2(r.center().x, r.top() + r.height() * 0.38), vec2(r.height() * 0.42, r.height() * 0.42));
+                        icon.paint(p, icon_rect, color);
+                    }
                     let font = fonts::bold(if label.chars().count() > 8 { 8.0 } else { 9.0 } * k);
                     let galley = p.layout(label.clone(), font, color, r.width() - 6.0);
-                    let pos = pos2(r.center().x - galley.size().x / 2.0, r.bottom() - galley.size().y - 4.0 * k);
+                    let y = if lite { r.center().y - galley.size().y / 2.0 } else { r.bottom() - galley.size().y - 4.0 * k };
+                    let pos = pos2(r.center().x - galley.size().x / 2.0, y);
                     p.with_clip_rect(r.shrink(2.0)).galley(pos, galley, color);
                 });
                 let b = b.on_hover_text(trf("Taste {} · Rechtsklick: im Kopfhörer vorhören", &[&(slot + 1)]));

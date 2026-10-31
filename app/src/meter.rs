@@ -89,6 +89,10 @@ const BAND_MIN_W: f32 = 5.0;
 
 /// Eine LED-Kette in `x0..x0 + w` über die Höhe von `rect`: `shown` leuchtet, `hold` = Spitzen-LED.
 fn led_column(painter: &Painter, x0: f32, w: f32, rect: Rect, shown: f32, hold: f32) {
+    if theme::lite() {
+        bar_column(painter, x0, w, rect, shown, hold);
+        return;
+    }
     let gap_y = 1.0;
     let seg_h = (rect.height() - gap_y * (SEGMENTS - 1) as f32) / SEGMENTS as f32;
     let lit = (shown * SEGMENTS as f32).round() as usize;
@@ -105,6 +109,31 @@ fn led_column(painter: &Painter, x0: f32, w: f32, rect: Rect, shown: f32, hold: 
         let color = if on { base } else { base.gamma_multiply(0.13) };
         let y1 = rect.bottom() - i as f32 * (seg_h + gap_y);
         painter.rect_filled(Rect::from_min_max(pos2(x0, y1 - seg_h), pos2(x0 + w, y1)), 0.0, color);
+    }
+}
+
+/// Sparsame Darstellung: dieselbe Anzeige als durchgehender Balken in drei Farbzonen statt 28 Segmenten
+/// (höchstens sieben Rechtecke, auf alten Grafikchips spürbar billiger).
+fn bar_column(painter: &Painter, x0: f32, w: f32, rect: Rect, shown: f32, hold: f32) {
+    let y_at = |f: f32| rect.bottom() - f.clamp(0.0, 1.0) * rect.height();
+    let zones = [
+        (0.0, (SEGMENTS - 8) as f32 / SEGMENTS as f32, theme::play()),
+        ((SEGMENTS - 8) as f32 / SEGMENTS as f32, (SEGMENTS - 3) as f32 / SEGMENTS as f32, theme::yellow()),
+        ((SEGMENTS - 3) as f32 / SEGMENTS as f32, 1.0, theme::cue()),
+    ];
+    let lit = (shown * SEGMENTS as f32).round() / SEGMENTS as f32;
+    for (from, to, color) in zones {
+        painter.rect_filled(Rect::from_min_max(pos2(x0, y_at(to)), pos2(x0 + w, y_at(from))), 0.0, color.gamma_multiply(0.13));
+        if lit > from {
+            painter.rect_filled(Rect::from_min_max(pos2(x0, y_at(lit.min(to))), pos2(x0 + w, y_at(from))), 0.0, color);
+        }
+    }
+    // Spitzenwert als schmaler Strich in der Farbe seiner Zone
+    let hold = (hold * SEGMENTS as f32).round() / SEGMENTS as f32;
+    if hold > 1.0 / SEGMENTS as f32 {
+        let color = zones.iter().find(|z| hold <= z.1 + 1e-4).map_or(theme::cue(), |z| z.2);
+        let y = y_at(hold);
+        painter.rect_filled(Rect::from_min_max(pos2(x0, y), pos2(x0 + w, y + 2.0)), 0.0, color);
     }
 }
 

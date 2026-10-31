@@ -3692,6 +3692,9 @@ impl eframe::App for FadeWerkDjApp {
         crate::hw::note_foreign_scroll(&ctx);
         // Pfeil- und Eingabetasten, die kein Regler genommen hat: für die zuletzt angeklickte Titelliste
         crate::keynav::collect(&ctx);
+        if theme::lite() {
+            theme::simplify_shapes(&ctx);
+        }
         // Teller, Wellenform und Pegel laufen, solange etwas spielt (sparsam mit höchstens 30 Bildern/s);
         // im Stillstand nur bei Eingaben und gelegentlich zum Abholen des Engine-Zustands
         if !self.is_moving() {
