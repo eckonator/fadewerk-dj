@@ -22,9 +22,17 @@ pub struct NewVersion {
     pub asset: Option<String>,
 }
 
-/// Startet die Abfrage im Hintergrund; das Ergebnis kommt über den Empfänger (`Ok(None)` = nichts Neues,
-/// `Err` = GitHub nicht erreichbar).
-pub fn check_in_background(ctx: egui::Context) -> Receiver<Result<Option<NewVersion>, ()>> {
+/// Warum die Abfrage nicht geklappt hat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckError {
+    /// GitHub nicht erreichbar oder Antwort unbrauchbar.
+    Offline,
+    /// Das Programm `curl` fehlt (etwa auf schlanken Linux-Installationen).
+    NoCurl,
+}
+
+/// Startet die Abfrage im Hintergrund; das Ergebnis kommt über den Empfänger (`Ok(None)` = nichts Neues).
+pub fn check_in_background(ctx: egui::Context) -> Receiver<Result<Option<NewVersion>, CheckError>> {
     let (tx, rx) = mpsc::channel();
     std::thread::Builder::new()
         .name("fw-update".into())
@@ -40,7 +48,7 @@ pub fn check_in_background(ctx: egui::Context) -> Receiver<Result<Option<NewVers
     rx
 }
 
-fn check() -> Result<Option<NewVersion>, ()> {
+fn check() -> Result<Option<NewVersion>, CheckError> {
     // FW_UPDATE_URL (nur Debug): andere Quelle, z. B. eine lokale JSON-Datei zum Testen
     let url = std::env::var("FW_UPDATE_URL")
         .ok()
@@ -55,8 +63,16 @@ fn check() -> Result<Option<NewVersion>, ()> {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000);
     }
-    let out = cmd.output().ok().filter(|o| o.status.success()).ok_or(())?;
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|_| ())?;
+    let out = match cmd.output() {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            log::warn!("Update-Prüfung: curl nicht gefunden");
+            return Err(CheckError::NoCurl);
+        }
+        Err(_) => return Err(CheckError::Offline),
+        Ok(o) if !o.status.success() => return Err(CheckError::Offline),
+        Ok(o) => o,
+    };
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|_| CheckError::Offline)?;
     Ok(newer_release(&json, env!("CARGO_PKG_VERSION"), crate::self_update::asset_suffix()))
 }
 

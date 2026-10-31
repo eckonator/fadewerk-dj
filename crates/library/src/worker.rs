@@ -142,6 +142,7 @@ impl Library {
             thread::Builder::new()
                 .name(format!("fw-bpm-{i}"))
                 .spawn(move || {
+                    background_priority();
                     for job in rx {
                         if generation.load(Ordering::Relaxed) != job.generation {
                             continue;
@@ -164,6 +165,7 @@ impl Library {
             thread::Builder::new()
                 .name("fw-scan".into())
                 .spawn(move || {
+                    background_priority();
                     for (token, paths) in scan_rx {
                         if current.load(Ordering::Relaxed) != token {
                             continue;
@@ -210,6 +212,7 @@ impl Library {
             thread::Builder::new()
                 .name(format!("fw-tags-{i}"))
                 .spawn(move || {
+                    background_priority();
                     loop {
                         // Sichtbare Zeilen zuerst, dann Tags, die noch niemand kennt, zuletzt das Prüfen gemerkter Tags
                         let resp = crossbeam_channel::select_biased! {
@@ -248,6 +251,7 @@ impl Library {
             thread::Builder::new()
                 .name("fw-wave".into())
                 .spawn(move || {
+                    background_priority();
                     loop {
                         let path = {
                             let mut jobs = queue.jobs.lock().unwrap_or_else(|e| e.into_inner());
@@ -272,6 +276,7 @@ impl Library {
         thread::Builder::new()
             .name("fw-loader".into())
             .spawn(move || {
+                background_priority();
                 for job in load_rx {
                     let resp = match load(&job) {
                         Ok(l) => Response::Loaded(Box::new(l)),
@@ -435,4 +440,15 @@ fn read_tags_response(path: PathBuf) -> Response {
         }
     };
     Response::Meta { path, meta, stamp }
+}
+
+/// Hintergrundarbeit (Laden, Analyse, Tags, Wellenformen, Ordnersuche) mit niedrigerer Priorität: Auf schwachen
+/// Rechnern (Netbook, Atom N270) riss sonst das Dekodieren des nächsten Titels nach einer Überblendung den Ton ab.
+/// Unter Linux gilt `setpriority` je Thread; anderswo bleibt es beim Standard.
+fn background_priority() {
+    #[cfg(target_os = "linux")]
+    // SAFETY: setzt nur den Nice-Wert des aufrufenden Threads
+    unsafe {
+        libc::setpriority(libc::PRIO_PROCESS as _, libc::gettid() as libc::id_t, 10);
+    }
 }

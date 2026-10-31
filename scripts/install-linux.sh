@@ -35,3 +35,7 @@ refresh
 
 echo "FadeWerk DJ installiert: $BIN/fadewerk-dj"
 echo "Start über das Anwendungsmenü oder mit: fadewerk-dj"
+# Update-Prüfung und Update per Knopf laufen über curl
+if ! command -v curl >/dev/null 2>&1; then
+  echo "Hinweis: Für Updates fehlt das Programm curl (Debian/Ubuntu: sudo apt install curl)."
+fi

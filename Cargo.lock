@@ -1379,7 +1379,7 @@ checksum = "af9673d8203fcb076b19dfd17e38b3d4ae9f44959416ea532ce72415a6020365"
 
 [[package]]
 name = "fadewerk-dj"
-version = "0.1.52"
+version = "0.1.53"
 dependencies = [
  "anyhow",
  "cpal",
@@ -1561,20 +1561,21 @@ dependencies = [
 
 [[package]]
 name = "fw-engine"
-version = "0.1.52"
+version = "0.1.53"
 dependencies = [
  "rtrb",
 ]
 
 [[package]]
 name = "fw-library"
-version = "0.1.52"
+version = "0.1.53"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
  "dirs",
  "fw-engine",
  "image",
+ "libc",
  "lofty",
  "log",
  "rustfft",

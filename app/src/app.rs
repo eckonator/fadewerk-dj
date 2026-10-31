@@ -64,6 +64,8 @@ const IDLE_FRAME: std::time::Duration = std::time::Duration::from_millis(250);
 const IDLE_FRAME_LITE: std::time::Duration = std::time::Duration::from_millis(1000);
 /// Takt der Abspiel-Logik bei verdecktem oder minimiertem Fenster, solange etwas läuft (sonst `IDLE_FRAME`).
 const HIDDEN_TICK: std::time::Duration = std::time::Duration::from_millis(100);
+/// Ab so vielen Fehlern pro Sekunde gilt die Audio-Ausgabe als hängend und wird neu geöffnet.
+const AUDIO_ERROR_STORM: f64 = 20.0;
 /// Größter Zeitschritt für Auto-Fade und Auto-Sync; bei verdecktem Fenster kommen die Aufrufe seltener.
 const LOGIC_MAX_DT: f64 = 1.0;
 /// So lange nach dem letzten Ton bleibt der Ruhezustand noch gesperrt (kein Flattern beim Titelwechsel).
@@ -281,6 +283,9 @@ pub struct FadeWerkDjApp {
     record_dropped_at_start: u64,
     /// Zählt hoch, wenn die Audio-Ausgabe neu startet (dann gehört ein alter Aufnahme-Puffer zur alten Engine).
     audio_gen: u64,
+    /// Fehlerzähler der Audio-Ausgabe beim letzten Blick und Zeitpunkt des letzten Neustarts (`check_audio_errors`).
+    audio_errors_seen: (u64, f64),
+    audio_restarted: f64,
     /// Zuletzt an die Engine geschickte EQ-Faktoren; NaN erzwingt erneutes Senden.
     eq_sent: [[f32; 3]; 2],
     bass_swap: bool,
@@ -319,7 +324,7 @@ pub struct FadeWerkDjApp {
     browser_window_init: Option<[f32; 4]>,
     /// Wie viele Bilder das Ordnerfenster schon auf keinem Bildschirm liegt.
     browser_window_lost: u32,
-    update_rx: Option<std::sync::mpsc::Receiver<Result<Option<crate::update::NewVersion>, ()>>>,
+    update_rx: Option<std::sync::mpsc::Receiver<Result<Option<crate::update::NewVersion>, crate::update::CheckError>>>,
     /// Prüfung von Hand angestoßen (Einstellungen): dann auch „nichts Neues“ melden.
     update_manual: bool,
     /// Läuft das Update per Knopf, kommt hierüber der Fortschritt.
@@ -444,6 +449,8 @@ impl FadeWerkDjApp {
             recording: None,
             record_dropped_at_start: 0,
             audio_gen: 0,
+            audio_errors_seen: (0, 0.0),
+            audio_restarted: f64::NEG_INFINITY,
             eq_sent: [[f32::NAN; 3]; 2],
             bass_swap: settings.bass_swap,
             auto_sync: settings.auto_sync || std::env::var_os("FW_AUTOSYNC").is_some(),
@@ -903,6 +910,30 @@ impl FadeWerkDjApp {
 
     /// Startet die Audio-Ausgabe mit den aktuellen Einstellungen neu. Geladene Titel laufen an derselben Stelle weiter.
     /// `done`: Hinweis bei Erfolg statt „Audiogerät gewechselt“.
+    /// Meldet der Audio-Stream Fehler in Massen, hängt er (beobachtet auf einem Netbook: ALSA über PulseAudio
+    /// nach einem Aussetzer, danach nur noch `snd_pcm_avail_delay`-Fehler, Ton stottert, Audio-Thread bei 80 %).
+    /// Dann die Ausgabe neu öffnen; die Titel laufen an derselben Stelle weiter. Höchstens alle 10 s.
+    fn check_audio_errors(&mut self, now: f64) {
+        let Some(count) = self.audio.as_ref().map(|a| a.errors.load(std::sync::atomic::Ordering::Relaxed)) else { return };
+        let (seen, at) = self.audio_errors_seen;
+        if count < seen {
+            // Neuer Stream, der Zähler beginnt von vorn
+            self.audio_errors_seen = (count, now);
+            return;
+        }
+        if now - at < 1.0 {
+            return;
+        }
+        self.audio_errors_seen = (count, now);
+        let per_sec = (count - seen) as f64 / (now - at);
+        if per_sec >= AUDIO_ERROR_STORM && now - self.audio_restarted >= 10.0 {
+            log::warn!("Audio-Ausgabe hängt ({per_sec:.0} Fehler/s), starte sie neu");
+            self.audio_restarted = now;
+            self.restart_audio(now, Some(tr("Die Audio-Ausgabe hing und wurde neu gestartet").to_owned()));
+            self.audio_errors_seen = (0, now);
+        }
+    }
+
     fn restart_audio(&mut self, now: f64, done: Option<String>) {
         let st: Vec<(f64, bool)> = (0..2).map(|d| (self.ctl.shared.decks[d].position_secs(), self.ctl.shared.decks[d].is_playing())).collect();
         // Kopfhörergerät nur wieder öffnen, wenn es lief (siehe `start_head_audio`)
@@ -1224,7 +1255,12 @@ impl FadeWerkDjApp {
                     self.update_progress = None;
                 }
                 Ok(None) if manual => self.notify(trf("FadeWerk DJ {} ist die neueste Version.", &[&env!("CARGO_PKG_VERSION")]), now),
-                Err(()) if manual => self.notify(tr("GitHub ist nicht erreichbar, bitte später noch einmal versuchen."), now),
+                // Ohne curl scheitert jede Prüfung still: auch bei der automatischen darauf hinweisen
+                Err(crate::update::CheckError::NoCurl) => {
+                    let text = tr("Für die Update-Prüfung fehlt das Programm curl (unter Debian/Ubuntu: sudo apt install curl).");
+                    self.notice = Some((text.to_owned(), now + 12.0));
+                }
+                Err(_) if manual => self.notify(tr("GitHub ist nicht erreichbar, bitte später noch einmal versuchen."), now),
                 _ => {}
             }
         }
@@ -2841,6 +2877,8 @@ fn slide_strip(ui: &mut egui::Ui, open: bool, fullscreen: bool) -> Option<StripC
     let mut click = None;
     ui.scope_builder(egui::UiBuilder::new().max_rect(tools).layout(egui::Layout::top_down(egui::Align::Center)), |ui| {
         ui.spacing_mut().item_spacing.y = 2.0;
+        // Ohne Innenabstand bleiben beide Tasten genau gleich groß (das Zahnrad würde sonst breiter)
+        ui.spacing_mut().button_padding = egui::Vec2::ZERO;
         if crate::browser::fullscreen_button_sized(ui, button, fullscreen).clicked() {
             click = Some(StripClick::Fullscreen);
         }
@@ -2930,6 +2968,7 @@ impl eframe::App for FadeWerkDjApp {
         let dt = (now - self.last_logic).clamp(0.0, LOGIC_MAX_DT) as f32;
         self.last_logic = now;
 
+        self.check_audio_errors(now);
         self.poll_library(ctx, now);
         self.poll_fx(now);
         self.poll_fade_preview(now);

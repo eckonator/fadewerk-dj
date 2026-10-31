@@ -476,6 +476,8 @@ fn en(de: &str) -> Option<&'static str> {
         "Plattenspieler zeigen" => "Show turntables",
         "Ohne Plattenteller bekommen die Bedienelemente mehr Platz. Scratchen geht weiter in der Wellenform." => "Without platters the controls get more room. You can still scratch in the waveform.",
         "Kompakte Ansicht" => "Compact view",
+        "Für die Update-Prüfung fehlt das Programm curl (unter Debian/Ubuntu: sudo apt install curl)." => "The update check needs the program curl (on Debian/Ubuntu: sudo apt install curl).",
+        "Die Audio-Ausgabe hing und wurde neu gestartet" => "The audio output got stuck and was restarted",
         "Kleiner Bildschirm: Vollbild (Ctrl+⌘+F) schafft mehr Platz. Die Ordner gleiten mit ⌘B von links herein." => "Small screen: full screen (Ctrl+⌘+F) gives more room. Folders slide in from the left with ⌘B.",
         "Kleiner Bildschirm: Vollbild (F11) schafft mehr Platz. Die Ordner gleiten mit Strg+B von links herein." => "Small screen: full screen (F11) gives more room. Folders slide in from the left with Ctrl+B.",
         "Ordner einblenden oder ausblenden (⌘B)" => "Show or hide folders (⌘B)",

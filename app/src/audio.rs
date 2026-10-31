@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Audio-Ausgabe über cpal: Geräte auflisten, Stream starten, Engine darin betreiben.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use anyhow::{Context, bail};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
@@ -17,6 +20,9 @@ pub struct AudioOut {
     /// Kennung des tatsächlich geöffneten Geräts.
     pub id: String,
     pub sample_rate: u32,
+    /// Fehler des Streams seit dem Start. Hängt er (etwa ALSA über PulseAudio nach einem Aussetzer: dann
+    /// `snd_pcm_avail_delay`-Fehler zu Hunderten pro Sekunde), startet die App die Ausgabe neu (`check_audio_errors`).
+    pub errors: Arc<AtomicU64>,
 }
 
 /// Zweiter Stream für ein eigenes Kopfhörergerät.
@@ -90,19 +96,20 @@ fn try_start(device_id: Option<&str>, buffer_frames: Option<u32>) -> anyhow::Res
     let id = device.id().map(|i| i.to_string()).unwrap_or_default();
 
     // Nicht jedes Gerät nimmt jede Puffergröße an: dann mit dem Standard noch einmal versuchen
-    let (stream, ctl) = match open(&device, config, format) {
+    let errors = Arc::new(AtomicU64::new(0));
+    let (stream, ctl) = match open(&device, config, format, &errors) {
         Ok(ok) => ok,
         Err(e) if buffer_frames.is_some() => {
             log::warn!("Puffergröße {buffer_frames:?} abgelehnt ({e:#}), nehme den Standard");
             config.buffer_size = cpal::BufferSize::Default;
-            open(&device, config, format)?
+            open(&device, config, format, &errors)?
         }
         Err(e) => return Err(e),
     };
     let sample_rate = config.sample_rate as u32;
     let channels = config.channels as usize;
     log::info!("Audio: {name}, {sample_rate} Hz, {channels} Kanäle, {format:?}, Puffer {:?}", config.buffer_size);
-    Ok((AudioOut { _stream: stream, device: name, id, sample_rate }, ctl))
+    Ok((AudioOut { _stream: stream, device: name, id, sample_rate, errors }, ctl))
 }
 
 /// Öffnet ein eigenes Kopfhörergerät. Die Engine schreibt in den gelieferten [`HeadSink`],
@@ -160,22 +167,22 @@ where
     Ok(stream)
 }
 
-fn open(device: &cpal::Device, config: cpal::StreamConfig, format: SampleFormat) -> anyhow::Result<(cpal::Stream, Controller)> {
+fn open(device: &cpal::Device, config: cpal::StreamConfig, format: SampleFormat, errors: &Arc<AtomicU64>) -> anyhow::Result<(cpal::Stream, Controller)> {
     let channels = config.channels as usize;
     let (engine, ctl) = Engine::new(config.sample_rate, channels);
     let stream = match format {
-        SampleFormat::F32 => build::<f32>(device, config, engine, channels)?,
-        SampleFormat::I16 => build::<i16>(device, config, engine, channels)?,
-        SampleFormat::I32 => build::<i32>(device, config, engine, channels)?,
-        SampleFormat::U16 => build::<u16>(device, config, engine, channels)?,
-        SampleFormat::F64 => build::<f64>(device, config, engine, channels)?,
+        SampleFormat::F32 => build::<f32>(device, config, engine, channels, errors)?,
+        SampleFormat::I16 => build::<i16>(device, config, engine, channels, errors)?,
+        SampleFormat::I32 => build::<i32>(device, config, engine, channels, errors)?,
+        SampleFormat::U16 => build::<u16>(device, config, engine, channels, errors)?,
+        SampleFormat::F64 => build::<f64>(device, config, engine, channels, errors)?,
         other => bail!("Sampleformat {other:?} wird nicht unterstützt"),
     };
     stream.play().context("Audio-Stream startet nicht")?;
     Ok((stream, ctl))
 }
 
-fn build<T>(device: &cpal::Device, config: cpal::StreamConfig, mut engine: Engine, channels: usize) -> anyhow::Result<cpal::Stream>
+fn build<T>(device: &cpal::Device, config: cpal::StreamConfig, mut engine: Engine, channels: usize, errors: &Arc<AtomicU64>) -> anyhow::Result<cpal::Stream>
 where
     T: SizedSample + FromSample<f32>,
 {
@@ -191,7 +198,16 @@ where
                 }
             }
         },
-        |e| log::warn!("Audio-Stream: {e}"),
+        {
+            let errors = Arc::clone(errors);
+            // Gezählt für die App; ins Log nur der erste und dann jeder tausendste (sonst Hunderte Zeilen pro Sekunde)
+            move |e| {
+                let n = errors.fetch_add(1, Ordering::Relaxed) + 1;
+                if n == 1 || n.is_multiple_of(1000) {
+                    log::warn!("Audio-Stream ({n}. Fehler): {e}");
+                }
+            }
+        },
         None,
     )?;
     Ok(stream)
