@@ -229,27 +229,64 @@ pub fn set_brushed(on: bool) {
 }
 
 pub fn brushed() -> bool {
-    BRUSHED.load(Ordering::Relaxed) && !lite()
+    BRUSHED.load(Ordering::Relaxed) && !lite().flat
 }
 
-/// Aktiver Skin ist aus Aluminium (siehe [`Finish`]); in der sparsamen Darstellung nicht.
+/// Aktiver Skin ist aus Aluminium (siehe [`Finish`]); ohne Effekte (`Lite::flat`) nicht.
 pub fn alu() -> bool {
-    skin().finish == Finish::Alu && !lite()
+    skin().finish == Finish::Alu && !lite().flat
 }
 
-static LITE: AtomicBool = AtomicBool::new(false);
-
-/// Sparsame Darstellung für ältere oder langsame Rechner: ohne Schatten, Verläufe, Leuchten und Stahl,
-/// weniger Bilder pro Sekunde (siehe `app::FadeWerkDjApp::ui`).
-pub fn set_lite(on: bool) {
-    LITE.store(on, Ordering::Relaxed);
+/// Einzelne Sparmaßnahmen für ältere oder langsame Rechner (Einstellungen → Leistung), frei kombinierbar.
+/// Alles aus = volle Optik, alles an = „Sparsam“.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Lite {
+    /// Rechtecke eckig, Kreise als 16-Ecke, Bögen und Teller aus weniger Punkten (siehe [`simplify_shapes`]).
+    pub shapes: bool,
+    /// Kanten nicht weichzeichnen: halbiert ungefähr die Zahl der Vertices.
+    pub no_feathering: bool,
+    /// Ohne Schatten, Verläufe, Leuchten, Geister-Segmente, Stahl und Alu.
+    pub flat: bool,
+    /// Wellenform und Übersicht in 4- statt 2-Pixel-Spalten.
+    pub coarse_waves: bool,
+    /// Pads nur mit Namen, Pegel als Balken statt LED-Ketten.
+    pub simple_pads: bool,
+    /// Keine Frequenzbänder in MAIN; der Audio-Thread rechnet sie dann auch nicht.
+    pub no_bands: bool,
+    /// Höchstens 30 Bilder/s, im Stillstand 1 Bild/s, ohne Animationen (siehe `app::FadeWerkDjApp::ui`).
+    pub frame_limit: bool,
 }
 
-pub fn lite() -> bool {
-    LITE.load(Ordering::Relaxed)
+impl Lite {
+    pub const ALL: Lite = Lite { shapes: true, no_feathering: true, flat: true, coarse_waves: true, simple_pads: true, no_bands: true, frame_limit: true };
+    pub const NONE: Lite = Lite { shapes: false, no_feathering: false, flat: false, coarse_waves: false, simple_pads: false, no_bands: false, frame_limit: false };
+
+    fn bits(self) -> u8 {
+        [self.shapes, self.no_feathering, self.flat, self.coarse_waves, self.simple_pads, self.no_bands, self.frame_limit]
+            .iter()
+            .enumerate()
+            .fold(0, |b, (i, &on)| b | (on as u8) << i)
+    }
+
+    fn from_bits(b: u8) -> Lite {
+        let on = |i: u8| b & (1 << i) != 0;
+        Lite { shapes: on(0), no_feathering: on(1), flat: on(2), coarse_waves: on(3), simple_pads: on(4), no_bands: on(5), frame_limit: on(6) }
+    }
 }
 
-/// Sparsame Darstellung: das fertige Bild vereinfachen, bevor es tesselliert wird. Rechtecke werden eckig (eine
+static LITE: AtomicU8 = AtomicU8::new(0);
+
+pub fn set_lite(parts: Lite) {
+    LITE.store(parts.bits(), Ordering::Relaxed);
+}
+
+/// Die eingeschalteten Sparmaßnahmen.
+pub fn lite() -> Lite {
+    Lite::from_bits(LITE.load(Ordering::Relaxed))
+}
+
+/// Einfache Formen (`Lite::shapes`): das fertige Bild vereinfachen, bevor es tesselliert wird. Rechtecke werden eckig (eine
 /// abgerundete Ecke ist ein Bogen aus vielen Punkten; gemessen machten abgerundete Rechtecke mehr als die Hälfte
 /// aller Vertices aus), Kreise werden zu 16-Ecken. Auf Grafikchips ohne Vertex-Shader (Intel GMA 950) kostet jeder
 /// Vertex CPU-Zeit. Läuft am Ende jedes Bildes.
@@ -393,15 +430,15 @@ pub fn apply(ctx: &egui::Context) {
         v.faint_bg_color = Color32::from_black_alpha(if s.dark { 60 } else { 26 });
         v.selection.bg_fill = s.ink.gamma_multiply(if s.dark { 0.16 } else { 0.12 });
     }
-    if lite() {
+    if lite().flat {
         // Weiche Schatten unter Fenstern und Menüs kosten viel Zeichenarbeit
         v.window_shadow = egui::Shadow::NONE;
         v.popup_shadow = egui::Shadow::NONE;
     }
     ctx.set_visuals(v);
-    // Sparsam: Kanten nicht weichzeichnen. Halbiert ungefähr die Zahl der Vertices; alte Grafikchips ohne
+    // Kanten nicht weichzeichnen (`Lite::no_feathering`). Halbiert ungefähr die Zahl der Vertices; alte Grafikchips ohne
     // Vertex-Shader (Intel GMA 950) rechnen jeden Vertex im Treiber auf der CPU
-    ctx.tessellation_options_mut(|o| o.feathering = !lite());
+    ctx.tessellation_options_mut(|o| o.feathering = !lite().no_feathering);
 
     ctx.global_style_mut(|st| {
         st.spacing.item_spacing = egui::vec2(6.0, 6.0);

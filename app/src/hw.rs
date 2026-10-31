@@ -27,9 +27,9 @@ pub fn contrast(face: Color32) -> Color32 {
     if l > 150.0 { Color32::from_rgb(12, 14, 20) } else { Color32::from_rgb(246, 248, 252) }
 }
 
-/// Abgerundetes Rechteck mit senkrechtem Verlauf (sparsame Darstellung: einfarbig).
+/// Abgerundetes Rechteck mit senkrechtem Verlauf (ohne Effekte: einfarbig).
 pub fn gradient_rrect(p: &Painter, rect: Rect, radius: f32, top: Color32, bottom: Color32) {
-    if theme::lite() {
+    if theme::lite().flat {
         p.rect_filled(rect, radius, mix(top, bottom, 0.5));
         return;
     }
@@ -324,7 +324,7 @@ pub fn surface(p: &Painter, rect: Rect, radius: f32, top: Color32, bottom: Color
 }
 
 fn shadow(p: &Painter, rect: Rect, radius: f32, dy: i8, blur: u8, alpha: u8) {
-    if theme::lite() {
+    if theme::lite().flat {
         return;
     }
     let s = Shadow { offset: [0, dy], blur, spread: 0, color: Color32::from_black_alpha(alpha) };
@@ -380,7 +380,7 @@ pub fn platter_rim() -> Color32 {
 /// Leuchtender Warnrahmen um ein Panel (z. B. Titel kurz vor dem Ende), mit Schein nach außen.
 pub fn alert_border(p: &Painter, rect: Rect, color: Color32) {
     let r = 8.0;
-    let glow = if theme::lite() { 0 } else { 4 };
+    let glow = if theme::lite().flat { 0 } else { 4 };
     for k in 1..=glow {
         let a = 90.0 / k as f32 / 255.0;
         p.rect_stroke(rect.expand(k as f32 * 1.8), r + k as f32, Stroke::new(1.8, color.gamma_multiply(a)), StrokeKind::Outside);
@@ -468,7 +468,7 @@ fn paint_button_face(p: &Painter, rect: Rect, look: Look, lit: bool, pressed: bo
     if !pressed {
         shadow(p, rect, r, 2, 5, if s.dark { 140 } else { 70 });
     }
-    if lit && !theme::lite() {
+    if lit && !theme::lite().flat {
         // LED-Schein um die Taste
         for k in 1..=4 {
             let a = (70 / k) as u8;
@@ -541,7 +541,7 @@ fn paint_alu_face(p: &Painter, rect: Rect, look: Look, lit: bool, pressed: bool,
         p.rect_filled(slot.expand(1.0), 2.0, Color32::from_black_alpha(if s.dark { 230 } else { 150 }));
         p.line_segment([pos2(slot.left(), slot.bottom() + 1.5), pos2(slot.right(), slot.bottom() + 1.5)], Stroke::new(1.0, Color32::from_white_alpha(if s.dark { 22 } else { 160 })));
         if lit {
-            if !theme::lite() {
+            if !theme::lite().flat {
                 for k in 1..=4 {
                     p.rect_filled(slot.expand(k as f32 * 1.4), 2.0 + k as f32, led.gamma_multiply(0.16 / k as f32));
                 }
@@ -554,7 +554,7 @@ fn paint_alu_face(p: &Painter, rect: Rect, look: Look, lit: bool, pressed: bool,
         c.y -= 3.0;
     } else if lit {
         p.rect_stroke(rect.shrink(1.0), r - 1.0, Stroke::new(1.5, led.gamma_multiply(0.85)), StrokeKind::Inside);
-        if !theme::lite() {
+        if !theme::lite().flat {
             p.rect_filled(rect.shrink(2.0), r - 2.0, led.gamma_multiply(0.07));
         }
     }
@@ -619,7 +619,7 @@ pub fn preview_button(ui: &mut egui::Ui, size: egui::Vec2, previewing: bool) -> 
 
 /// Text in 7-Segment-Schrift mit schwach sichtbaren, unbeleuchteten Segmenten dahinter.
 pub fn lcd_text(p: &Painter, pos: Pos2, align: Align2, text: &str, size: f32, color: Color32) {
-    if !theme::lite() {
+    if !theme::lite().flat {
         let ghost: String = text.chars().map(|c| if c.is_ascii_digit() || c == '-' || c == ' ' { '8' } else { c }).collect();
         p.text(pos, align, ghost, fonts::lcd(size), color.gamma_multiply(0.09));
     }
@@ -940,8 +940,8 @@ pub fn knob(ui: &mut egui::Ui, rect: Rect, id: impl std::hash::Hash + std::fmt::
     let angle = |t: f32| (-0.75 + 1.5 * t) * std::f32::consts::PI;
     let at = |a: f32, rr: f32| c + vec2(a.sin(), -a.cos()) * rr;
     let arc = |from: f32, to: f32, rr: f32, stroke: Stroke| {
-        // Sparsam reichen wenige Segmente (jeder Punkt kostet auf alten Grafikchips CPU-Zeit)
-        let n = if theme::lite() { 12 } else { 32 };
+        // Einfache Formen: wenige Segmente reichen (jeder Punkt kostet auf alten Grafikchips CPU-Zeit)
+        let n = if theme::lite().shapes { 12 } else { 32 };
         let pts: Vec<Pos2> = (0..=n).map(|i| at(angle(from + (to - from) * i as f32 / n as f32), rr)).collect();
         p.add(egui::Shape::line(pts, stroke));
     };
@@ -976,7 +976,7 @@ fn turned_knob(p: &Painter, c: Pos2, body: f32, a: f32, dark: bool) {
     let lite = theme::lite();
     let (base, rim_light) = if dark { (Color32::from_rgb(0x3e, 0x40, 0x45), 70) } else { (Color32::from_rgb(0xd2, 0xd5, 0xda), 255) };
     // Schatten unter dem Knopf
-    if !lite {
+    if !lite.flat {
         for k in 0..4 {
             p.circle_filled(c + vec2(0.0, 2.0 + k as f32 * 0.6), body + 2.0 - k as f32 * 0.6, Color32::from_black_alpha(if dark { 45 } else { 22 }));
         }
@@ -985,7 +985,7 @@ fn turned_knob(p: &Painter, c: Pos2, body: f32, a: f32, dark: bool) {
     p.circle_filled(c, body, darken(base, if dark { 0.45 } else { 0.30 }));
     let face_r = body * 0.86;
     // Stirnfläche als Fächer mit Farbe je Winkel: hell bei ±45°/±135° (Licht von oben links), dunkel dazwischen
-    let n = if lite { 24 } else { 72 };
+    let n = if lite.shapes { 24 } else { 72 };
     let light = |t: f32| {
         let k = (2.0 * (t + 0.35)).cos();
         let k = k * k.abs();
@@ -1002,7 +1002,7 @@ fn turned_knob(p: &Painter, c: Pos2, body: f32, a: f32, dark: bool) {
     }
     p.add(mesh);
     // Feine Drehriefen
-    if !lite {
+    if !lite.flat {
         let rings = ((face_r / 1.6) as usize).min(24);
         for k in 1..rings {
             let rr = face_r * k as f32 / rings as f32;

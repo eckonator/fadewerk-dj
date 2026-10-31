@@ -106,8 +106,11 @@ pub struct Settings {
     pub folders: Vec<PathBuf>,
     /// Fenster beim Start im Vollbild öffnen (zuletzt so verlassen).
     pub fullscreen: bool,
-    /// Sparsame Darstellung für ältere oder langsame Rechner (ohne Effekte, weniger Bilder pro Sekunde).
-    pub lite_ui: bool,
+    /// Sparmaßnahmen der Darstellung für ältere oder langsame Rechner (Einstellungen → Leistung).
+    pub lite: crate::theme::Lite,
+    /// Früherer Schalter „Sparsame Darstellung“: nur noch gelesen, `sanitize` macht daraus alle Sparmaßnahmen.
+    #[serde(skip_serializing)]
+    lite_ui: bool,
     /// Grafik über OpenGL statt wgpu (für Rechner, auf denen wgpu nicht zuverlässig startet).
     pub opengl: bool,
     /// Zoom der ganzen Oberfläche (⌘/Strg + Plus/Minus), 1 = normal.
@@ -183,6 +186,7 @@ impl Default for Settings {
             auto_sync: false,
             folders: Vec::new(),
             fullscreen: false,
+            lite: crate::theme::Lite::NONE,
             lite_ui: false,
             opengl: false,
             ui_zoom: 1.0,
@@ -310,6 +314,9 @@ impl Settings {
             }
             self.columns_rev = 1;
         }
+        if std::mem::take(&mut self.lite_ui) {
+            self.lite = crate::theme::Lite::ALL;
+        }
         let d = Self::default();
         let fit = |v: f32, lo: f32, hi: f32, def: f32| if v.is_finite() { v.clamp(lo, hi) } else { def };
         self.browser_height = fit(self.browser_height, 0.0, 10_000.0, 0.0);
@@ -372,6 +379,16 @@ mod tests {
         assert_eq!(s.fx_volume, 0.3);
         assert_eq!(s.curve_points, Settings::default().curve_points);
         assert_eq!(s.folders, [PathBuf::from("/Musik")]);
+    }
+
+    #[test]
+    fn old_lite_switch_turns_on_every_part() {
+        let s = Settings::from_json(r#"{"lite_ui":true}"#).unwrap();
+        assert_eq!(s.lite, crate::theme::Lite::ALL);
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(!json.contains("lite_ui"));
+        let s = Settings::from_json(r#"{"lite":{"shapes":true,"frame_limit":true}}"#).unwrap();
+        assert!(s.lite.shapes && s.lite.frame_limit && !s.lite.flat);
     }
 
     #[test]

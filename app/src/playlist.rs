@@ -210,6 +210,18 @@ impl Playlist {
         self.fades.splice(start.., fades);
     }
 
+    /// Rückt Eintrag `i` an die Stelle des geladenen Titels, also direkt hinter die gespielten
+    /// (ohne geladenen Titel an den Anfang). Der bisher geladene kommt dadurch als Nächster.
+    /// Gibt die neue Stelle zurück.
+    pub fn move_behind_played(&mut self, i: usize) -> usize {
+        if i >= self.entries.len() {
+            return i;
+        }
+        let before = self.current.unwrap_or(0).min(self.entries.len());
+        self.move_entry(i, before);
+        if i < before { before - 1 } else { before }
+    }
+
     /// Die kommenden Titel (nach dem geladenen).
     pub fn upcoming_entries(&self) -> &[PathBuf] {
         &self.entries[self.current.map_or(0, |c| c + 1).min(self.entries.len())..]
@@ -287,6 +299,26 @@ mod tests {
         p.move_entry(0, 2);
         assert_eq!(names(&p), "10423");
         assert_eq!(p.current, Some(0));
+    }
+
+    #[test]
+    fn load_moves_behind_played() {
+        // 0 und 1 gespielt, 2 geladen: Titel 4 rückt vor die 2
+        let mut p = pl(6, Some(2));
+        assert_eq!(p.move_behind_played(4), 2);
+        assert_eq!(names(&p), "014235");
+        // Ein gespielter Titel rückt ans Ende der gespielten
+        let mut p = pl(6, Some(2));
+        assert_eq!(p.move_behind_played(0), 1);
+        assert_eq!(names(&p), "102345");
+        // Der geladene selbst bleibt, wo er ist
+        let mut p = pl(6, Some(2));
+        assert_eq!(p.move_behind_played(2), 2);
+        assert_eq!(names(&p), "012345");
+        // Ohne geladenen Titel an den Anfang
+        let mut p = pl(4, None);
+        assert_eq!(p.move_behind_played(3), 0);
+        assert_eq!(names(&p), "3012");
     }
 
     #[test]

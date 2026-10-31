@@ -120,7 +120,7 @@ pub fn show_mixer(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerActi
     }
     m.meters[0].paint(&p, led_a);
     // Sparsame Darstellung: MAIN nur mit L/R, die Bänder werden dann auch nicht berechnet
-    m.meters[2].paint_with_bands(&p, led_m, (!theme::lite()).then_some(m.bands), main_base);
+    m.meters[2].paint_with_bands(&p, led_m, (!theme::lite().no_bands).then_some(m.bands), main_base);
     m.meters[1].paint(&p, led_b);
     for (deck, r) in [(0usize, fad_a), (1, fad_b)] {
         let (resp, new) = hw::vertical_fader(ui, r, ("chfader", deck), m.volume[deck], settings::DEFAULT_CHANNEL_VOLUME, false);
@@ -458,8 +458,8 @@ fn pads(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerAction>) {
                 let lit = m.fx_playing & (1 << slot) != 0;
                 let label = &m.fx_labels[slot];
                 let icon = m.fx_icons[slot];
-                // Symbol oben, Name klein darunter; sparsam nur der Name, mittig (die Linien-Symbole kosten Vertices)
-                let lite = theme::lite();
+                // Symbol oben, Name klein darunter; einfache Pads nur mit Namen, mittig (die Linien-Symbole kosten Vertices)
+                let lite = theme::lite().simple_pads;
                 let b = hw::custom_button(ui, vec2(bw, 46.0 * k), hw::Look::Color(theme::select_accent()), lit, true, |p, r, color| {
                     if !lite {
                         let icon_rect = Rect::from_center_size(pos2(r.center().x, r.top() + r.height() * 0.38), vec2(r.height() * 0.42, r.height() * 0.42));

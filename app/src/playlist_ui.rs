@@ -23,6 +23,8 @@ use crate::{fonts, hw};
 
 pub enum PlaylistAction {
     Load(usize),
+    /// Laden aus dem Kontextmenü: der Titel rückt vorher direkt hinter die gespielten.
+    LoadBehindPlayed(usize),
     Remove(usize),
     /// Markierte Titel entfernen (der geladene bleibt).
     RemoveMany(Vec<usize>),
@@ -597,7 +599,7 @@ pub fn show(
             resp.context_menu(|ui| {
                 let load = ui.add_enabled(!deck_playing, egui::Button::new(trf("In Player {} laden", &[&theme::deck_letter(list)])));
                 if load.on_disabled_hover_text(tr("Spielt gerade. Erst stoppen.")).clicked() {
-                    out.push(PlaylistAction::Load(i));
+                    out.push(PlaylistAction::LoadBehindPlayed(i));
                     ui.close();
                 }
                 // Schon geladen oder ohnehin als Nächstes dran: nichts zu verschieben

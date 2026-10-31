@@ -64,7 +64,7 @@ written in Rust. Click a folder and start playing: no database, no library impor
   Eject slides the record off the deck (A to the left, B to the right); a newly loaded one slides in. Embedded cover art turns the record
   into a spinning picture disc. A tonearm swings onto the record on play, follows the track from the
   outer groove inwards, lifts on pause and returns to its rest on stop; drag it to drop the needle
-  anywhere in the track. Prefer a compact deck? Hide the turntables under Settings → Appearance.
+  anywhere in the track. Prefer a compact deck? Hide the turntables under Settings → Performance.
 - **Motor**: start, pause and stop spin up and down like a real turntable
   (start and stop time adjustable in the Motor tab). CUE jumps instantly.
 - **Transport per deck**: CUE, play/pause, stop, previous, next, repeat (off, track, list;
@@ -111,8 +111,9 @@ written in Rust. Click a folder and start playing: no database, no library impor
   the playlists and decks in the main window (not on Wayland). Closing the window docks it again.
   The version number sits next to the MIXER heading; clicking it opens “About”.
 - **Light on resources**: when nothing is playing, the interface only redraws on input. A
-  **lightweight display** for older or slower computers drops shadows, gradients, glow, edge smoothing, rounded
-  corners, the pad icons and the spectrum, shows the level meters as plain bars and limits drawing to 30 frames per second; on very slow graphics (such as an Intel GMA 950
+  **lightweight display** for older or slower computers (Settings → Performance, every measure can be switched on its own)
+  drops shadows, gradients, glow, edge smoothing, rounded corners, the pad icons and the spectrum, shows the level meters
+  as plain bars and limits drawing to 30 frames per second; on very slow graphics (such as an Intel GMA 950
   netbook) it draws less often so that the interface never takes more than about half the CPU from the audio.
 - **Keeps playing in the background**: auto-fade and the next track also work while the window is
   minimised or covered by another app. When one playlist runs out, the other deck plays on alone.
@@ -136,8 +137,8 @@ Ready-to-run builds are on the [Releases](../../releases) page, one release per 
 | macOS 11 or later (Apple Silicon and Intel) | `…-macOS.dmg` or `…-macOS.zip` | Easiest: the [one-line Terminal install](#macos-cannot-be-verified) below. Or open the DMG and drag FadeWerk DJ to Applications (or unzip and move it there). The app is not notarized by Apple, so see below for the first launch. |
 | Windows 10/11 (64-bit) | `…-Windows-Setup.exe` or `…-Windows.zip` | Run the setup: it installs FadeWerk DJ to Program Files, adds it to the Start menu and (optionally) puts a shortcut on the desktop; uninstall under Settings → Apps. Or unzip the portable version and run `FadeWerk DJ.exe`. SmartScreen warns about unknown apps: **More info → Run anyway**. |
 | Linux (x86_64) | `…-Linux-x86_64.tar.gz` | Unpack and run `./fadewerk-dj`, or run `./install.sh` to add it with its icon to the application menu (per user, `./install.sh --uninstall` removes it). Needs ALSA (or PipeWire/PulseAudio with the ALSA layer). |
-| Linux (arm64) | `…-Linux-arm64.tar.gz` | The same for 64-bit ARM, e.g. Raspberry Pi 4 or 5 with 64-bit Raspberry Pi OS (not yet tested on a real Pi). On a Pi 4, the lightweight display (Settings → Appearance) is recommended. |
-| Linux (i386, 32-bit) | `…-Linux-i386.tar.gz` | The same for old 32-bit PCs and netbooks (built for Debian 12 and newer, not yet tested on real hardware). The CPU needs SSE2. The lightweight display (Settings → Appearance) and OpenGL (`FW_RENDERER=glow`) are recommended. |
+| Linux (arm64) | `…-Linux-arm64.tar.gz` | The same for 64-bit ARM, e.g. Raspberry Pi 4 or 5 with 64-bit Raspberry Pi OS (not yet tested on a real Pi). On a Pi 4, the lightweight display (Settings → Performance) is recommended. |
+| Linux (i386, 32-bit) | `…-Linux-i386.tar.gz` | The same for old 32-bit PCs and netbooks (built for Debian 12 and newer, not yet tested on real hardware). The CPU needs SSE2. The lightweight display (Settings → Performance) and OpenGL (`FW_RENDERER=glow`) are recommended. |
 
 ### macOS: "cannot be verified"
 

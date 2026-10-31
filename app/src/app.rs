@@ -369,7 +369,7 @@ impl FadeWerkDjApp {
         i18n::set_lang(settings.language);
         theme::set_skin(settings.skin);
         theme::set_brushed(settings.brushed_steel);
-        theme::set_lite(settings.lite_ui);
+        theme::set_lite(settings.lite);
         // Für die Fehlersuche: welche Grafikkarte und welcher Treiber tatsächlich zeichnen
         let mut software_wgpu = false;
         if let Some(rs) = &cc.wgpu_render_state {
@@ -536,7 +536,7 @@ impl FadeWerkDjApp {
             }
         }
         if std::env::args().any(|a| a == crate::self_update::AFTER_OPENGL_FLAG) {
-            app.notice = Some((tr("Die Grafik zeichnete nur in Software. FadeWerk DJ nutzt jetzt OpenGL (abschaltbar unter Einstellungen → Aussehen).").to_owned(), 0.0));
+            app.notice = Some((tr("Die Grafik zeichnete nur in Software. FadeWerk DJ nutzt jetzt OpenGL (abschaltbar unter Einstellungen → Leistung).").to_owned(), 0.0));
         }
         if std::env::args().any(|a| a == crate::self_update::AFTER_RESET_FLAG) {
             app.notice = Some((tr("FadeWerk DJ wurde zurückgesetzt.").to_owned(), 0.0));
@@ -606,8 +606,8 @@ impl FadeWerkDjApp {
             theme::apply(&cc.egui_ctx);
         }
         if app.dev.lite {
-            app.settings.lite_ui = true;
-            theme::set_lite(true);
+            app.settings.lite = theme::Lite::ALL;
+            theme::set_lite(theme::Lite::ALL);
             theme::apply(&cc.egui_ctx);
         }
         if let Some(l) = app.dev.lang {
@@ -1052,9 +1052,9 @@ impl FadeWerkDjApp {
                 theme::set_brushed(on);
                 theme::apply(ctx);
             }
-            SettingsAction::Lite(on) => {
-                self.settings.lite_ui = on;
-                theme::set_lite(on);
+            SettingsAction::Lite(parts) => {
+                self.settings.lite = parts;
+                theme::set_lite(parts);
                 theme::apply(ctx);
             }
             SettingsAction::Platters(on) => self.settings.platters = on,
@@ -2593,6 +2593,14 @@ impl FadeWerkDjApp {
                     self.load_index(d, i, false, false);
                 }
             }
+            PlaylistAction::LoadBehindPlayed(i) => {
+                if self.ctl.shared.decks[d].is_playing() {
+                    self.notify(trf("Titel nicht geladen: Player {} spielt gerade. Erst stoppen.", &[&theme::deck_letter(d)]), now);
+                } else {
+                    let i = self.playlists[d].move_behind_played(i);
+                    self.load_index(d, i, false, false);
+                }
+            }
             PlaylistAction::Remove(i) => {
                 self.playlists[d].remove(i);
             }
@@ -3152,8 +3160,8 @@ impl eframe::App for FadeWerkDjApp {
         for (m, l) in self.meters.iter_mut().zip(levels) {
             m.update(l, dt, now);
         }
-        // Ohne Anzeige der Bänder (sparsame Darstellung) rechnet der Audio-Thread sie auch nicht
-        self.ctl.shared.set_spectrum(!theme::lite());
+        // Ohne Anzeige der Bänder rechnet der Audio-Thread sie auch nicht
+        self.ctl.shared.set_spectrum(!theme::lite().no_bands);
         self.bands.update(self.ctl.shared.take_bands(), dt, now);
 
         let mut deck_actions: [Vec<DeckAction>; 2] = Default::default();
@@ -3319,7 +3327,7 @@ impl eframe::App for FadeWerkDjApp {
                     Some(StripClick::Folders) => slid = !slid,
                     other => strip_click = other,
                 });
-            let t = ctx.animate_bool_with_time(egui::Id::new("browser_slide"), slid, if theme::lite() { 0.0 } else { SLIDE_SECS });
+            let t = ctx.animate_bool_with_time(egui::Id::new("browser_slide"), slid, if theme::lite().frame_limit { 0.0 } else { SLIDE_SECS });
             if t > 0.0 {
                 let full = ctx.content_rect();
                 let area = Rect::from_min_max(pos2(full.left() + SLIDE_STRIP_W, full.top()), full.max);
@@ -3703,6 +3711,7 @@ impl eframe::App for FadeWerkDjApp {
             channels: self.ctl.shared.channels,
             cache_sizes: self.cache_sizes,
             playing: self.ctl.shared.decks.iter().any(|s| s.is_playing()),
+            compact: self.compact(),
         };
         self.settings_ui.show(&ctx, &sctx, &mut settings_actions);
         if let Some(event) = self.tag_editor.as_mut().and_then(|ed| ed.show(&ctx, self.settings.online_lookup)) {
@@ -3778,14 +3787,14 @@ impl eframe::App for FadeWerkDjApp {
         crate::hw::note_foreign_scroll(&ctx);
         // Pfeil- und Eingabetasten, die kein Regler genommen hat: für die zuletzt angeklickte Titelliste
         crate::keynav::collect(&ctx);
-        if theme::lite() {
+        if theme::lite().shapes {
             theme::simplify_shapes(&ctx);
         }
         // Teller, Wellenform und Pegel laufen, solange etwas spielt (sparsam mit höchstens 30 Bildern/s);
         // im Stillstand nur bei Eingaben und gelegentlich zum Abholen des Engine-Zustands
         if !self.is_moving() {
-            ctx.request_repaint_after(if theme::lite() { IDLE_FRAME_LITE } else { IDLE_FRAME });
-        } else if theme::lite() {
+            ctx.request_repaint_after(if theme::lite().frame_limit { IDLE_FRAME_LITE } else { IDLE_FRAME });
+        } else if theme::lite().frame_limit {
             // Auf langsamen Rechnern (Netbook mit Intel GMA) dauert ein Bild weit länger als 33 ms. Die Pause
             // zählt ab hier, das Zeichnen des Bildes fällt schon hinein; mit der doppelten Bildzeit nimmt die
             // Oberfläche höchstens etwa die Hälfte der Rechenzeit und lässt dem Ton Luft

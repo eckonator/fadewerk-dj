@@ -89,7 +89,7 @@ const BAND_MIN_W: f32 = 5.0;
 
 /// Eine LED-Kette in `x0..x0 + w` über die Höhe von `rect`: `shown` leuchtet, `hold` = Spitzen-LED.
 fn led_column(painter: &Painter, x0: f32, w: f32, rect: Rect, shown: f32, hold: f32) {
-    if theme::lite() {
+    if theme::lite().simple_pads {
         bar_column(painter, x0, w, rect, shown, hold);
         return;
     }

@@ -426,8 +426,8 @@ fn waveform_sized(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, height: 
             p.line_segment([pos2(x, rect.top()), pos2(x, rect.bottom())], Stroke::new(w, Color32::from_white_alpha(14)));
         }
     }
-    // Sparsam halb so viele Spalten: auf kleinen Bildschirmen kaum zu sehen, spart Vertices
-    let cols = (rect.width() / if theme::lite() { 4.0 } else { 2.0 }) as usize;
+    // Grobe Wellenformen: halb so viele Spalten, auf kleinen Bildschirmen kaum zu sehen, spart Vertices
+    let cols = (rect.width() / if theme::lite().coarse_waves { 4.0 } else { 2.0 }) as usize;
     wave_mesh(&p, rect.left(), mid, rect.width() / cols as f32, cols, |i| {
         let t = t0 + (i as f64 / cols as f64) * WAVE_SPAN;
         if t < 0.0 || t > m.duration {
@@ -481,8 +481,8 @@ fn overview_sized(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, height: 
     let p = ui.painter_at(rect.shrink(1.0));
     let (Some(wf), true) = (m.waveform, m.has_track && m.duration > 0.0) else { return };
     let frac = (m.position / m.duration) as f32;
-    // Sparsam halb so viele Spalten: auf kleinen Bildschirmen kaum zu sehen, spart Vertices
-    let cols = (rect.width() / if theme::lite() { 4.0 } else { 2.0 }) as usize;
+    // Grobe Wellenformen: halb so viele Spalten, auf kleinen Bildschirmen kaum zu sehen, spart Vertices
+    let cols = (rect.width() / if theme::lite().coarse_waves { 4.0 } else { 2.0 }) as usize;
     wave_mesh(&p, rect.left(), rect.center().y, rect.width() / cols as f32, cols, |i| {
         let f0 = i as f64 / cols as f64;
         let v = wf.max_in(f0 * m.duration, (f0 + 1.0 / cols as f64) * m.duration) * rect.height() * 0.45;
@@ -632,11 +632,11 @@ const RECORD_SLIDE_SECS: f32 = 0.5;
 fn paint_platter(ui: &egui::Ui, c: Pos2, r: f32, angle: f32, color: Color32, m: &DeckModel<'_>, grabbing: bool) {
     let p = ui.painter();
     let rot = |a: f32, rr: f32| c + vec2((a + angle).cos(), (a + angle).sin()) * rr;
-    // Sparsame Darstellung: ohne Schatten und Lichtreflex, weniger Stroboskop-Punkte und Rillen
+    // Ohne Effekte kein Schatten und Lichtreflex, einfache Formen: weniger Stroboskop-Punkte und Rillen
     let lite = theme::lite();
 
     // Schatten unter dem Teller, dann Metallrand mit Glanz oben links und Stroboskop-Punkten
-    for k in 0..if lite { 0 } else { 6 } {
+    for k in 0..if lite.flat { 0 } else { 6 } {
         p.circle_filled(c + vec2(0.0, 5.0), r + 4.0 - k as f32 * 1.5, Color32::from_black_alpha(18));
     }
     p.circle_filled(c, r, hw::platter_rim());
@@ -647,13 +647,13 @@ fn paint_platter(ui: &egui::Ui, c: Pos2, r: f32, angle: f32, color: Color32, m: 
     arc(3.4, 5.4, r - 1.5, Stroke::new(2.5, Color32::from_white_alpha(60)));
     arc(0.3, 2.3, r - 1.5, Stroke::new(2.5, Color32::from_black_alpha(90)));
     p.circle_stroke(c, r * 0.915, Stroke::new(2.0, Color32::from_black_alpha(140)));
-    let dots = if lite { 24 } else { 72 };
+    let dots = if lite.shapes { 24 } else { 72 };
     for i in 0..dots {
         p.circle_filled(rot(i as f32 / dots as f32 * TAU, r * 0.955), (r * 0.012).max(1.0), Color32::from_rgb(0xcf, 0xd6, 0xe4));
     }
     // Gummimatte mit feinen Ringen, sichtbar, wenn keine Platte aufliegt
     p.circle_filled(c, r * 0.91, Color32::from_rgb(0x1a, 0x1d, 0x24));
-    for k in 1..=if lite { 2 } else { 5 } {
+    for k in 1..=if lite.shapes { 2 } else { 5 } {
         p.circle_stroke(c, r * (0.18 * k as f32).min(0.88), Stroke::new(1.0, Color32::from_white_alpha(10)));
     }
     let pin = |p: &egui::Painter| p.circle_filled(c, r * 0.03, Color32::from_rgb(0xcf, 0xd6, 0xe4));
@@ -685,7 +685,7 @@ fn paint_platter(ui: &egui::Ui, c: Pos2, r: f32, angle: f32, color: Color32, m: 
     let clipped = p.with_clip_rect(ui.max_rect().expand(6.0).intersect(ui.clip_rect()));
     let p = &clipped;
     let rot = |a: f32, rr: f32| c + vec2((a + angle).cos(), (a + angle).sin()) * rr;
-    if slide > 0.0 && !lite {
+    if slide > 0.0 && !lite.flat {
         // Schatten der angehobenen Platte
         p.circle_filled(c + vec2(0.0, 4.0), r * 0.92, Color32::from_black_alpha(70));
     }
@@ -700,11 +700,11 @@ fn paint_platter(ui: &egui::Ui, c: Pos2, r: f32, angle: f32, color: Color32, m: 
     let mut k = 0;
     while rr < r * 0.89 {
         p.circle_stroke(c, rr, Stroke::new(1.0, Color32::from_white_alpha(if k % 3 == 0 { 12 } else { 6 })));
-        rr += r * if lite { 0.066 } else { 0.022 };
+        rr += r * if lite.shapes { 0.066 } else { 0.022 };
         k += 1;
     }
     // Lichtreflex steht still, während die Platte darunter dreht
-    let reflexes: &[(f32, u8)] = if lite { &[] } else { &[(-2.4, 16), (0.7, 10)] };
+    let reflexes: &[(f32, u8)] = if lite.flat { &[] } else { &[(-2.4, 16), (0.7, 10)] };
     for &(a, alpha) in reflexes {
         let pts: Vec<Pos2> = (0..=12)
             .map(|i| { let t = a - 0.35 + i as f32 / 12.0 * 0.7; c + vec2(t.cos(), t.sin()) * r * 0.86 })
