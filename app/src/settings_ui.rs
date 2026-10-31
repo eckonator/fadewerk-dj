@@ -726,7 +726,7 @@ fn look_tab(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction
         }
     });
     ui.label(
-        RichText::new(tr("Für kleine Bildschirme wie Netbooks: flache Player ohne Teller, die Ordner gleiten bei Bedarf von links herein (⌘B bzw. Strg+B). Automatisch schaltet sie bei niedrigem Fenster ein."))
+        RichText::new(tr("Für kleine Bildschirme wie Netbooks: flache Player ohne Teller, die Ordner gleiten bei Bedarf von links herein (⌘B bzw. Strg+B). Automatisch schaltet sie nur auf kleinen Bildschirmen ein."))
             .size(11.5)
             .color(theme::dim()),
     );

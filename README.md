@@ -102,8 +102,8 @@ written in Rust. Click a folder and start playing: no database, no library impor
   playlists to share the height, and zoom with ⌘/Ctrl +, − and 0 (70 to 150 %). **Full screen** via the button
   in the folder browser, F11 or ⌃⌘F on macOS. On wide monitors, the button next to it moves the
   folder browser from below the decks to their right (folder tree above the track list).
-  On **small screens** such as 1024×600 netbooks, the **compact view** (Settings → Appearance, automatic for low
-  windows) shows flat decks without platters and single-line playlist rows; the folder browser slides in from
+  On **small screens** such as 1024×600 netbooks, the **compact view** (Settings → Appearance, automatic on screens
+  lower than 720 points) shows flat decks without platters and single-line playlist rows; the folder browser slides in from
   the left edge over the whole window (click “FOLDERS” or ⌘/Ctrl+B) with a status line of both decks on top,
   and slides away while you drag a track into a playlist. Full screen and the settings sit at the bottom of that strip.
   For two monitors, **detach the folder browser into a window of its own**: its position and size are

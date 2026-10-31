@@ -41,7 +41,9 @@ const ZOOM_STEP: f32 = 0.1;
 const MIN_WINDOW: egui::Vec2 = egui::vec2(1100.0, 620.0);
 /// Kleinstes Fenster, solange die kompakte Ansicht möglich ist (Netbook 1024×600 ohne Zoom).
 const MIN_WINDOW_COMPACT: egui::Vec2 = egui::vec2(1000.0, 480.0);
-/// Unter dieser Fensterhöhe (Punkte) schaltet „Kompakte Ansicht: Automatisch“ ein.
+/// Ist der Bildschirm niedriger (logische Pixel, wie Netbooks mit 1024×600), schaltet „Kompakte Ansicht:
+/// Automatisch“ ein. Bewusst nach dem Bildschirm, nicht nach dem Fenster: Ein klein gezogenes Fenster auf einem
+/// normalen Bildschirm behält die gewohnte Ansicht (Nutzerwunsch).
 const COMPACT_AUTO_H: f32 = 720.0;
 /// Breite der Leiste „ORDNER“ am linken Rand und Dauer des Hereingleitens (kompakte Ansicht).
 const SLIDE_STRIP_W: f32 = 30.0;
@@ -205,6 +207,8 @@ pub struct FadeWerkDjApp {
     audio_error: Option<String>,
     /// Zuletzt gesetztes Mindestfenster in Punkten (`fit_screen`).
     min_window: Option<egui::Vec2>,
+    /// Kleiner Bildschirm (niedriger als `COMPACT_AUTO_H`): dort ist die kompakte Ansicht automatisch an.
+    small_screen: bool,
     /// Kompakte Ansicht: Ordnerbereich eingeschoben (gleitet von links über die ganze Oberfläche).
     browser_slid: bool,
     /// Beim Ziehen eines Titels zurückgeglitten; nach dem Ablegen kommt er wieder herein.
@@ -384,6 +388,7 @@ impl FadeWerkDjApp {
             head_audio: None,
             audio_error: audio_error.clone(),
             min_window: None,
+            small_screen: false,
             // FW_SLIDE=1 (nur Debug): Ordnerbereich der kompakten Ansicht gleich eingeschoben
             browser_slid: cfg!(debug_assertions) && std::env::var_os("FW_SLIDE").is_some(),
             browser_slid_for_drag: false,
@@ -1190,10 +1195,11 @@ impl FadeWerkDjApp {
         let Some(screen) = crate::devtools::fake_screen().or_else(|| ctx.input(|i| i.viewport().monitor_size).map(|m| m * zoom)) else {
             return;
         };
-        let screen = screen - egui::vec2(0.0, SCREEN_RESERVE_H);
-        if screen.x < 1.0 || screen.y < 1.0 {
+        if screen.x < 1.0 || screen.y <= SCREEN_RESERVE_H {
             return;
         }
+        self.small_screen = screen.y < COMPACT_AUTO_H;
+        let screen = screen - egui::vec2(0.0, SCREEN_RESERVE_H);
         // Kleiner als das normale Layout (Netbook): einmal auf Vollbild hinweisen, das spart Fenster- und Taskleiste
         let small = screen.x < MIN_WINDOW.x || screen.y < MIN_WINDOW.y;
         if small && !self.settings.fullscreen_hinted && !ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)) {
@@ -1207,7 +1213,8 @@ impl FadeWerkDjApp {
             self.notice = Some((text.to_owned(), now + 12.0));
             self.save_due = Some(now + 1.0);
         }
-        let min_window = if self.settings.compact == Some(false) { MIN_WINDOW } else { MIN_WINDOW_COMPACT };
+        // Das kleinere Mindestfenster nur, wenn die kompakte Ansicht auch wirklich an ist
+        let min_window = if self.compact() { MIN_WINDOW_COMPACT } else { MIN_WINDOW };
         if !self.settings.zoom_fitted && (screen.x < min_window.x || screen.y < min_window.y) {
             self.settings.zoom_fitted = true;
             let fit = (screen.x / min_window.x).min(screen.y / min_window.y);
@@ -1226,9 +1233,9 @@ impl FadeWerkDjApp {
         }
     }
 
-    /// Kompakte Ansicht: fest eingestellt oder (automatisch) bei niedrigem Fenster.
-    fn compact(&self, ctx: &egui::Context) -> bool {
-        self.settings.compact.unwrap_or_else(|| ctx.content_rect().height() < COMPACT_AUTO_H)
+    /// Kompakte Ansicht: fest eingestellt oder (automatisch) auf kleinen Bildschirmen.
+    fn compact(&self) -> bool {
+        self.settings.compact.unwrap_or(self.small_screen)
     }
 
     /// Zoom der ganzen Oberfläche setzen (begrenzt, auf 5 % gerundet) und merken.
@@ -3064,7 +3071,7 @@ impl eframe::App for FadeWerkDjApp {
         }
 
         // Ordnerbrowser unten oder rechts; in der kompakten Ansicht gleitet er von links über die Oberfläche
-        let compact = self.compact(&ctx);
+        let compact = self.compact();
         let slide = compact && !self.settings.browser_detached;
         if slide {
             // Ein Titel wird gezogen: Player und Playlists freigeben, nach dem Ablegen wieder herein

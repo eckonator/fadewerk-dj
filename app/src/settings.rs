@@ -31,7 +31,7 @@ pub struct Settings {
     pub brushed_steel: bool,
     /// Plattenteller samt Tonarm in den Playern zeigen.
     pub platters: bool,
-    /// Kompakte Ansicht für kleine Bildschirme: `None` = automatisch nach Fensterhöhe, sonst fest an/aus.
+    /// Kompakte Ansicht für kleine Bildschirme: `None` = automatisch nach Bildschirmgröße, sonst fest an/aus.
     pub compact: Option<bool>,
     /// Höhe des Ordnerbrowsers in Punkten, 0 = automatisch (ein knappes Drittel des Fensters).
     pub browser_height: f32,

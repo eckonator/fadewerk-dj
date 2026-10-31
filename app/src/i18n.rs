@@ -484,7 +484,7 @@ fn en(de: &str) -> Option<&'static str> {
         "Ordner einblenden oder ausblenden (Strg+B)" => "Show or hide folders (Ctrl+B)",
         "Automatisch" => "Automatic",
         "An" => "On",
-        "Für kleine Bildschirme wie Netbooks: flache Player ohne Teller, die Ordner gleiten bei Bedarf von links herein (⌘B bzw. Strg+B). Automatisch schaltet sie bei niedrigem Fenster ein." => "For small screens such as netbooks: flat decks without platters, folders slide in from the left when needed (⌘B or Ctrl+B). Automatic turns it on when the window is low.",
+        "Für kleine Bildschirme wie Netbooks: flache Player ohne Teller, die Ordner gleiten bei Bedarf von links herein (⌘B bzw. Strg+B). Automatisch schaltet sie nur auf kleinen Bildschirmen ein." => "For small screens such as netbooks: flat decks without platters, folders slide in from the left when needed (⌘B or Ctrl+B). Automatic turns it on only on small screens.",
         "Ordner unter die Player setzen" => "Move folders below the decks",
         "Caches" => "Caches",
         "Gemerkte Tags, Ordnerlisten und Wellenformen beschleunigen große Sammlungen und Netzlaufwerke. Leeren ist ungefährlich: Alles wird bei Bedarf neu gelesen." => "Remembered tags, folder lists and waveforms speed up large collections and network drives. Clearing them is safe: everything is read again when needed.",
