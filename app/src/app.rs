@@ -365,9 +365,11 @@ impl FadeWerkDjApp {
         theme::set_brushed(settings.brushed_steel);
         theme::set_lite(settings.lite_ui);
         // Für die Fehlersuche: welche Grafikkarte und welcher Treiber tatsächlich zeichnen
+        let mut software_wgpu = false;
         if let Some(rs) = &cc.wgpu_render_state {
             let a = rs.adapter.get_info();
             log::info!("wgpu: {} ({:?}, {:?}, Treiber {} {})", a.name, a.backend, a.device_type, a.driver, a.driver_info);
+            software_wgpu = a.device_type == eframe::egui_wgpu::wgpu::DeviceType::Cpu;
         }
         if let Some(gl) = &cc.gl {
             use eframe::glow::HasContext as _;
@@ -511,6 +513,22 @@ impl FadeWerkDjApp {
             None if app.persist => app.ask_update = true,
             Some(true) if app.persist => app.update_rx = Some(crate::update::check_in_background(cc.egui_ctx.clone())),
             _ => {}
+        }
+        // Linux: Findet wgpu nur einen Software-Renderer (llvmpipe, etwa ältere Intel-Grafik ohne Vulkan), ist
+        // OpenGL über den echten Treiber meist viel schneller (Netbook mit GMA 950: ~150 % statt ~100 % CPU).
+        // Einmalig umstellen und neu starten. Nicht unter Windows: dort ist der Software-Renderer (WARP in VMs,
+        // Remote Desktop) oft noch besser als OpenGL ohne Treiber. Nicht bei FW_RENDERER (bewusst gewählt).
+        if cfg!(target_os = "linux") && software_wgpu && app.persist && std::env::var_os("FW_RENDERER").is_none() {
+            log::warn!("wgpu zeichnet nur in Software, stelle auf OpenGL um und starte neu");
+            app.settings.opengl = true;
+            app.save_settings();
+            match crate::self_update::restart_after_exit(crate::self_update::AFTER_OPENGL_FLAG) {
+                Ok(()) => cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                Err(e) => log::warn!("Neustart für OpenGL nicht möglich: {e}"),
+            }
+        }
+        if std::env::args().any(|a| a == crate::self_update::AFTER_OPENGL_FLAG) {
+            app.notice = Some((tr("Die Grafik zeichnete nur in Software. FadeWerk DJ nutzt jetzt OpenGL (abschaltbar unter Einstellungen → Aussehen).").to_owned(), 0.0));
         }
         if std::env::args().any(|a| a == crate::self_update::AFTER_RESET_FLAG) {
             app.notice = Some((tr("FadeWerk DJ wurde zurückgesetzt.").to_owned(), 0.0));

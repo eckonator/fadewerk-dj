@@ -22,6 +22,8 @@ use eframe::egui;
 pub const AFTER_UPDATE_FLAG: &str = "--after-update";
 /// Bekommt die App beim Start nach „FadeWerk DJ zurücksetzen“ mit.
 pub const AFTER_RESET_FLAG: &str = "--after-reset";
+/// Neustart, weil wgpu nur einen Software-Renderer fand und FadeWerk auf OpenGL umgestellt hat.
+pub const AFTER_OPENGL_FLAG: &str = "--after-opengl";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Progress {

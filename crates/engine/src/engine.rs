@@ -391,6 +391,7 @@ impl Engine {
 
     /// Füllt einen verschachtelten Ausgabepuffer mit `channels` Kanälen.
     pub fn process(&mut self, out: &mut [f32], channels: usize) {
+        flush_denormals();
         while let Ok(cmd) = self.rx.pop() {
             self.apply(cmd);
         }
@@ -652,5 +653,22 @@ mod tests {
         assert_eq!(Arc::strong_count(&t), 2, "Engine hält den Titel nicht mehr, Rückweg schon");
         c.collect_garbage();
         assert_eq!(Arc::strong_count(&t), 1);
+    }
+}
+
+/// Subnormale Gleitkommazahlen im Audio-Thread als null behandeln (x86: FTZ und DAZ im MXCSR).
+/// Klingt ein Player aus, laufen die Zustände der IIR-Filter (EQ, Filter) gegen null und werden subnormal; damit
+/// rechnen Intel-Prozessoren um ein Vielfaches langsamer. Auf einem Netbook (Atom N270) wurde die Audio-Berechnung
+/// so nach jeder Überblendung dreimal so teuer, und der Ton stotterte. Gilt je Thread, darum bei jedem Durchgang
+/// (zwei Befehle). Hörbar ist es nicht: betroffen sind nur Werte unter etwa 1e-38.
+#[inline]
+fn flush_denormals() {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    // SAFETY: liest und setzt nur das Steuerregister der SSE-Einheit dieses Threads
+    unsafe {
+        let mut csr: u32 = 0;
+        std::arch::asm!("stmxcsr [{}]", in(reg) &mut csr, options(nostack, preserves_flags));
+        csr |= 0x8040;
+        std::arch::asm!("ldmxcsr [{}]", in(reg) &csr, options(nostack, preserves_flags, readonly));
     }
 }
