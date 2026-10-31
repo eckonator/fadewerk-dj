@@ -40,3 +40,6 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 cpal = { version = "0.18", features = ["pulseaudio"] }
+# Echtzeit-Priorität für den Audio-Thread über rtkit (D-Bus; MIT, ohnehin im Abhängigkeitsbaum)
+zbus = "5"
+libc = "0.2"

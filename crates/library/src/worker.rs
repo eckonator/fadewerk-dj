@@ -5,13 +5,14 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 
+use anyhow::Context;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use fw_engine::TrackAudio;
 
 use crate::bpm::estimate_bpm;
 use crate::key::{Camelot, estimate_key};
-use crate::decode::decode_file;
-use crate::meta::{Cover, TrackMeta, read_cover, read_meta};
+use crate::decode::{Early, decode_file, decode_file_bytes_early, read_audio_without_id3};
+use crate::meta::{Cover, TrackMeta, read_meta, read_meta_bytes};
 use crate::scan::{list_dir, walk_audio_progress};
 use crate::sketch::{WaveSketch, read_cached, write_cached};
 use crate::waveform::Waveform;
@@ -34,8 +35,6 @@ pub struct Loaded {
     pub key: Option<Camelot>,
     /// `key` stammt aus der Erkennung (dann wird es gemerkt, auch ein „unsicher“).
     pub key_analyzed: bool,
-    /// Eingebettetes Cover für den Plattenteller.
-    pub cover: Option<Cover>,
 }
 
 /// Höchstzahl an Titeln pro Ordnersuche, damit ein Klick auf „Benutzerordner“ nicht ewig sucht.
@@ -50,7 +49,13 @@ pub enum Response {
     /// Gefundene Titel einer Ordnersuche. `done` kommt einmal am Ende, `limited` wenn die Höchstzahl erreicht ist.
     /// `progress` = geschätzter erledigter Anteil (0 bis 1, siehe [`crate::walk_audio_progress`]).
     Scan { token: u64, tracks: Vec<PathBuf>, progress: f32, done: bool, limited: bool },
+    /// Anfang eines Titels, der noch dekodiert wird (nach [`PARTIAL_SECS`]): Der Player kann schon spielen, der
+    /// vollständige Titel folgt als [`Response::Loaded`] mit derselben Kennung.
+    Partial { deck: usize, token: u64, path: PathBuf, meta: TrackMeta, audio: Arc<TrackAudio> },
     Loaded(Box<Loaded>),
+    /// Cover eines eben geladenen Titels, nachgereicht: Dekodieren und Verkleinern großer Bilder dauerte auf
+    /// schwachen Rechnern viele Sekunden, so lange musste der Player sonst warten.
+    Cover { deck: usize, token: u64, cover: Cover },
     Failed { path: PathBuf, deck: Option<usize>, error: String },
     /// Ergebnis von [`Library::analyze`]: BPM und Tonart, je aus dem Tag oder (`*_analyzed`) aus der Erkennung.
     /// `None`, wenn die Datei nicht lesbar ist, kein Beat erkennbar war bzw. die Tonart unsicher ist.
@@ -87,6 +92,18 @@ const TAG_THREADS: usize = 4;
 /// genug Rechenzeit für Oberfläche und Laden bleiben.
 const BPM_THREADS: usize = 2;
 
+/// Größtes eingebettetes Cover-Bild, das noch dekodiert wird.
+const COVER_MAX_BYTES: usize = 8_000_000;
+
+/// Auf schwachen Rechnern (höchstens zwei logische Kerne, etwa ein Atom-Netbook) nur ein Thread je Aufgabe:
+/// Sonst kratzte die laufende Musik, während ein großer Ordner gelesen oder harmonisch sortiert wurde.
+fn threads(normal: usize) -> usize {
+    match std::thread::available_parallelism() {
+        Ok(n) if n.get() <= 2 => 1,
+        _ => normal,
+    }
+}
+
 struct BpmJob {
     generation: u64,
     path: PathBuf,
@@ -99,6 +116,27 @@ struct LoadJob {
     token: u64,
     path: PathBuf,
     sketch_cache: Option<PathBuf>,
+    /// Cover gebraucht? Nur auf sichtbaren Plattentellern; sonst spart das Dekodieren großer Bilder viel Zeit.
+    cover: bool,
+    /// Schon bekannte Tags (aus dem Tag-Cache der App). Mit ihnen und ohne Cover muss der ID3-Block einer MP3
+    /// nicht gelesen werden.
+    known: Option<TrackMeta>,
+    /// Schon bekanntes Tempo und schon bekannte Tonart (Tag oder Cache der App; Tonart `Some(None)` = unsicher).
+    /// Was fehlt, wird erst nach dem Laden ermittelt und als [`Response::Analysis`] nachgereicht.
+    known_bpm: Option<f32>,
+    known_key: Option<Option<Camelot>>,
+}
+
+/// Nach so vielen dekodierten Sekunden bekommt der Player den Anfang des Titels ([`Response::Partial`]).
+/// Der Rest ist auf schwachen Rechnern nach etwa 10 s fertig, lange bevor der Anfang abgespielt ist.
+const PARTIAL_SECS: f64 = 30.0;
+
+/// Was beim Laden schon bekannt ist (siehe [`Library::load`]).
+#[derive(Default)]
+pub struct Known {
+    pub meta: Option<TrackMeta>,
+    pub bpm: Option<f32>,
+    pub key: Option<Option<Camelot>>,
 }
 
 /// Hintergrund-Arbeiter: ein Thread liest Tags, einer dekodiert und analysiert.
@@ -137,7 +175,7 @@ impl Library {
         let (bpm_tx, bpm_rx) = unbounded::<BpmJob>();
         let bpm_generation = Arc::new(AtomicU64::new(0));
 
-        for i in 0..BPM_THREADS {
+        for i in 0..threads(BPM_THREADS) {
             let (tx, wake, rx, generation) = (tx.clone(), wake.clone(), bpm_rx.clone(), bpm_generation.clone());
             thread::Builder::new()
                 .name(format!("fw-bpm-{i}"))
@@ -206,7 +244,7 @@ impl Library {
                 .expect("Such-Thread startet nicht");
         }
 
-        for i in 0..TAG_THREADS {
+        for i in 0..threads(TAG_THREADS) {
             let (tx, wake, meta_rx, check_rx) = (tx.clone(), wake.clone(), meta_rx.clone(), check_rx.clone());
             let (urgent_rx, urgent) = (urgent_rx.clone(), urgent.clone());
             thread::Builder::new()
@@ -276,16 +314,62 @@ impl Library {
         thread::Builder::new()
             .name("fw-loader".into())
             .spawn(move || {
-                background_priority();
+                // Laden ist eine direkte Aktion: nur leicht zurückgestellt, sonst dauerte es neben der Oberfläche ewig
+                set_nice(LOADER_NICE);
                 for job in load_rx {
-                    let resp = match load(&job) {
-                        Ok(l) => Response::Loaded(Box::new(l)),
-                        Err(e) => Response::Failed { path: job.path, deck: Some(job.deck), error: format!("{e:#}") },
+                    let partial_tx = tx.clone();
+                    let partial_wake = wake.clone();
+                    let mut send_partial = |p: Response| {
+                        let _ = partial_tx.send(p);
+                        partial_wake();
+                    };
+                    let (resp, picture, analysis) = match load(&job, &mut send_partial) {
+                        Ok(r) => (Response::Loaded(Box::new(r.loaded)), r.picture, r.analysis),
+                        Err(e) => (Response::Failed { path: job.path.clone(), deck: Some(job.deck), error: format!("{e:#}") }, None, None),
                     };
                     if tx.send(resp).is_err() {
                         break;
                     }
                     wake();
+                    // Fehlende Analysen erst jetzt: der Titel liegt schon im Player
+                    if let Some(audio) = analysis {
+                        let t = std::time::Instant::now();
+                        let bpm = job.known_bpm.or_else(|| estimate_bpm(&audio));
+                        let key = job.known_key.unwrap_or_else(|| estimate_key(&audio));
+                        log::info!("Analyse nach dem Laden {} ms", t.elapsed().as_millis());
+                        let resp = Response::Analysis {
+                            path: job.path.clone(),
+                            bpm,
+                            bpm_analyzed: job.known_bpm.is_none(),
+                            key,
+                            key_analyzed: job.known_key.is_none(),
+                            readable: true,
+                        };
+                        if tx.send(resp).is_err() {
+                            break;
+                        }
+                        wake();
+                    }
+                    // Erst jetzt das Cover: der Titel liegt schon im Player
+                    if let Some(data) = picture {
+                        // Riesige eingebettete Bilder (beobachtet: 57 MB) kosten auf schwachen Rechnern viele Sekunden
+                        // und Hunderte MB Speicher; für einen Plattenteller mit 512 Pixeln lohnt das nicht
+                        if data.len() > COVER_MAX_BYTES {
+                            log::info!("Cover übersprungen: {} MB in {}", data.len() / 1_000_000, job.path.display());
+                            continue;
+                        }
+                        let t = std::time::Instant::now();
+                        match crate::meta::decode_cover(&data) {
+                            Ok(cover) => {
+                                log::info!("Cover nach {} ms ({} KB)", t.elapsed().as_millis(), data.len() / 1024);
+                                if tx.send(Response::Cover { deck: job.deck, token: job.token, cover }).is_err() {
+                                    break;
+                                }
+                                wake();
+                            }
+                            Err(e) => log::debug!("Cover in {} nicht lesbar: {e}", job.path.display()),
+                        }
+                    }
                 }
             })
             .expect("Lade-Thread startet nicht");
@@ -323,9 +407,11 @@ impl Library {
         let _ = self.check_tx.send((path, stamp));
     }
 
-    pub fn load(&self, deck: usize, token: u64, path: PathBuf) {
+    /// Lädt `path` für einen Player. `cover`: das eingebettete Cover nachreichen ([`Response::Cover`]), nur sinnvoll
+    /// bei sichtbaren Plattentellern.
+    pub fn load(&self, deck: usize, token: u64, path: PathBuf, cover: bool, known: Known) {
         let sketch_cache = self.sketch_cache.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        let _ = self.load_tx.send(LoadJob { deck, token, path, sketch_cache });
+        let _ = self.load_tx.send(LoadJob { deck, token, path, sketch_cache, cover, known: known.meta, known_bpm: known.bpm, known_key: known.key });
     }
 
     /// Ordner für den Wellenform-Cache; `None` merkt nichts (Entwicklerläufe).
@@ -359,23 +445,82 @@ impl Library {
     }
 }
 
-fn load(job: &LoadJob) -> anyhow::Result<Loaded> {
-    let meta = read_meta(&job.path).unwrap_or_else(|_| TrackMeta::from_filename(&job.path));
-    let audio = decode_file(&job.path)?;
+/// Lädt einen Titel für einen Player. Die Datei wird nur einmal gelesen (auf Netzlaufwerken kostete jeder Durchgang
+/// Sekunden): Tags und das rohe Cover-Bild kommen aus demselben Puffer wie der Ton. Das Cover-Bild wird erst nach dem
+/// Laden dekodiert (siehe [`Response::Cover`]).
+/// Ergebnis von [`load`]: der Titel, dazu das rohe Cover-Bild (wird danach dekodiert) und, falls Tempo oder
+/// Tonart fehlen, das Audio für die Analyse nach dem Laden.
+struct LoadResult {
+    loaded: Loaded,
+    picture: Option<Vec<u8>>,
+    analysis: Option<Arc<TrackAudio>>,
+}
+
+fn load(job: &LoadJob, send_partial: &mut dyn FnMut(Response)) -> anyhow::Result<LoadResult> {
+    let t0 = std::time::Instant::now();
+    let is_mp3 = job.path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("mp3"));
+    let skip_tags = is_mp3 && !job.cover && job.known.is_some();
+    let bytes = if skip_tags {
+        read_audio_without_id3(&job.path)?
+    } else {
+        std::fs::read(&job.path).with_context(|| format!("{} lässt sich nicht öffnen", job.path.display()))?
+    };
+    let t_read = t0.elapsed();
+    let (meta, picture) = match (&job.known, skip_tags) {
+        (Some(known), true) => (known.clone(), None),
+        _ => read_meta_bytes(&bytes, &job.path).unwrap_or_else(|_| (TrackMeta::from_filename(&job.path), None)),
+    };
+    let t_meta = t0.elapsed();
+    // Vorab-Titel für den Player (nicht beim Vorhören: das beginnt erst bei 30 % des Titels)
+    let mut t_partial = None;
+    let mut partial = |audio: TrackAudio| {
+        t_partial = Some(t0.elapsed());
+        send_partial(Response::Partial { deck: job.deck, token: job.token, path: job.path.clone(), meta: meta.clone(), audio: Arc::new(audio) });
+    };
+    let early = (job.deck != fw_engine::PREVIEW).then_some(Early { secs: PARTIAL_SECS, send: &mut partial });
+    let audio = decode_file_bytes_early(bytes, &job.path, None, early)?;
+    let t_decode = t0.elapsed();
     let waveform = Waveform::from_audio(&audio);
     let sketch = Arc::new(WaveSketch::from_waveform(&waveform));
     if let Some(dir) = &job.sketch_cache {
         write_cached(dir, &job.path, &sketch);
     }
-    let bpm_analyzed = meta.bpm.is_none();
-    let bpm = meta.bpm.or_else(|| estimate_bpm(&audio));
-    let key_analyzed = meta.key.is_none();
-    let key = meta.key.or_else(|| estimate_key(&audio));
+    // Tempo und Tonart aus Tag oder Cache; was fehlt, kommt nach dem Laden (siehe Lade-Thread)
+    let bpm = job.known_bpm.or(meta.bpm);
+    let key = job.known_key.or(meta.key.map(Some));
+    let missing = bpm.is_none() || key.is_none();
     let mut meta = meta;
     meta.duration_secs = audio.duration_secs();
-    // Beim Vorhören dreht keine Platte
-    let cover = if job.deck != fw_engine::PREVIEW { read_cover(&job.path) } else { None };
-    Ok(Loaded { deck: job.deck, token: job.token, path: job.path.clone(), meta, audio: Arc::new(audio), waveform, sketch, bpm, bpm_analyzed, key, key_analyzed, cover })
+    let ms = |a: std::time::Duration, b: std::time::Duration| a.saturating_sub(b).as_millis();
+    log::info!(
+        "Laden {:.1} s ({}): lesen {} ms, Tags {} ms, spielbereit nach {}, dekodiert {} ms, Wellenform {} ms",
+        t0.elapsed().as_secs_f32(),
+        job.path.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned()),
+        t_read.as_millis(),
+        ms(t_meta, t_read),
+        t_partial.map_or("dem Laden".to_owned(), |t| format!("{} ms", t.as_millis())),
+        ms(t_decode, t_meta),
+        ms(t0.elapsed(), t_decode),
+    );
+    // Beim Vorhören und ohne sichtbaren Plattenteller wird kein Cover gezeigt
+    let picture = picture.filter(|_| job.cover && job.deck != fw_engine::PREVIEW);
+    let audio = Arc::new(audio);
+    // Beim Vorhören braucht es keine Analyse
+    let analysis = (missing && job.deck != fw_engine::PREVIEW).then(|| Arc::clone(&audio));
+    let loaded = Loaded {
+        deck: job.deck,
+        token: job.token,
+        path: job.path.clone(),
+        meta,
+        audio,
+        waveform,
+        sketch,
+        bpm,
+        bpm_analyzed: false,
+        key: key.flatten(),
+        key_analyzed: false,
+    };
+    Ok(LoadResult { loaded, picture, analysis })
 }
 
 /// Skizze aus dem Cache oder neu berechnet (dann gemerkt). Das dekodierte Audio wird gleich wieder freigegeben.
@@ -442,13 +587,24 @@ fn read_tags_response(path: PathBuf) -> Response {
     Response::Meta { path, meta, stamp }
 }
 
-/// Hintergrundarbeit (Laden, Analyse, Tags, Wellenformen, Ordnersuche) mit niedrigerer Priorität: Auf schwachen
+/// Hintergrundarbeit (Laden, Analyse, Tags, Wellenformen, Ordnersuche) mit niedrigster Priorität (nice 19, ohne
+/// Sonderrechte erlaubt; 10 reichte nicht, die Musik kratzte beim Lesen großer Ordner noch): Auf schwachen
 /// Rechnern (Netbook, Atom N270) riss sonst das Dekodieren des nächsten Titels nach einer Überblendung den Ton ab.
 /// Unter Linux gilt `setpriority` je Thread; anderswo bleibt es beim Standard.
 fn background_priority() {
+    set_nice(19);
+}
+
+/// Nice-Wert des Lade-Threads. Den Ton schützt dabei der Audio-Thread mit hoher Priorität (rtkit, app/src/audio.rs).
+const LOADER_NICE: i32 = 5;
+
+/// Setzt den Nice-Wert des aufrufenden Threads (nur Linux, dort gilt er je Thread).
+fn set_nice(nice: i32) {
     #[cfg(target_os = "linux")]
     // SAFETY: setzt nur den Nice-Wert des aufrufenden Threads
     unsafe {
-        libc::setpriority(libc::PRIO_PROCESS as _, libc::gettid() as libc::id_t, 10);
+        libc::setpriority(libc::PRIO_PROCESS as _, libc::gettid() as libc::id_t, nice);
     }
+    #[cfg(not(target_os = "linux"))]
+    let _ = nice;
 }

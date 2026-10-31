@@ -25,19 +25,57 @@ pub fn decode_file(path: &Path) -> anyhow::Result<TrackAudio> {
 /// Wie `decode_file`, hört aber nach `max_secs` Sekunden auf (`None` = ganzer Titel).
 pub fn decode_file_head(path: &Path, max_secs: Option<f64>) -> anyhow::Result<TrackAudio> {
     let bytes = std::fs::read(path).with_context(|| format!("{} lässt sich nicht öffnen", path.display()))?;
+    decode_file_bytes(bytes, path, max_secs)
+}
+
+/// Dekodiert die schon gelesene Datei `bytes` (`path` nur für Dateiendung und Fehlermeldungen). Auf langsamen
+/// Netzlaufwerken liest der Lade-Thread die Datei so nur einmal, statt für Tags, Cover und Ton je einmal.
+pub fn decode_file_bytes(bytes: Vec<u8>, path: &Path, max_secs: Option<f64>) -> anyhow::Result<TrackAudio> {
+    decode_file_bytes_early(bytes, path, max_secs, None)
+}
+
+/// Vorab-Titel beim Dekodieren: Sind `secs` Sekunden dekodiert, bekommt `send` einmal den Anfang als
+/// [`TrackAudio::partial`] (mit der geschätzten Gesamtlänge), damit ein Player schon spielen kann.
+pub struct Early<'a> {
+    pub secs: f64,
+    pub send: &'a mut dyn FnMut(TrackAudio),
+}
+
+/// Wie [`decode_file_bytes`], mit optionalem Vorab-Titel (siehe [`Early`]).
+pub fn decode_file_bytes_early(bytes: Vec<u8>, path: &Path, max_secs: Option<f64>, mut early: Option<Early<'_>>) -> anyhow::Result<TrackAudio> {
     let ext = path.extension().and_then(|e| e.to_str()).map(str::to_owned);
-    match decode_bytes(bytes, ext.as_deref(), max_secs) {
+    // Für den Rückweg (MP3 in WAV-Hülle) wird der Inhalt noch einmal gebraucht; nur dann kopieren
+    let mpeg_in_wav = matches!(wav_payload(&bytes), Some((WAVE_FORMAT_MPEGLAYER3 | WAVE_FORMAT_MPEG, _)));
+    let copy = mpeg_in_wav.then(|| bytes.clone());
+    match decode_bytes(bytes, ext.as_deref(), max_secs, early.as_mut()) {
         Ok(t) => Ok(t),
         Err(e) => {
             // MP3 in einer WAV-Hülle (alte Rip-Programme): den Datenblock als MP3 dekodieren
-            let bytes = std::fs::read(path)?;
+            let Some(bytes) = copy else { return Err(e.context(format!("{}", path.display()))) };
             match wav_payload(&bytes) {
-                Some((WAVE_FORMAT_MPEGLAYER3 | WAVE_FORMAT_MPEG, data)) => decode_bytes(data.to_vec(), Some("mp3"), max_secs)
+                Some((WAVE_FORMAT_MPEGLAYER3 | WAVE_FORMAT_MPEG, data)) => decode_bytes(data.to_vec(), Some("mp3"), max_secs, None)
                     .with_context(|| format!("{}: MP3 in WAV-Hülle nicht lesbar", path.display())),
                 _ => Err(e.context(format!("{}", path.display()))),
             }
         }
     }
+}
+
+/// Liest eine MP3-Datei ohne den ID3v2-Block am Anfang (Tags und eingebettete Bilder). Manche Dateien tragen dort
+/// riesige Cover (beobachtet: 57 MB bei 8 MB Musik); über ein langsames Netzlaufwerk kostete allein das Lesen
+/// Sekunden. Nur sinnvoll, wenn Tags und Cover nicht gebraucht werden. Andere Dateien werden ganz gelesen.
+pub fn read_audio_without_id3(path: &Path) -> anyhow::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path).with_context(|| format!("{} lässt sich nicht öffnen", path.display()))?;
+    let mut head = [0u8; 10];
+    let skip = match file.read_exact(&mut head) {
+        Ok(()) => id3v2_len(&head),
+        Err(_) => 0,
+    };
+    file.seek(SeekFrom::Start(skip as u64))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 /// Formatcode und Datenblock einer RIFF/WAVE-Datei, `None` bei anderen Dateien.
@@ -77,7 +115,7 @@ fn id3v2_len(bytes: &[u8]) -> usize {
     10 + size + footer
 }
 
-fn decode_bytes(bytes: Vec<u8>, ext: Option<&str>, max_secs: Option<f64>) -> anyhow::Result<TrackAudio> {
+fn decode_bytes(bytes: Vec<u8>, ext: Option<&str>, max_secs: Option<f64>, mut early: Option<&mut Early<'_>>) -> anyhow::Result<TrackAudio> {
     let mss = MediaSourceStream::new(Box::new(Cursor::new(bytes)), Default::default());
     let mut hint = Hint::new();
     if let Some(ext) = ext {
@@ -88,6 +126,8 @@ fn decode_bytes(bytes: Vec<u8>, ext: Option<&str>, max_secs: Option<f64>) -> any
         .context("Format nicht erkannt")?;
     let track = format.default_track(TrackType::Audio).ok_or_else(|| anyhow!("keine Audiospur"))?;
     let track_id = track.id;
+    // Geschätzte Länge in Frames (bei MP3 ohne Kopf aus der Bitrate); ohne sie kein Vorab-Titel
+    let expected = track.num_frames.map(|n| n as usize);
     let params = track
         .codec_params
         .as_ref()
@@ -132,6 +172,15 @@ fn decode_bytes(bytes: Vec<u8>, ext: Option<&str>, max_secs: Option<f64>) -> any
         }
         if max_secs.is_some_and(|m| frames.len() as f64 >= m * sample_rate as f64) {
             break;
+        }
+        if let (Some(e), Some(expected)) = (early.as_mut(), expected)
+            && frames.len() as f64 >= e.secs * sample_rate as f64
+        {
+            // Nur einmal: danach dekodiert die Schleife ungestört weiter
+            if expected > frames.len() {
+                (e.send)(TrackAudio::partial(sample_rate, frames.clone(), expected));
+            }
+            early = None;
         }
     }
 

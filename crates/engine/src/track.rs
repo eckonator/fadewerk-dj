@@ -6,20 +6,41 @@
 pub struct TrackAudio {
     pub sample_rate: u32,
     pub frames: Vec<[f32; 2]>,
+    /// Nur der Anfang eines Titels, der noch dekodiert wird: erwartete Gesamtlänge in Frames. Der Player spielt
+    /// den Anfang schon, bis die Engine den vollständigen Titel einsetzt (`Command::Complete`).
+    expected: Option<usize>,
 }
 
 impl TrackAudio {
     pub fn new(sample_rate: u32, frames: Vec<[f32; 2]>) -> Self {
         // Eine Abtastrate von 0 ergäbe Divisionen durch 0 (kaputter Dateikopf)
-        Self { sample_rate: sample_rate.max(1), frames }
+        Self { sample_rate: sample_rate.max(1), frames, expected: None }
     }
 
+    /// Anfang eines Titels mit der erwarteten Gesamtlänge `expected_frames` (Schätzung, z. B. aus der Bitrate).
+    pub fn partial(sample_rate: u32, frames: Vec<[f32; 2]>, expected_frames: usize) -> Self {
+        let expected = expected_frames.max(frames.len());
+        Self { sample_rate: sample_rate.max(1), frames, expected: Some(expected) }
+    }
+
+    /// Nur der Anfang, der Rest kommt noch.
+    pub fn is_partial(&self) -> bool {
+        self.expected.is_some()
+    }
+
+    /// Tatsächlich vorhandene Frames.
     pub fn len_frames(&self) -> usize {
         self.frames.len()
     }
 
+    /// Länge des ganzen Titels in Frames (bei einem Anfang die erwartete).
+    pub fn full_len_frames(&self) -> usize {
+        self.expected.unwrap_or(self.frames.len())
+    }
+
+    /// Dauer des ganzen Titels (bei einem Anfang die erwartete, damit Restzeit und Auto-Fade stimmen).
     pub fn duration_secs(&self) -> f64 {
-        self.frames.len() as f64 / self.sample_rate as f64
+        self.full_len_frames() as f64 / self.sample_rate as f64
     }
 
     /// Kubische Hermite-Interpolation an einer gebrochenen Frame-Position.

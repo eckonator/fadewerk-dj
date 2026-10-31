@@ -99,6 +99,15 @@ impl Deck {
         old
     }
 
+    /// Setzt den vollständigen Titel ein, wenn noch dessen Anfang geladen ist (gleiche Kennung). Stelle, Wiedergabe
+    /// und Cue bleiben; der Anfang ist identisch, darum ist der Wechsel nicht zu hören. Liefert den alten zurück.
+    pub fn complete(&mut self, track: Arc<TrackAudio>, id: u64) -> Option<Arc<TrackAudio>> {
+        if self.track_id != id || !self.track.as_ref().is_some_and(|t| t.is_partial()) {
+            return Some(track);
+        }
+        self.track.replace(track)
+    }
+
     pub fn eject(&mut self) -> Option<Arc<TrackAudio>> {
         let old = self.track.take();
         *self = Deck {
@@ -175,7 +184,8 @@ impl Deck {
 
     pub fn seek_secs(&mut self, secs: f64) {
         if let Some(t) = &self.track {
-            self.pos = (secs * t.sample_rate as f64).clamp(0.0, t.len_frames() as f64);
+            // Bis zur vollen Länge, auch wenn erst der Anfang dekodiert ist (bis dahin still)
+            self.pos = (secs * t.sample_rate as f64).clamp(0.0, t.full_len_frames() as f64);
             self.ended = false;
         }
     }
@@ -231,7 +241,7 @@ impl Deck {
 
     pub fn scratch_to_secs(&mut self, secs: f64) {
         if let (Some(t), Some(target)) = (&self.track, self.scratch.as_mut()) {
-            *target = (secs * t.sample_rate as f64).clamp(0.0, t.len_frames() as f64);
+            *target = (secs * t.sample_rate as f64).clamp(0.0, t.full_len_frames() as f64);
         }
     }
 
@@ -304,11 +314,13 @@ impl Deck {
         };
         let track_rate = track.sample_rate as f64;
         let len = track.len_frames() as f64;
+        // Nur der Anfang ist da: am Ende des Vorhandenen warten, nicht als Titelende melden
+        let partial = track.is_partial();
         let step_scale = track_rate / out_rate as f64;
         let smooth = 1.0 - (-1.0 / (RATE_SMOOTH_SECS * out_rate)).exp();
         // Repeat mit Überblendung: in den letzten `fade` Frames läuft der Anfang des Titels mit,
         // im gleichen Abstand wie das Ende (Lesekopf 2 = pos - fade_start). Höchstens ein Drittel des Titels.
-        let fade = if self.repeat_track && self.loop_range.is_none() {
+        let fade = if self.repeat_track && self.loop_range.is_none() && !partial {
             (self.repeat_fade_secs as f64 * track_rate).min(len / 3.0)
         } else {
             0.0
@@ -371,7 +383,10 @@ impl Deck {
                     self.rate = 0.0;
                 }
             } else if self.pos >= len {
-                if self.scratch.is_some() {
+                if partial {
+                    // Der Rest wird noch dekodiert: hier warten (still), bis der vollständige Titel da ist
+                    self.pos = len;
+                } else if self.scratch.is_some() {
                     self.pos = len;
                 } else if self.reverse {
                     // Rückwärts-Player nach vorn angestoßen: am Ende festhalten, der Motor zieht zurück
@@ -439,6 +454,32 @@ mod tests {
         for _ in 0..(secs * SR / 10.0) as usize {
             d.render(motor, SR, &mut buf);
         }
+    }
+
+    #[test]
+    fn partial_track_waits_at_its_end_and_completes_seamlessly() {
+        let motor = Motor::INSTANT;
+        let mut d = Deck::default();
+        // Erst 2 s eines 10-s-Titels
+        d.load(Arc::new(TrackAudio::partial(SR as u32, vec![[0.5; 2]; 2 * SR as usize], 10 * SR as usize)), 7, false);
+        assert_eq!(d.duration_secs(), 10.0);
+        d.play();
+        run(&mut d, &motor, 3.0);
+        // Am Ende des Vorhandenen gewartet, kein Titelende
+        assert!(!d.take_ended());
+        assert!(d.is_playing());
+        assert!((d.position_secs() - 2.0).abs() < 0.01, "pos {}", d.position_secs());
+        // Falsche Kennung: nichts tauschen, der Titel kommt zurück
+        let full = Arc::new(TrackAudio::new(SR as u32, vec![[0.5; 2]; 10 * SR as usize]));
+        assert!(d.complete(full.clone(), 8).is_some_and(|t| Arc::ptr_eq(&t, &full)));
+        // Richtige Kennung: getauscht, Stelle und Wiedergabe bleiben
+        let old = d.complete(full, 7);
+        assert!(old.is_some_and(|t| t.is_partial()));
+        run(&mut d, &motor, 1.0);
+        assert!((d.position_secs() - 3.0).abs() < 0.01, "pos {}", d.position_secs());
+        // Ein vollständiger Titel wird nicht noch einmal ersetzt
+        let again = Arc::new(TrackAudio::new(SR as u32, vec![[0.0; 2]; 5]));
+        assert!(d.complete(again.clone(), 7).is_some_and(|t| Arc::ptr_eq(&t, &again)));
     }
 
     #[test]

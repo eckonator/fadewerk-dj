@@ -86,6 +86,8 @@ struct Pending {
     index: Option<usize>,
     autoplay: bool,
     keep_playing: bool,
+    /// Der Anfang spielt schon (`Response::Partial`); der vollständige Titel wird nur noch eingesetzt.
+    started: bool,
 }
 
 struct DeckView {
@@ -209,6 +211,10 @@ pub struct FadeWerkDjApp {
     min_window: Option<egui::Vec2>,
     /// Kleiner Bildschirm (niedriger als `COMPACT_AUTO_H`): dort ist die kompakte Ansicht automatisch an.
     small_screen: bool,
+    /// Die Bildschirmgröße ist bekannt (`fit_screen` lief). Vorher weiß die App nicht, ob die kompakte Ansicht
+    /// gilt, und damit nicht, ob ein Cover gebraucht wird; Ladeaufträge warten bis dahin in `deferred_loads`.
+    screen_known: bool,
+    deferred_loads: Vec<(usize, usize, bool, bool)>,
     /// Kompakte Ansicht: Ordnerbereich eingeschoben (gleitet von links über die ganze Oberfläche).
     browser_slid: bool,
     /// Beim Ziehen eines Titels zurückgeglitten; nach dem Ablegen kommt er wieder herein.
@@ -391,6 +397,8 @@ impl FadeWerkDjApp {
             audio_error: audio_error.clone(),
             min_window: None,
             small_screen: false,
+            screen_known: false,
+            deferred_loads: Vec::new(),
             // FW_SLIDE=1 (nur Debug): Ordnerbereich der kompakten Ansicht gleich eingeschoben
             browser_slid: cfg!(debug_assertions) && std::env::var_os("FW_SLIDE").is_some(),
             browser_slid_for_drag: false,
@@ -1218,6 +1226,12 @@ impl FadeWerkDjApp {
             return;
         }
         self.small_screen = screen.y < COMPACT_AUTO_H;
+        if !self.screen_known {
+            self.screen_known = true;
+            for (d, i, autoplay, keep_playing) in std::mem::take(&mut self.deferred_loads) {
+                self.load_index(d, i, autoplay, keep_playing);
+            }
+        }
         let screen = screen - egui::vec2(0.0, SCREEN_RESERVE_H);
         // Kleiner als das normale Layout (Netbook): einmal auf Vollbild hinweisen, das spart Fenster- und Taskleiste
         let small = screen.x < MIN_WINDOW.x || screen.y < MIN_WINDOW.y;
@@ -1812,9 +1826,17 @@ impl FadeWerkDjApp {
 
     fn load_index(&mut self, d: usize, i: usize, autoplay: bool, keep_playing: bool) -> bool {
         let Some(path) = self.playlists[d].entries.get(i).cloned() else { return false };
+        if !self.screen_known {
+            self.deferred_loads.push((d, i, autoplay, keep_playing));
+            return true;
+        }
         let token = self.token();
-        self.decks[d].pending = Some(Pending { token, index: Some(i), autoplay, keep_playing });
-        self.lib.load(d, token, path);
+        self.decks[d].pending = Some(Pending { token, index: Some(i), autoplay, keep_playing, started: false });
+        // Cover nur für sichtbare Plattenteller (nicht in der kompakten Ansicht, nicht bei ausgeblendeten)
+        let cover = self.settings.platters && !self.compact();
+        // Bekannte Tags mitgeben: ohne Cover muss der Tag-Block einer MP3 dann nicht übers Netz gelesen werden
+        let known = fw_library::Known { meta: self.metas.get(&path).cloned(), bpm: self.bpms.get(&path).copied(), key: self.keys.get(&path).copied() };
+        self.lib.load(d, token, path, cover, known);
         true
     }
 
@@ -1824,6 +1846,11 @@ impl FadeWerkDjApp {
             Some(i) => self.load_index(d, i, autoplay, keep_playing),
             None => false,
         }
+    }
+
+    /// Player `d` wartet noch auf einen Titel. Spielt schon dessen Anfang (Laden in Stücken), ist er bereit.
+    fn loading(&self, d: usize) -> bool {
+        self.decks[d].pending.as_ref().is_some_and(|p| !p.started)
     }
 
     /// Lädt den ersten neuen Titel, wenn der Player leer ist.
@@ -1865,6 +1892,12 @@ impl FadeWerkDjApp {
                         }
                         self.bpms.insert(path.clone(), bpm);
                     }
+                    // Nachgereichte Analyse eines eben geladenen Titels: auch der Player bekommt das Tempo
+                    if let Some(bpm) = bpm {
+                        for v in self.decks.iter_mut().filter(|v| v.path.as_ref() == Some(&path) && v.bpm.is_none()) {
+                            v.bpm = Some(bpm);
+                        }
+                    }
                     // Auch „unsicher“ merken, damit „Analysieren“ den Titel nicht jedes Mal wieder dekodiert
                     if readable && (key_analyzed || key.is_some()) {
                         if key_analyzed {
@@ -1886,6 +1919,38 @@ impl FadeWerkDjApp {
                         if self.persist && (slow || self.folder_cache.contains(&roots)) {
                             self.folder_cache.put(roots, self.browser.tracks());
                         }
+                    }
+                }
+                Response::Partial { deck: d, token, path, meta, audio } => {
+                    // Der Anfang des Titels: Player spielt schon, der vollständige folgt mit derselben Kennung
+                    let Some(p) = self.decks.get(d).and_then(|v| v.pending.as_ref()).filter(|p| p.token == token) else { continue };
+                    // FadeWerk: Startstelle im Einblendbereich; liegt sie nicht sicher im Anfang, auf den ganzen warten
+                    let start = p.index.and_then(|i| self.playlists[d].fade(i).fade_in).map_or(0.0, |r| r.start as f64);
+                    if start > audio.len_frames() as f64 / audio.sample_rate as f64 - 10.0 {
+                        continue;
+                    }
+                    let (autoplay, keep_playing, index) = (p.autoplay, p.keep_playing, p.index);
+                    if let Some(p) = self.decks[d].pending.as_mut() {
+                        p.started = true;
+                    }
+                    self.ctl.send(Command::Load { deck: d, id: token, track: Arc::clone(&audio), keep_playing, start_secs: start });
+                    if autoplay {
+                        self.ctl.send(Command::Play { deck: d });
+                    }
+                    let bpm = self.bpms.get(&path).copied().or(meta.bpm);
+                    let v = &mut self.decks[d];
+                    v.path = Some(path);
+                    v.meta = Some(meta);
+                    v.waveform = None;
+                    v.bpm = bpm;
+                    v.cover = None;
+                    v.loaded_id = token;
+                    v.spent = false;
+                    v.audio = Some(audio);
+                    v.loop_beats = None;
+                    v.loop_range = None;
+                    if let Some(i) = index {
+                        self.playlists[d].current = Some(i);
                     }
                 }
                 Response::Loaded(l) => {
@@ -1913,6 +1978,16 @@ impl FadeWerkDjApp {
                     let d = l.deck;
                     let Some(p) = self.decks[d].pending.take_if(|p| p.token == l.token) else { continue };
                     let audio = l.audio.clone();
+                    if p.started {
+                        // Der Anfang spielt schon: nur den vollständigen Titel einsetzen, an derselben Stelle
+                        self.ctl.send(Command::Complete { deck: d, id: l.token, track: l.audio });
+                        let v = &mut self.decks[d];
+                        v.meta = Some(l.meta);
+                        v.waveform = Some(Arc::new(l.waveform));
+                        v.bpm = l.bpm.or(v.bpm);
+                        v.audio = Some(audio);
+                        continue;
+                    }
                     // FadeWerk: der Titel beginnt am Anfang seines Einblendbereichs
                     let start = p.index.and_then(|i| self.playlists[d].fade(i).fade_in).map_or(0.0, |r| r.start as f64);
                     self.ctl.send(Command::Load { deck: d, id: l.token, track: l.audio, keep_playing: p.keep_playing, start_secs: start });
@@ -1924,15 +1999,8 @@ impl FadeWerkDjApp {
                     v.meta = Some(l.meta);
                     v.waveform = Some(Arc::new(l.waveform));
                     v.bpm = l.bpm;
-                    v.cover = l.cover.map(|c| {
-                        let img = egui::ColorImage::from_rgba_unmultiplied([c.size as usize; 2], &c.rgba);
-                        ctx.load_texture(
-                            format!("cover-{d}"),
-                            img,
-                            // Mit Mipmaps flimmert das verkleinerte, sich drehende Bild nicht
-                            egui::TextureOptions { mipmap_mode: Some(egui::TextureFilter::Linear), ..egui::TextureOptions::LINEAR },
-                        )
-                    });
+                    // Das Cover kommt danach (`Response::Cover`)
+                    v.cover = None;
                     v.loaded_id = l.token;
                     v.spent = false;
                     v.audio = Some(audio);
@@ -1940,6 +2008,12 @@ impl FadeWerkDjApp {
                     v.loop_range = None;
                     if let Some(i) = p.index {
                         self.playlists[d].current = Some(i);
+                    }
+                }
+                Response::Cover { deck, token, cover } => {
+                    // Nur, wenn der Titel noch geladen ist (inzwischen ausgeworfen oder ein anderer: verwerfen)
+                    if deck < 2 && self.decks[deck].loaded_id == token {
+                        self.decks[deck].cover = Some(cover_texture(ctx, deck, &cover));
                     }
                 }
                 Response::Failed { path, deck, error } => {
@@ -2083,7 +2157,7 @@ impl FadeWerkDjApp {
         let (a, o) = (self.autofade.active, self.autofade.other());
         let fade_of = |d: usize| self.playlists[d].current.map(|i| self.playlists[d].fade(i)).unwrap_or_default();
         let old = if self.has_track(a) { fade_of(a) } else { Default::default() };
-        let ready = self.has_track(o) && !self.decks[o].spent && self.decks[o].pending.is_none();
+        let ready = self.has_track(o) && !self.decks[o].spent && !self.loading(o);
         let new = if ready { fade_of(o) } else { Default::default() };
         let rate = |d: usize| 1.0 + self.decks[d].pitch_pct / 100.0;
         let dur = self.ctl.shared.decks[a].duration_secs();
@@ -2143,7 +2217,7 @@ impl FadeWerkDjApp {
             return;
         }
         let to = self.autofade.other();
-        if self.has_track(to) && !self.decks[to].spent && self.decks[to].pending.is_none() {
+        if self.has_track(to) && !self.decks[to].spent && !self.loading(to) {
             self.ctl.send(Command::Play { deck: to });
             let from = self.autofade.active;
             match self.transition().split {
@@ -2769,7 +2843,7 @@ impl FadeWerkDjApp {
             BrowserAction::Preview(path) => {
                 let token = self.token();
                 self.preview = Some(PreviewView { path: path.clone(), token, ended_seen: 0, clip: None });
-                self.lib.load(PREVIEW, token, path);
+                self.lib.load(PREVIEW, token, path, false, fw_library::Known::default());
                 self.enable_headphones(now);
             }
             BrowserAction::StopPreview => {
@@ -2972,6 +3046,17 @@ fn slide_status_line(ui: &mut egui::Ui, status: &[SlideStatus; 2]) {
             p.galley(pos2(rect.left() + 30.0, rect.center().y - galley.size().y / 2.0), galley, theme::well_ink());
         }
     });
+}
+
+/// Textur für das Cover auf dem Plattenteller von Player `d`.
+fn cover_texture(ctx: &egui::Context, d: usize, c: &fw_library::Cover) -> egui::TextureHandle {
+    let img = egui::ColorImage::from_rgba_unmultiplied([c.size as usize; 2], &c.rgba);
+    ctx.load_texture(
+        format!("cover-{d}"),
+        img,
+        // Mit Mipmaps flimmert das verkleinerte, sich drehende Bild nicht
+        egui::TextureOptions { mipmap_mode: Some(egui::TextureFilter::Linear), ..egui::TextureOptions::LINEAR },
+    )
 }
 
 fn panel_frame(ui: &egui::Ui) -> Frame {
@@ -3342,7 +3427,8 @@ impl eframe::App for FadeWerkDjApp {
                     playing: in_sync && st.is_playing(),
                     speed: if in_sync { st.speed() } else { 0.0 },
                     has_track: v.loaded_id != 0,
-                    loading: v.pending.is_some(),
+                    // Spielt schon der Anfang, gilt der Player nicht mehr als ladend (Name und Zeiten stehen da)
+                    loading: v.pending.as_ref().is_some_and(|p| !p.started),
                     waveform: v.waveform.as_deref(),
                     cover: v.cover.as_ref().map(|t| t.id()),
                     leaving: v.ejected.as_ref().map(|(title, artist, cover, _)| deck_ui::Leaving { title, artist, cover: cover.as_ref().map(|t| t.id()) }),

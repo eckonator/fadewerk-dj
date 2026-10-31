@@ -2,7 +2,7 @@
 //! Audio-Ausgabe über cpal: Geräte auflisten, Stream starten, Engine darin betreiben.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
 use anyhow::{Context, bail};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -97,18 +97,20 @@ fn try_start(device_id: Option<&str>, buffer_frames: Option<u32>) -> anyhow::Res
 
     // Nicht jedes Gerät nimmt jede Puffergröße an: dann mit dem Standard noch einmal versuchen
     let errors = Arc::new(AtomicU64::new(0));
-    let (stream, ctl) = match open(&device, config, format, &errors) {
+    let audio_tid = Arc::new(AtomicI32::new(0));
+    let (stream, ctl) = match open(&device, config, format, &errors, &audio_tid) {
         Ok(ok) => ok,
         Err(e) if buffer_frames.is_some() => {
             log::warn!("Puffergröße {buffer_frames:?} abgelehnt ({e:#}), nehme den Standard");
             config.buffer_size = cpal::BufferSize::Default;
-            open(&device, config, format, &errors)?
+            open(&device, config, format, &errors, &audio_tid)?
         }
         Err(e) => return Err(e),
     };
     let sample_rate = config.sample_rate as u32;
     let channels = config.channels as usize;
     log::info!("Audio: {name}, {sample_rate} Hz, {channels} Kanäle, {format:?}, Puffer {:?}", config.buffer_size);
+    raise_audio_priority(audio_tid);
     Ok((AudioOut { _stream: stream, device: name, id, sample_rate, errors }, ctl))
 }
 
@@ -167,29 +169,36 @@ where
     Ok(stream)
 }
 
-fn open(device: &cpal::Device, config: cpal::StreamConfig, format: SampleFormat, errors: &Arc<AtomicU64>) -> anyhow::Result<(cpal::Stream, Controller)> {
+fn open(device: &cpal::Device, config: cpal::StreamConfig, format: SampleFormat, errors: &Arc<AtomicU64>, tid: &Arc<AtomicI32>) -> anyhow::Result<(cpal::Stream, Controller)> {
     let channels = config.channels as usize;
     let (engine, ctl) = Engine::new(config.sample_rate, channels);
     let stream = match format {
-        SampleFormat::F32 => build::<f32>(device, config, engine, channels, errors)?,
-        SampleFormat::I16 => build::<i16>(device, config, engine, channels, errors)?,
-        SampleFormat::I32 => build::<i32>(device, config, engine, channels, errors)?,
-        SampleFormat::U16 => build::<u16>(device, config, engine, channels, errors)?,
-        SampleFormat::F64 => build::<f64>(device, config, engine, channels, errors)?,
+        SampleFormat::F32 => build::<f32>(device, config, engine, channels, errors, tid)?,
+        SampleFormat::I16 => build::<i16>(device, config, engine, channels, errors, tid)?,
+        SampleFormat::I32 => build::<i32>(device, config, engine, channels, errors, tid)?,
+        SampleFormat::U16 => build::<u16>(device, config, engine, channels, errors, tid)?,
+        SampleFormat::F64 => build::<f64>(device, config, engine, channels, errors, tid)?,
         other => bail!("Sampleformat {other:?} wird nicht unterstützt"),
     };
     stream.play().context("Audio-Stream startet nicht")?;
     Ok((stream, ctl))
 }
 
-fn build<T>(device: &cpal::Device, config: cpal::StreamConfig, mut engine: Engine, channels: usize, errors: &Arc<AtomicU64>) -> anyhow::Result<cpal::Stream>
+fn build<T>(device: &cpal::Device, config: cpal::StreamConfig, mut engine: Engine, channels: usize, errors: &Arc<AtomicU64>, tid: &Arc<AtomicI32>) -> anyhow::Result<cpal::Stream>
 where
     T: SizedSample + FromSample<f32>,
 {
     let mut buf = vec![0.0f32; MAX_FRAMES * channels.max(1)];
+    let tid = Arc::clone(tid);
+    let mut tid_known = false;
     let stream = device.build_output_stream(
         config,
         move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+            // Beim ersten Aufruf melden, in welchem Thread gerechnet wird (für `raise_audio_priority`)
+            if !tid_known {
+                tid_known = true;
+                tid.store(current_tid(), Ordering::Relaxed);
+            }
             for out in data.chunks_mut(buf.len()) {
                 let tmp = &mut buf[..out.len()];
                 engine.process(tmp, channels);
@@ -211,4 +220,59 @@ where
         None,
     )?;
     Ok(stream)
+}
+
+/// Kennung des aufrufenden Threads (Linux), sonst 0.
+fn current_tid() -> i32 {
+    #[cfg(target_os = "linux")]
+    // SAFETY: gettid hat keine Vorbedingungen
+    return unsafe { libc::gettid() };
+    #[allow(unreachable_code)]
+    0
+}
+
+/// Linux: Den Audio-Thread über rtkit (D-Bus) mit hoher Priorität laufen lassen (nice bis −15). Auf schwachen
+/// Rechnern kratzte die Musik sonst, sobald Hintergrundarbeit (Ordner lesen, Analyse) die CPU belegte. Bewusst
+/// keine Echtzeit-Priorität: Die verlangt ein CPU-Zeitlimit, bei dessen Überschreitung der Kernel das ganze Programm
+/// beendet. macOS und Windows geben Audio-Threads ohnehin hohe Priorität. Läuft in einem eigenen Thread, weil der
+/// Audio-Thread erst nach dem Start seine Kennung meldet und D-Bus-Aufrufe dauern können.
+fn raise_audio_priority(tid: Arc<AtomicI32>) {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let spawned = std::thread::Builder::new().name("fw-rtkit".into()).spawn(move || {
+        let mut id = 0;
+        for _ in 0..50 {
+            id = tid.load(Ordering::Relaxed);
+            if id != 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        if id == 0 {
+            log::info!("Audio-Priorität: Audio-Thread meldete sich nicht");
+        } else {
+            #[cfg(target_os = "linux")]
+            match rtkit_high_priority(id) {
+                Ok(nice) => log::info!("Audio-Priorität: Thread {id} läuft mit nice {nice} (rtkit)"),
+                Err(e) => log::info!("Audio-Priorität nicht erhöht: {e:#}"),
+            }
+        }
+    });
+    if let Err(e) = spawned {
+        log::warn!("Audio-Priorität: Thread nicht gestartet: {e}");
+    }
+}
+
+/// Fragt rtkit nach dem niedrigsten erlaubten Nice-Wert und setzt ihn für den Thread `tid`.
+#[cfg(target_os = "linux")]
+fn rtkit_high_priority(tid: i32) -> anyhow::Result<i32> {
+    const DEST: &str = "org.freedesktop.RealtimeKit1";
+    const PATH: &str = "/org/freedesktop/RealtimeKit1";
+    let conn = zbus::blocking::Connection::system().context("System-D-Bus nicht erreichbar")?;
+    let proxy = zbus::blocking::Proxy::new(&conn, DEST, PATH, DEST).context("rtkit nicht gefunden")?;
+    let min_nice: i32 = proxy.get_property("MinNiceLevel").unwrap_or(-15);
+    let nice = min_nice.max(-15);
+    proxy.call_method("MakeThreadHighPriority", &(tid as u64, nice)).context("rtkit lehnt ab")?;
+    Ok(nice)
 }

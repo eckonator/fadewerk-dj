@@ -51,14 +51,22 @@ fn track(rng: &mut Rng) -> Arc<TrackAudio> {
         let v = (rng.below(2000) as f32 / 1000.0 - 1.0) * 0.9;
         [v, -v]
     });
-    Arc::new(TrackAudio::new(rate, frames.collect()))
+    let frames: Vec<_> = frames.collect();
+    // Manchmal nur der Anfang eines längeren Titels (Laden in Stücken)
+    if rng.below(4) == 0 {
+        let expected = frames.len() * 3 + 1;
+        return Arc::new(TrackAudio::partial(rate, frames, expected));
+    }
+    Arc::new(TrackAudio::new(rate, frames))
 }
 
 fn random_command(rng: &mut Rng) -> Command {
     let deck = rng.below(3) as usize;
     let d2 = rng.below(2) as usize;
     match rng.below(36) {
-        0 | 1 => Command::Load { deck, id: rng.next(), track: track(rng), keep_playing: rng.below(2) == 0, start_secs: rng.f(0.0, 2.0) as f64 },
+        // Kleine Kennungen, damit `Complete` oft auf den geladenen Titel trifft
+        0 => Command::Load { deck, id: rng.below(3), track: track(rng), keep_playing: rng.below(2) == 0, start_secs: rng.f(0.0, 2.0) as f64 },
+        1 => Command::Complete { deck, id: rng.below(3), track: track(rng) },
         2 => Command::Eject { deck },
         3 => Command::Play { deck },
         4 => Command::Resume { deck },

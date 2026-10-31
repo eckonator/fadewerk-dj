@@ -38,7 +38,26 @@ impl TrackMeta {
 
 /// Liest Tags und Laufzeit. Fehlen Tags, bleibt der Dateiname als Titel.
 pub fn read_meta(path: &Path) -> anyhow::Result<TrackMeta> {
-    let file = lofty::read_from_path(path)?;
+    meta_from(lofty::read_from_path(path)?, path)
+}
+
+/// Wie [`read_meta`], aber aus der schon gelesenen Datei (`bytes`), ohne sie noch einmal zu öffnen. Liefert
+/// dazu das eingebettete Cover-Bild noch undekodiert (Dekodieren und Verkleinern übernimmt [`decode_cover`]).
+pub fn read_meta_bytes(bytes: &[u8], path: &Path) -> anyhow::Result<(TrackMeta, Option<Vec<u8>>)> {
+    let file = parse_bytes(bytes)?;
+    let picture = {
+        let pictures: Vec<_> = file.tags().iter().flat_map(|t| t.pictures()).collect();
+        pictures.iter().find(|p| p.pic_type() == PictureType::CoverFront).or_else(|| pictures.first()).map(|p| p.data().to_vec())
+    };
+    Ok((meta_from(file, path)?, picture))
+}
+
+/// Tags aus einer Datei im Speicher (Dateiart am Inhalt erkannt).
+fn parse_bytes(bytes: &[u8]) -> anyhow::Result<lofty::file::TaggedFile> {
+    Ok(lofty::probe::Probe::new(std::io::Cursor::new(bytes)).guess_file_type()?.read()?)
+}
+
+fn meta_from(file: lofty::file::TaggedFile, path: &Path) -> anyhow::Result<TrackMeta> {
     let mut meta = TrackMeta::from_filename(path);
     meta.duration_secs = file.properties().duration().as_secs_f64();
     if let Some(tag) = file.primary_tag().or_else(|| file.first_tag()) {
@@ -87,7 +106,10 @@ pub struct Cover {
 /// Liest das eingebettete Cover (bevorzugt „Front Cover“, sonst das erste Bild aus irgendeinem Tag).
 /// Ohne Bild oder bei unlesbaren Bilddaten `None`.
 pub fn read_cover(path: &Path) -> Option<Cover> {
-    let file = lofty::read_from_path(path).ok()?;
+    cover_from(lofty::read_from_path(path).ok()?, path)
+}
+
+fn cover_from(file: lofty::file::TaggedFile, path: &Path) -> Option<Cover> {
     let pictures: Vec<_> = file.tags().iter().flat_map(|t| t.pictures()).collect();
     let pic = pictures
         .iter()

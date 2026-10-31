@@ -404,7 +404,9 @@ fn waveform_sized(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, height: 
     hw::well(ui.painter(), rect, 5.0);
     let p = ui.painter_at(rect.shrink(1.0));
     let Some(wf) = m.waveform.filter(|_| m.has_track) else {
-        p.text(rect.center(), Align2::CENTER_CENTER, if m.loading { tr("Lädt …") } else { tr("Kein Titel geladen") }, FontId::proportional(12.0), theme::faint());
+        // Spielt schon der Anfang (Laden in Stücken), folgt die Wellenform noch
+        let text = if m.loading || m.has_track { tr("Lädt …") } else { tr("Kein Titel geladen") };
+        p.text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(12.0), theme::faint());
         return;
     };
     let t0 = m.position - WAVE_SPAN / 2.0;

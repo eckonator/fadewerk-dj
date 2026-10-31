@@ -1393,7 +1393,7 @@ checksum = "af9673d8203fcb076b19dfd17e38b3d4ae9f44959416ea532ce72415a6020365"
 
 [[package]]
 name = "fadewerk-dj"
-version = "0.1.57"
+version = "0.1.58"
 dependencies = [
  "anyhow",
  "cpal",
@@ -1407,6 +1407,7 @@ dependencies = [
  "image",
  "jiff",
  "keepawake",
+ "libc",
  "log",
  "mp3lame-encoder",
  "rfd",
@@ -1415,6 +1416,7 @@ dependencies = [
  "serde_json",
  "windows",
  "winresource",
+ "zbus",
 ]
 
 [[package]]
@@ -1621,14 +1623,14 @@ dependencies = [
 
 [[package]]
 name = "fw-engine"
-version = "0.1.57"
+version = "0.1.58"
 dependencies = [
  "rtrb",
 ]
 
 [[package]]
 name = "fw-library"
-version = "0.1.57"
+version = "0.1.58"
 dependencies = [
  "anyhow",
  "crossbeam-channel",

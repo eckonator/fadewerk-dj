@@ -28,6 +28,8 @@ const CHUNK: usize = 256;
 /// Befehle von der Oberfläche an den Audio-Thread.
 pub enum Command {
     Load { deck: usize, id: u64, track: Arc<TrackAudio>, keep_playing: bool, start_secs: f64 },
+    /// Vollständiger Titel für einen Player, der bisher nur dessen Anfang hat (siehe [`TrackAudio::partial`]).
+    Complete { deck: usize, id: u64, track: Arc<TrackAudio> },
     Eject { deck: usize },
     Play { deck: usize },
     /// Wie `Play`, aber ohne Motor-Anlauf (Weiterspielen nach einem Neustart der Audio-Ausgabe).
@@ -331,6 +333,10 @@ impl Engine {
                 }
                 self.discard(old);
             }
+            Complete { deck, id, track } if ok(deck) => {
+                let old = self.decks[deck].complete(track, id);
+                self.discard(old);
+            }
             Eject { deck } if ok(deck) => {
                 let old = self.decks[deck].eject();
                 self.discard(old);
@@ -385,6 +391,8 @@ impl Engine {
             StopFx { slot } => self.sampler.stop(slot),
             SetFxVolume(v) => self.sampler.set_volume(v),
             TestTone { to_master } => self.test_tone.start(to_master),
+            // Titel für einen ungültigen Player nicht hier fallen lassen: Freigeben gehört nicht in den Audio-Thread
+            Load { track, .. } | Complete { track, .. } => self.discard(Some(track)),
             _ => {}
         }
     }
