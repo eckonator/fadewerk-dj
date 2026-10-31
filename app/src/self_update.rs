@@ -43,7 +43,13 @@ pub fn asset_suffix() -> Option<&'static str> {
             portable_exe().map(|_| "-Windows.zip")
         }
     } else if cfg!(target_os = "linux") {
-        let arch = if cfg!(target_arch = "aarch64") { "-Linux-arm64.tar.gz" } else { "-Linux-x86_64.tar.gz" };
+        let arch = if cfg!(target_arch = "aarch64") {
+            "-Linux-arm64.tar.gz"
+        } else if cfg!(target_arch = "x86") {
+            "-Linux-i386.tar.gz"
+        } else {
+            "-Linux-x86_64.tar.gz"
+        };
         installed_for_user().map(|_| arch)
     } else {
         None

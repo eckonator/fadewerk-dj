@@ -132,6 +132,7 @@ Ready-to-run builds are on the [Releases](../../releases) page, one release per 
 | Windows 10/11 (64-bit) | `…-Windows-Setup.exe` or `…-Windows.zip` | Run the setup: it installs FadeWerk DJ to Program Files, adds it to the Start menu and (optionally) puts a shortcut on the desktop; uninstall under Settings → Apps. Or unzip the portable version and run `FadeWerk DJ.exe`. SmartScreen warns about unknown apps: **More info → Run anyway**. |
 | Linux (x86_64) | `…-Linux-x86_64.tar.gz` | Unpack and run `./fadewerk-dj`, or run `./install.sh` to add it with its icon to the application menu (per user, `./install.sh --uninstall` removes it). Needs ALSA (or PipeWire/PulseAudio with the ALSA layer). |
 | Linux (arm64) | `…-Linux-arm64.tar.gz` | The same for 64-bit ARM, e.g. Raspberry Pi 4 or 5 with 64-bit Raspberry Pi OS (not yet tested on a real Pi). On a Pi 4, the lightweight display (Settings → Appearance) is recommended. |
+| Linux (i386, 32-bit) | `…-Linux-i386.tar.gz` | The same for old 32-bit PCs and netbooks (built for Debian 12 and newer, not yet tested on real hardware). The CPU needs SSE2. The lightweight display (Settings → Appearance) and OpenGL (`FW_RENDERER=glow`) are recommended. |
 
 ### macOS: "cannot be verified"
 

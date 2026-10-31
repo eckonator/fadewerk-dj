@@ -1,4 +1,4 @@
-# Baut FadeWerk DJ für macOS, Windows und Linux (x86_64 und arm64) und veröffentlicht einen Release unter der
+# Baut FadeWerk DJ für macOS, Windows und Linux (x86_64, arm64 und i386) und veröffentlicht einen Release unter der
 # Versionsnummer aus Cargo.toml (Tag `v<Version>`).
 #
 # - Jeder Push auf main ersetzt den Release dieser Version durch den neuen Stand.
@@ -42,6 +42,12 @@ jobs:
           - os: ubuntu-22.04-arm
             name: Linux-arm64
             arch: arm64
+          # 32 Bit (i386), z. B. alte Netbooks mit Debian 12: Cross-Build auf x86_64, gelinkt wird nur ALSA
+          # (X11/Wayland/GL lädt die App zur Laufzeit). Die Tests laufen als 32-Bit-Programme direkt auf dem Runner.
+          - os: ubuntu-22.04
+            name: Linux-i386
+            arch: i386
+            target: i686-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -50,16 +56,33 @@ jobs:
       - name: Rust installieren
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.name == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.name == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target || '' }}
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
       - name: Linux-Pakete
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && !matrix.target
         run: |
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libxkbcommon-dev libwayland-dev libx11-dev \
             libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libdbus-1-dev pkg-config
+
+      # Für i386 zeigen cargo, cc und pkg-config über die Umgebung auf das 32-Bit-Ziel.
+      - name: Linux-Pakete (i386)
+        if: matrix.target == 'i686-unknown-linux-gnu'
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y gcc-multilib g++-multilib libasound2-dev:i386 pkg-config
+          {
+            echo "CARGO_BUILD_TARGET=i686-unknown-linux-gnu"
+            echo "PKG_CONFIG_ALLOW_CROSS=1"
+            echo "PKG_CONFIG_PATH=/usr/lib/i386-linux-gnu/pkgconfig"
+            echo "PKG_CONFIG_LIBDIR=/usr/lib/i386-linux-gnu/pkgconfig"
+            echo "MP3LAME_SYS_OVERRIDE_HOST=i686-pc-linux-gnu"
+          } >> "$GITHUB_ENV"
 
       - name: Tests
         run: cargo test --workspace --release
@@ -67,7 +90,7 @@ jobs:
       - name: Lizenzhinweise der Bibliotheken sammeln
         shell: bash
         run: |
-          cargo install cargo-bundle-licenses --locked
+          env -u CARGO_BUILD_TARGET cargo install cargo-bundle-licenses --locked
           cargo bundle-licenses --format yaml --output THIRD-PARTY-LICENSES.yml
 
       - name: Version bestimmen
@@ -136,9 +159,11 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           cargo build --release -p fadewerk-dj
+          BIN="target/${{ matrix.target }}/release/fadewerk-dj"
+          [ -n "${{ matrix.target }}" ] || BIN=target/release/fadewerk-dj
           DIR="FadeWerk-DJ-${{ steps.version.outputs.version }}-Linux-${{ matrix.arch }}"
           mkdir -p "pkg/$DIR"
-          cp target/release/fadewerk-dj assets/fadewerk-dj.desktop README.md LICENSE \
+          cp "$BIN" assets/fadewerk-dj.desktop README.md LICENSE \
             THIRD-PARTY-LICENSES.yml assets/fonts/OFL-*.txt "pkg/$DIR/"
           cp assets/icon-256.png "pkg/$DIR/fadewerk-dj.png"
           cp scripts/install-linux.sh "pkg/$DIR/install.sh"
@@ -176,7 +201,7 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: FadeWerk DJ ${{ steps.version.outputs.version }}
           body: |
-            Builds for macOS (Apple Silicon and Intel, one universal app), Windows (64-bit) and Linux (x86_64 and arm64, e.g. Raspberry Pi 4/5 with 64-bit Raspberry Pi OS).
+            Builds for macOS (Apple Silicon and Intel, one universal app), Windows (64-bit) and Linux (x86_64, arm64 e.g. Raspberry Pi 4/5 with 64-bit Raspberry Pi OS, and i386 for old 32-bit PCs and netbooks).
 
             **macOS, easiest way** (no Gatekeeper prompt): paste into Terminal
             ```
