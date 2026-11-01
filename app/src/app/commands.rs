@@ -103,6 +103,7 @@ impl FadeWerkDjApp {
             add(trf("Playlist {} zufällig mischen", &[&l]), lists, "", PaletteCmd::Playlist(d, PlaylistAction::Shuffle));
             add(trf("Playlist {} leeren", &[&l]), lists, "", PaletteCmd::Playlist(d, PlaylistAction::Clear));
         }
+        add(tr("Alles leeren (beide Playlists und Player) …").into(), lists, "", PaletteCmd::ClearAll);
         add(onoff(self.fadewerk, tr("FadeWerk-Modus")), lists, "", PaletteCmd::Playlist(0, PlaylistAction::FadeWerk(!self.fadewerk)));
 
         let folders = tr("Ordner");
@@ -181,6 +182,7 @@ impl FadeWerkDjApp {
             PaletteCmd::Zoom(z) => self.set_zoom(ctx, z),
             PaletteCmd::Slide => self.browser_slid = !self.browser_slid,
             PaletteCmd::Refresh => self.browser.refresh(),
+            PaletteCmd::ClearAll => self.confirm_clear_all = true,
             PaletteCmd::Lean => {
                 self.settings_action(SettingsAction::Lite(theme::Lite::ALL), ctx, now);
                 self.settings_action(SettingsAction::Platters(false), ctx, now);
@@ -208,6 +210,8 @@ enum PaletteCmd {
     /// Ordnerbereich der kompakten Ansicht hereinschieben oder zurück.
     Slide,
     Refresh,
+    /// Beide Playlists und Player leeren (mit Rückfrage).
+    ClearAll,
     /// Sparsam: alle Sparmaßnahmen an und Plattenspieler aus.
     Lean,
     /// Volle Optik: alle Sparmaßnahmen aus und Plattenspieler an.

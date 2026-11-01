@@ -22,6 +22,7 @@
 //! - `FW_LITE=1` schaltet die sparsame Darstellung ein (ohne zu speichern).
 //! - `FW_VIEW=live|auto` wählt die Arbeitsweise (Live oder Automatik).
 //! - `FW_PALETTE=<Text>` öffnet die Befehlssuche mit diesem Suchtext.
+//! - `FW_CLEAR_ALL=1` öffnet die Rückfrage „Alles leeren“ (in `app.rs`).
 //! - `FW_SETTINGS=allgemein|audio|musik|effekte|aussehen|leistung|ueber` öffnet das Einstellungsfenster auf dieser Seite.
 //! - `FW_POINTER=x,y` bewegt die Maus (in Punkten) nach Bild 100 dorthin, etwa um Tooltips zu sehen;
 //!   `FW_POINTER=x,y,2` klickt dort rechts (Kontextmenü), `FW_POINTER=x,y,1` links;

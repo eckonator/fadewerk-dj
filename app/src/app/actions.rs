@@ -4,6 +4,79 @@
 use super::*;
 
 impl FadeWerkDjApp {
+    /// Player leeren: Titel aus der Engine nehmen, die Platte gleitet hinaus.
+    pub(super) fn eject(&mut self, d: usize, now: f64) {
+        self.ctl.send(Command::Eject { deck: d });
+        let v = &mut self.decks[d];
+        // Platte mit ihrem Label/Cover noch zeigen, während sie hinausgleitet
+        let (title, artist) = v.meta.as_ref().map_or_else(Default::default, |m| (m.title.clone(), m.artist.clone()));
+        v.ejected = Some((title, artist, v.cover.take(), now));
+        v.path = None;
+        v.meta = None;
+        v.waveform = None;
+        v.audio = None;
+        v.bpm = None;
+        v.cover = None;
+        v.loaded_id = 0;
+        v.spent = false;
+        v.pending = None;
+        v.loop_beats = None;
+        v.loop_range = None;
+    }
+
+    /// „Alles leeren“: laufende Player stoppen sofort, eine Überblendung bricht ab, beide Player und beide
+    /// Playlists werden leer (für einen neuen Abend). Gefragt wird vorher in `clear_all_dialog`.
+    pub(super) fn clear_all(&mut self, now: f64) {
+        self.autofade.cancel();
+        self.browser_action(BrowserAction::StopPreview, now);
+        for d in 0..2 {
+            if self.has_track(d) || self.decks[d].pending.is_some() {
+                self.eject(d, now);
+            }
+            self.playlists[d].clear_keep(false);
+        }
+        self.notify(tr("Beide Playlists und Player sind leer."), now);
+    }
+
+    /// Rückfrage zu „Alles leeren“; spielt etwas, steht dabei, dass die Musik sofort stoppt.
+    pub(super) fn clear_all_dialog(&mut self, ctx: &egui::Context, now: f64) {
+        if !self.confirm_clear_all {
+            return;
+        }
+        let playing: Vec<&str> = (0..2).filter(|&d| self.ctl.shared.decks[d].is_playing()).map(theme::deck_letter).collect();
+        let mut close = false;
+        let mut confirm = false;
+        let modal = egui::Modal::new(egui::Id::new("alles_leeren"))
+            .frame(egui::Frame::window(&ctx.global_style()).fill(theme::panel()).inner_margin(egui::Margin::same(16)))
+            .show(ctx, |ui| {
+                ui.set_width(380.0);
+                ui.label(RichText::new(tr("Alles leeren?")).font(crate::fonts::bold(17.0)));
+                ui.add_space(6.0);
+                ui.label(tr("Beide Playlists und beide Player werden geleert. Deine Musikdateien bleiben unberührt."));
+                if !playing.is_empty() {
+                    ui.add_space(4.0);
+                    let who = playing.join(" + ");
+                    ui.label(RichText::new(trf("Player {} spielt gerade, die Musik stoppt sofort.", &[&who])).color(theme::cue()));
+                }
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    let font = egui::FontId::proportional(13.0);
+                    if crate::hw::button(ui, vec2(130.0, 28.0), tr("Alles leeren"), font.clone(), crate::hw::Look::Color(theme::cue()), true, true).clicked() {
+                        confirm = true;
+                    }
+                    if crate::hw::button(ui, vec2(100.0, 28.0), tr("Abbrechen"), font, crate::hw::Look::Plain, false, true).clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if confirm {
+            self.confirm_clear_all = false;
+            self.clear_all(now);
+        } else if close || modal.should_close() {
+            self.confirm_clear_all = false;
+        }
+    }
+
     pub(super) fn deck_action(&mut self, d: usize, a: DeckAction, now: f64) {
         let st_pos = self.ctl.shared.decks[d].position_secs();
         let st_dur = self.ctl.shared.decks[d].duration_secs();
@@ -48,22 +121,7 @@ impl FadeWerkDjApp {
                     self.notify(trf("Player {} ist gerade zu hören. Erst stoppen oder wegblenden.", &[&theme::deck_letter(d)]), now);
                     return;
                 }
-                self.ctl.send(Command::Eject { deck: d });
-                let v = &mut self.decks[d];
-                // Platte mit ihrem Label/Cover noch zeigen, während sie hinausgleitet
-                let (title, artist) = v.meta.as_ref().map_or_else(Default::default, |m| (m.title.clone(), m.artist.clone()));
-                v.ejected = Some((title, artist, v.cover.take(), now));
-                v.path = None;
-                v.meta = None;
-                v.waveform = None;
-                v.audio = None;
-                v.bpm = None;
-                v.cover = None;
-                v.loaded_id = 0;
-                v.spent = false;
-                v.pending = None;
-                v.loop_beats = None;
-                v.loop_range = None;
+                self.eject(d, now);
             }
             DeckAction::Reverse(on) => {
                 self.decks[d].reverse = on;
@@ -273,6 +331,7 @@ impl FadeWerkDjApp {
                 self.playlists[d].shuffle_upcoming(shuffle_seed());
                 self.sort_undo = Some((before, crate::session::fingerprint(&self.playlists), now));
             }
+            PlaylistAction::ClearAll => self.confirm_clear_all = true,
             PlaylistAction::Clear => {
                 let keep = self.has_track(d) && self.ctl.shared.decks[d].is_playing();
                 self.playlists[d].clear_keep(keep);

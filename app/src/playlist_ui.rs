@@ -29,6 +29,8 @@ pub enum PlaylistAction {
     /// Markierte Titel entfernen (der geladene bleibt).
     RemoveMany(Vec<usize>),
     Clear,
+    /// Beide Playlists und beide Player leeren (fragt vorher nach).
+    ClearAll,
     Shuffle,
     /// Kommende Titel beider Playlists harmonisch ordnen (siehe `harmonic.rs`).
     Harmonic,
@@ -266,6 +268,9 @@ pub fn show(
             // Abgesetzt und rot: leert die Liste, ein laufender Titel bleibt
             if ui.add_enabled(!pl.entries.is_empty(), egui::Button::new(RichText::new(tr("Playlist leeren")).color(theme::cue()))).clicked() {
                 out.push(PlaylistAction::Clear);
+            }
+            if ui.add(egui::Button::new(RichText::new(tr("Alles leeren (A und B) …")).color(theme::cue()))).on_hover_text(tr("Leert beide Playlists und beide Player, für einen neuen Abend")).clicked() {
+                out.push(PlaylistAction::ClearAll);
             }
         });
         // Schnellsuche: springt zum ersten Treffer ab dem geladenen Titel, Enter zum nächsten, ⇧Enter zurück

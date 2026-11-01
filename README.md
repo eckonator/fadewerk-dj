@@ -118,6 +118,8 @@ view; otherwise in the live view. The choice is remembered.
 - The **⋯ menu** in the playlist header sorts the upcoming tracks – *harmonically*, planning both playlists
   in the A – B – A order auto-fade plays them so that every transition fits by key first and tempo second
   (missing keys are detected first), or *shuffled* – undoes the last sorting, and clears the playlist.
+  **Clear everything (A and B)** in the same menu or the command search empties both playlists and both decks
+  for a new night (asks first; a playing deck stops at once).
 
 ### Folders and library
 
@@ -280,6 +282,7 @@ Code comments are in German; issues and contributions in English are welcome.
 | `FW_VIEW=live\|auto` | Starts in the live or the automatic view. |
 | `FW_SLIDE=1` | Starts with the sliding folder browser slid in. |
 | `FW_PALETTE=text` | Opens the command search with this text. |
+| `FW_CLEAR_ALL=1` | Opens the “Clear everything” question. |
 | `FW_SKIN=anthrazit\|silber\|nacht\|classic\|tag\|neon`, `FW_STEEL=1`, `FW_LITE=1`, `FW_LANG=de\|en` | Look (`FW_LITE` = all performance options on) and language. |
 | `FW_PREVIEW=1` | Pre-listens to the second track in the demo. |
 | `FW_SELECT=1` | Selects tracks 2 to 4 in the folder browser. |

@@ -368,6 +368,8 @@ pub struct FadeWerkDjApp {
     settings_ui: SettingsUi,
     /// Befehlssuche (⌘K).
     palette: crate::palette::Palette,
+    /// Rückfrage zu „Alles leeren“ ist offen.
+    confirm_clear_all: bool,
     tag_editor: Option<TagEditor>,
     tag_batch: Option<crate::tag_batch::TagBatch>,
     save_due: Option<f64>,
@@ -514,6 +516,7 @@ impl FadeWerkDjApp {
             sketch: Sketches::default(),
             settings_ui: SettingsUi::default(),
             palette: Default::default(),
+            confirm_clear_all: false,
             tag_editor: None,
             tag_batch: None,
             save_due: None,
@@ -629,6 +632,8 @@ impl FadeWerkDjApp {
             theme::set_brushed(true);
             theme::apply(&cc.egui_ctx);
         }
+        // FW_CLEAR_ALL=1 (nur Debug): Rückfrage „Alles leeren“ gleich offen
+        app.confirm_clear_all = cfg!(debug_assertions) && std::env::var_os("FW_CLEAR_ALL").is_some();
         if let Some(q) = app.dev.palette.clone() {
             app.palette.open_with(&q);
         }
@@ -1371,6 +1376,7 @@ impl eframe::App for FadeWerkDjApp {
             self.palette.open();
         }
         self.show_palette(&ctx, now);
+        self.clear_all_dialog(&ctx, now);
 
         // Vollbild: F11 überall, auf macOS zusätzlich ⌃⌘F (wie die grüne Fenstertaste)
         let fs_key = ctx.input_mut(|i| {
