@@ -80,7 +80,8 @@ pub(super) fn automatic(ui: &mut egui::Ui, v: &Views<'_>, out: &mut ViewOut) {
                 deck_ui::hero_card(ui, right, &v.decks[1 - air], true, tr("ALS NÄCHSTES"), Some(next_out));
                 // Display: Pegel links, feine Trennlinie, rechts der Übergang
                 crate::hw::well(ui.painter(), display, 6.0);
-                let meters_w = if compact { 56.0 } else { 70.0 };
+                // Kompakt schmaler, aber nur ohne Frequenzbänder: zwischen L und R von MAIN passen sonst keine Säulen
+                let meters_w = if compact && theme::lite().no_bands { 56.0 } else { 70.0 };
                 let meters = Rect::from_min_size(display.min + vec2(12.0, 9.0), vec2(meters_w, bh - 15.0));
                 mixer_ui::display_meters(ui.painter(), meters, v.mixer);
                 let sep_x = meters.right() + 12.0;

@@ -31,6 +31,8 @@ pub enum PlaylistAction {
     Clear,
     /// Beide Playlists und beide Player leeren (fragt vorher nach).
     ClearAll,
+    /// Weitere Exemplare desselben Titels entfernen (der geladene bleibt).
+    RemoveDuplicates,
     Shuffle,
     /// Kommende Titel beider Playlists harmonisch ordnen (siehe `harmonic.rs`).
     Harmonic,
@@ -158,7 +160,6 @@ pub fn show(
             false => pl.entries.iter().position(|e| e == p).map(|j| (j, p.clone())),
         });
     }
-    let all_rows = || pl.entries.iter().cloned().enumerate().collect::<Vec<_>>();
     // Treffer der Schnellsuche, die markiert werden sollen („Alle markieren“)
     let mut mark_hits: Option<Vec<usize>> = None;
     // Ausrichtung beim Scrollen zur Markierung: Pfeiltasten nur bis sichtbar, Suchtreffer in die Mitte
@@ -264,6 +265,12 @@ pub fn show(
                     out.push(PlaylistAction::SortUndo);
                 }
             }
+            let dups = ui
+                .add_enabled(pl.entries.len() > 1, egui::Button::new(tr("Dubletten entfernen")))
+                .on_hover_text(tr("Lässt von mehreren Exemplaren desselben Titels (gleicher Interpret und Titel, fast gleiche Länge) nur eines stehen. Der geladene Titel bleibt."));
+            if dups.clicked() {
+                out.push(PlaylistAction::RemoveDuplicates);
+            }
             ui.separator();
             // Abgesetzt und rot: leert die Liste, ein laufender Titel bleibt
             if ui.add_enabled(!pl.entries.is_empty(), egui::Button::new(RichText::new(tr("Playlist leeren")).color(theme::cue()))).clicked() {
@@ -273,7 +280,7 @@ pub fn show(
                 out.push(PlaylistAction::ClearAll);
             }
         });
-        // Schnellsuche: springt zum ersten Treffer ab dem geladenen Titel, Enter zum nächsten, ⇧Enter zurück
+        // Schnellsuche: zeigt nur die Treffer und markiert den ersten ab dem geladenen Titel, Enter den nächsten, ⇧Enter den vorigen
         if let Some((fill, focus)) = search {
             let (jump, mark) = quick_search(ui, list, pl, metas, cursor, fill, focus, search_room);
             if let Some(hit) = jump {
@@ -341,6 +348,18 @@ pub fn show(
     out.extend(head_out);
     ui.separator();
 
+    // Mit Suchtext zeigt die Liste nur die Treffer (Stellen in `pl.entries`, aufsteigend); sonst alle Titel
+    let query: String = ui.data(|d| d.get_temp(egui::Id::new(("pl_search", list)))).unwrap_or_default();
+    let shown: Option<Vec<usize>> = (!query.trim().is_empty()).then(|| filtered(ui, list, pl, metas, &query));
+    let n_rows = shown.as_ref().map_or(pl.entries.len(), Vec::len);
+    // Zeile k der Ansicht → Eintrag, Eintrag → Zeile (falls gezeigt)
+    let entry_at = |k: usize| shown.as_ref().map_or(k, |s| s[k]);
+    let row_of = |i: usize| match &shown {
+        Some(s) => s.binary_search(&i).ok(),
+        None => (i < pl.entries.len()).then_some(i),
+    };
+    let all_rows = || (0..n_rows).map(|k| (entry_at(k), pl.entries[entry_at(k)].clone())).collect::<Vec<_>>();
+
     let current = if deck_has_track { pl.current } else { None };
     let next = pl.current.map_or(0, |c| c + 1);
 
@@ -380,7 +399,7 @@ pub fn show(
     if let Some(k) = keys {
         if k.steps != 0 {
             // Ohne Markierung beginnt sie beim geladenen Titel
-            cursor = keynav::step(cursor.or(pl.current), k.steps, pl.entries.len());
+            cursor = keynav::step(cursor.or(pl.current).and_then(row_of), k.steps, n_rows).map(entry_at);
             scroll_to_cursor = Some(None);
             // Mit ⇧ wird der Bereich ab dem zuletzt geklickten Titel markiert
             if let Some(c) = cursor {
@@ -428,24 +447,26 @@ pub fn show(
         let spacing = ui.spacing().item_spacing.y;
         let row_h = if key_info.compact { ROW_H_COMPACT } else { ROW_H };
         let stride = row_h + spacing;
-        let n = pl.entries.len();
+        let n = n_rows;
+        // Zeile mit offenem Editor (ist ihr Titel weggefiltert, steht der Editor nicht in der Liste)
+        let edit_row = edit.and_then(row_of);
         let top = ui.cursor().top();
         let clip = ui.clip_rect();
         // Unter der Zeile mit offenem Editor rücken alle folgenden um dessen Höhe nach unten
         let extra = EDIT_H + spacing;
-        let y_of = |i: usize| top + i as f32 * stride + if edit.is_some_and(|e| i > e) { extra } else { 0.0 };
+        let y_of = |k: usize| top + k as f32 * stride + if edit_row.is_some_and(|e| k > e) { extra } else { 0.0 };
         let row_at = |y: f32| ((y - top) / stride).max(0.0);
-        let first = match edit {
+        let first = match edit_row {
             Some(e) if row_at(clip.top()).floor() as usize > e => (row_at(clip.top() - extra).floor() as usize).max(e),
             _ => row_at(clip.top()).floor() as usize,
         }
         .min(n);
-        let last = match edit {
+        let last = match edit_row {
             Some(e) if (row_at(clip.bottom()).ceil() as usize + 1) > e => (row_at(clip.bottom() - extra).ceil() as usize + 1).max(e + 1),
             _ => row_at(clip.bottom()).ceil() as usize + 1,
         }
         .min(n);
-        if let Some(c) = pl.current.filter(|&c| c < n) {
+        if let Some(c) = pl.current.and_then(row_of) {
             let rect = Rect::from_min_size(pos2(ui.cursor().left(), y_of(c)), vec2(width, row_h));
             current_top = Some(rect.top());
             if scroll_to_current {
@@ -453,13 +474,14 @@ pub fn show(
                 ui.scroll_to_rect(rect.translate(vec2(0.0, spacing)), Some(egui::Align::TOP));
             }
         }
-        if let (Some(c), Some(align)) = (cursor, scroll_to_cursor) {
+        if let (Some(c), Some(align)) = (cursor.and_then(row_of), scroll_to_cursor) {
             ui.scroll_to_rect(Rect::from_min_size(pos2(ui.cursor().left(), y_of(c)), vec2(width, row_h)), align);
         }
         if first > 0 {
             ui.allocate_space(vec2(width, y_of(first) - top - spacing));
         }
-        for (i, path) in pl.entries.iter().enumerate().take(last).skip(first) {
+        for i in (first..last).map(entry_at) {
+            let path = &pl.entries[i];
             let (rect, resp) = ui.allocate_exact_size(vec2(width, row_h), Sense::click_and_drag());
             let fallback;
             let m = match metas.get(path) {
@@ -679,7 +701,7 @@ pub fn show(
         }
 
         if last < n {
-            let end = top + n as f32 * stride + if edit.is_some() { extra } else { 0.0 };
+            let end = top + n as f32 * stride + if edit_row.is_some() { extra } else { 0.0 };
             ui.allocate_space(vec2(width, end - y_of(last) - spacing));
         }
 
@@ -690,6 +712,8 @@ pub fn show(
         let (rect, resp) = ui.allocate_exact_size(vec2(width, rest), Sense::hover());
         if pl.entries.is_empty() {
             ui.painter().text(rect.center_top() + vec2(0.0, 30.0), Align2::CENTER_CENTER, tr("Leer. Titel aus dem Ordner hierher ziehen."), FontId::proportional(12.5), theme::faint());
+        } else if n == 0 {
+            ui.painter().text(rect.center_top() + vec2(0.0, 30.0), Align2::CENTER_CENTER, tr("Kein Titel passt zur Suche."), FontId::proportional(12.5), theme::faint());
         }
         let foreign_here = foreign.is_some_and(|pt| rect.contains(pt));
         if resp.dnd_hover_payload::<DragItem>().is_some() || foreign_here {
@@ -1211,7 +1235,7 @@ fn quick_search(ui: &mut egui::Ui, list: usize, pl: &Playlist, metas: &HashMap<P
             mark |= b.on_hover_text(tr("Markiert alle Treffer in der Playlist (⌘A im Suchfeld). Danach mit Entf entfernen oder gemeinsam verschieben.")).clicked();
         }
     }
-    resp.on_hover_text(tr("Springt zum passenden Titel. Enter: nächster Treffer, ⇧Enter: voriger, Esc: leeren"));
+    resp.on_hover_text(tr("Zeigt nur passende Titel. Enter: nächster Treffer, ⇧Enter: voriger, Esc: leeren"));
     let marked = mark.then(|| search_hits(pl, metas, &query)).filter(|h| !h.is_empty());
     if marked.is_some() {
         // Das Feld gibt die Tasten ab, damit Entf die markierten Titel entfernt
@@ -1234,6 +1258,26 @@ fn hits_widths(ui: &egui::Ui) -> (f32, f32) {
 }
 
 /// Stellen aller Titel, die alle Wörter von `query` in Titel, Interpret, Album oder Dateiname enthalten.
+/// Treffer der Schnellsuche für die gefilterte Ansicht. Gemerkt mit Suchtext, Länge der Liste und Zahl der
+/// Tags; bleiben alle gemerkten Treffer an ihrer Stelle, gilt die Liste weiter (Umsortieren verschiebt sonst
+/// Treffer), damit lange Playlists nicht jedes Bild durchsucht werden.
+fn filtered(ui: &egui::Ui, list: usize, pl: &Playlist, metas: &HashMap<PathBuf, TrackMeta>, query: &str) -> Vec<usize> {
+    type Cached = (String, usize, usize, Arc<Vec<(usize, PathBuf)>>);
+    let id = egui::Id::new(("pl_filter", list));
+    if let Some((q, len, n_meta, hits)) = ui.data(|d| d.get_temp::<Cached>(id))
+        && q == query
+        && len == pl.entries.len()
+        && n_meta == metas.len()
+        && hits.iter().all(|(i, p)| pl.entries.get(*i) == Some(p))
+    {
+        return hits.iter().map(|(i, _)| *i).collect();
+    }
+    let hits = search_hits(pl, metas, query);
+    let keep = Arc::new(hits.iter().map(|&i| (i, pl.entries[i].clone())).collect());
+    ui.data_mut(|d| d.insert_temp::<Cached>(id, (query.to_owned(), pl.entries.len(), metas.len(), keep)));
+    hits
+}
+
 fn search_hits(pl: &Playlist, metas: &HashMap<PathBuf, TrackMeta>, query: &str) -> Vec<usize> {
     let words: Vec<String> = query.split_whitespace().map(crate::browser::fold).collect();
     if words.is_empty() {

@@ -256,14 +256,16 @@ pub struct Lite {
     pub no_bands: bool,
     /// Höchstens 30 Bilder/s, im Stillstand 1 Bild/s, ohne Animationen (siehe `app::FadeWerkDjApp::ui`).
     pub frame_limit: bool,
+    /// Die große, mitlaufende Wellenform im Player bleibt leer (Klicken und Scratchen darin gehen weiter).
+    pub no_waves: bool,
 }
 
 impl Lite {
-    pub const ALL: Lite = Lite { shapes: true, no_feathering: true, flat: true, coarse_waves: true, simple_pads: true, no_bands: true, frame_limit: true };
-    pub const NONE: Lite = Lite { shapes: false, no_feathering: false, flat: false, coarse_waves: false, simple_pads: false, no_bands: false, frame_limit: false };
+    pub const ALL: Lite = Lite { shapes: true, no_feathering: true, flat: true, coarse_waves: true, simple_pads: true, no_bands: true, frame_limit: true, no_waves: true };
+    pub const NONE: Lite = Lite { shapes: false, no_feathering: false, flat: false, coarse_waves: false, simple_pads: false, no_bands: false, frame_limit: false, no_waves: false };
 
     fn bits(self) -> u8 {
-        [self.shapes, self.no_feathering, self.flat, self.coarse_waves, self.simple_pads, self.no_bands, self.frame_limit]
+        [self.shapes, self.no_feathering, self.flat, self.coarse_waves, self.simple_pads, self.no_bands, self.frame_limit, self.no_waves]
             .iter()
             .enumerate()
             .fold(0, |b, (i, &on)| b | (on as u8) << i)
@@ -271,7 +273,7 @@ impl Lite {
 
     fn from_bits(b: u8) -> Lite {
         let on = |i: u8| b & (1 << i) != 0;
-        Lite { shapes: on(0), no_feathering: on(1), flat: on(2), coarse_waves: on(3), simple_pads: on(4), no_bands: on(5), frame_limit: on(6) }
+        Lite { shapes: on(0), no_feathering: on(1), flat: on(2), coarse_waves: on(3), simple_pads: on(4), no_bands: on(5), frame_limit: on(6), no_waves: on(7) }
     }
 }
 

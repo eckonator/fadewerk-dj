@@ -2072,22 +2072,29 @@ const DUPLICATE_SECS: f64 = 3.0;
 /// Interpret und Titel aus den Tags (ohne Tags: gleicher Dateiname), Groß/Klein, Umlaute und Satzzeichen
 /// egal, und höchstens `DUPLICATE_SECS` Unterschied in der Länge (Live- oder Extended-Fassung bleibt).
 fn without_duplicates<'a>(rows: Vec<Row>, meta: impl Fn(&Path) -> Option<&'a TrackMeta>) -> Vec<Row> {
+    let flags = duplicate_flags(rows.iter().map(|r| r.path.as_path()), meta);
+    rows.into_iter().zip(flags).filter(|(_, dup)| !dup).map(|(r, _)| r).collect()
+}
+
+/// Für jeden Pfad, ob er ein weiteres Exemplar eines früheren ist (Regeln wie [`without_duplicates`]).
+pub fn duplicate_flags<'a, 'p>(paths: impl IntoIterator<Item = &'p Path>, meta: impl Fn(&Path) -> Option<&'a TrackMeta>) -> Vec<bool> {
     let key = |t: &str| fold(t).split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
     let mut seen: HashMap<String, Vec<f64>> = HashMap::new();
-    rows.into_iter()
-        .filter(|r| {
-            let m = meta(&r.path);
+    paths
+        .into_iter()
+        .map(|path| {
+            let m = meta(path);
             let (k, secs) = match m {
                 Some(m) if !m.title.trim().is_empty() => (format!("{}\u{1f}{}", key(&m.artist), key(&m.title)), m.duration_secs),
-                _ => (key(&r.path.file_stem().unwrap_or_default().to_string_lossy()), m.map_or(0.0, |m| m.duration_secs)),
+                _ => (key(&path.file_stem().unwrap_or_default().to_string_lossy()), m.map_or(0.0, |m| m.duration_secs)),
             };
             let lens = seen.entry(k).or_default();
             // Unbekannte Länge (0) passt zu allem
             if lens.iter().any(|&l| l == 0.0 || secs == 0.0 || (l - secs).abs() <= DUPLICATE_SECS) {
-                return false;
+                return true;
             }
             lens.push(secs);
-            true
+            false
         })
         .collect()
 }

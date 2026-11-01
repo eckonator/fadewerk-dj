@@ -71,6 +71,10 @@ pub struct Settings {
     /// Fehlt das Feld (Einstellungen von vorher), gilt 0.
     #[serde(default)]
     pub columns_rev: u32,
+    /// Stand der Sparmaßnahmen: 1 = „Wellenform aus“ gibt es (bis dahin hieß „Sparsam“ alle übrigen an).
+    /// Fehlt das Feld (Einstellungen von vorher), gilt 0.
+    #[serde(default)]
+    pub lite_rev: u32,
     /// Vom Nutzer gezogene Spaltenbreiten der Titelliste in Punkten, je Spaltenschlüssel.
     pub column_widths: Vec<(String, f32)>,
     /// Sortierung der Titelliste: (Spaltenschlüssel, absteigend), `None` = Reihenfolge der Ordner.
@@ -172,6 +176,7 @@ impl Default for Settings {
             columns_share: 0.0,
             track_columns: crate::browser::TrackColumn::DEFAULT.iter().map(|c| c.key().to_owned()).collect(),
             columns_rev: 1,
+            lite_rev: 1,
             column_widths: Vec::new(),
             track_sort: None,
             center_tab: None,
@@ -330,6 +335,13 @@ impl Settings {
         if std::mem::take(&mut self.lite_ui) {
             self.lite = crate::theme::Lite::ALL;
         }
+        // Wer vorher „Sparsam“ hatte, bekommt die neue Sparmaßnahme „Wellenform aus“ dazu
+        if self.lite_rev < 1 {
+            if self.lite == (crate::theme::Lite { no_waves: false, ..crate::theme::Lite::ALL }) {
+                self.lite.no_waves = true;
+            }
+            self.lite_rev = 1;
+        }
         let d = Self::default();
         let fit = |v: f32, lo: f32, hi: f32, def: f32| if v.is_finite() { v.clamp(lo, hi) } else { def };
         self.browser_height = fit(self.browser_height, 0.0, 10_000.0, 0.0);
@@ -402,6 +414,12 @@ mod tests {
         assert!(!json.contains("lite_ui"));
         let s = Settings::from_json(r#"{"lite":{"shapes":true,"frame_limit":true}}"#).unwrap();
         assert!(s.lite.shapes && s.lite.frame_limit && !s.lite.flat);
+        // „Sparsam“ von vor „Wellenform aus“ bleibt „Sparsam“, eigene Auswahl bleibt, wie sie ist
+        let all_old = r#"{"lite":{"shapes":true,"no_feathering":true,"flat":true,"coarse_waves":true,"simple_pads":true,"no_bands":true,"frame_limit":true}}"#;
+        assert_eq!(Settings::from_json(all_old).unwrap().lite, crate::theme::Lite::ALL);
+        assert!(!Settings::from_json(r#"{"lite":{"shapes":true}}"#).unwrap().lite.no_waves);
+        let s = Settings::from_json(r#"{"lite_rev":1,"lite":{"shapes":true,"no_feathering":true,"flat":true,"coarse_waves":true,"simple_pads":true,"no_bands":true,"frame_limit":true}}"#).unwrap();
+        assert!(!s.lite.no_waves);
     }
 
     #[test]

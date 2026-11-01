@@ -137,11 +137,12 @@ impl FadeWerkDjApp {
         add(tr("Volle Optik").into(), perf, "", PaletteCmd::FullLook);
         add(tr("Sparsam").into(), perf, "", PaletteCmd::Lean);
         type Pick = fn(&mut Lite) -> &mut bool;
-        let parts: [(&str, Pick); 7] = [
+        let parts: [(&str, Pick); 8] = [
             (tr("Einfache Formen"), |l| &mut l.shapes),
             (tr("Kantenglättung aus"), |l| &mut l.no_feathering),
             (tr("Ohne Schatten und Leuchten"), |l| &mut l.flat),
             (tr("Grobe Wellenformen"), |l| &mut l.coarse_waves),
+            (tr("Wellenform aus"), |l| &mut l.no_waves),
             (tr("Pads ohne Symbole"), |l| &mut l.simple_pads),
             (tr("Frequenzbänder aus"), |l| &mut l.no_bands),
             (tr("Bildrate begrenzen"), |l| &mut l.frame_limit),

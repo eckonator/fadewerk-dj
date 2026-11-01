@@ -332,6 +332,18 @@ impl FadeWerkDjApp {
                 self.sort_undo = Some((before, crate::session::fingerprint(&self.playlists), now));
             }
             PlaylistAction::ClearAll => self.confirm_clear_all = true,
+            PlaylistAction::RemoveDuplicates => {
+                let pl = &self.playlists[d];
+                // Der geladene Titel gilt als erstes Exemplar und bleibt, sonst das früheste in der Liste
+                let mut order: Vec<usize> = pl.current.filter(|&c| c < pl.entries.len()).into_iter().collect();
+                order.extend((0..pl.entries.len()).filter(|&i| Some(i) != pl.current));
+                let flags = crate::browser::duplicate_flags(order.iter().map(|&i| pl.entries[i].as_path()), |p| self.metas.get(p));
+                let gone: Vec<usize> = order.iter().zip(flags).filter(|(_, dup)| *dup).map(|(&i, _)| i).collect();
+                let n = gone.len();
+                self.playlists[d].remove_many(&gone);
+                let msg = if n == 0 { tr("Keine Dubletten gefunden").to_owned() } else { trf("{} Dubletten entfernt", &[&n]) };
+                self.notify(msg, now);
+            }
             PlaylistAction::Clear => {
                 let keep = self.has_track(d) && self.ctl.shared.decks[d].is_playing();
                 self.playlists[d].clear_keep(keep);

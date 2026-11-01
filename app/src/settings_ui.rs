@@ -1016,6 +1016,7 @@ fn performance_page(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<Settin
                 part(ui, out, tr("Kantenglättung aus"), tr("Halbiert die Zeichenarbeit, Kanten wirken gezackt."), |l| &mut l.no_feathering);
                 part(ui, out, tr("Ohne Schatten und Leuchten"), tr("Auch ohne Verläufe, Stahl und Aluminium."), |l| &mut l.flat);
                 part(ui, out, tr("Grobe Wellenformen"), tr("Halb so viele Spalten, kaum zu sehen."), |l| &mut l.coarse_waves);
+                part(ui, out, tr("Wellenform aus"), tr("Die große Wellenform im Player bleibt leer, Klicken und Scratchen gehen weiter."), |l| &mut l.no_waves);
                 part(ui, out, tr("Pads ohne Symbole"), tr("Nur Namen, Pegel als Balken."), |l| &mut l.simple_pads);
                 // Wie die übrigen Schalter: an = sparen. Die kompakte Ansicht hat keine Teller: Schalter an und gesperrt,
                 // die Einstellung selbst bleibt

@@ -532,7 +532,9 @@ fn waveform_sized(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, height: 
     if let Some((a, b)) = m.loop_range {
         p.rect_filled(Rect::from_min_max(pos2(to_x(a), rect.top()), pos2(to_x(b), rect.bottom())), 0.0, theme::play().gamma_multiply(0.15));
     }
-    if let Some(bpm) = m.bpm {
+    // „Wellenform aus“ (Leistung): nur Loop und Abspielstrich, Klicken und Scratchen bleiben
+    let waves = !theme::lite().no_waves;
+    if let Some(bpm) = m.bpm.filter(|_| waves) {
         let beat = 60.0 / bpm as f64;
         let first = (t0 / beat).ceil() as i64;
         let last = ((t0 + WAVE_SPAN) / beat).floor() as i64;
@@ -543,8 +545,8 @@ fn waveform_sized(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, height: 
         }
     }
     // Grobe Wellenformen: halb so viele Spalten, auf kleinen Bildschirmen kaum zu sehen, spart Vertices
-    let cols = (rect.width() / if theme::lite().coarse_waves { 4.0 } else { 2.0 }) as usize;
-    wave_mesh(&p, rect.left(), mid, rect.width() / cols as f32, cols, |i| {
+    let cols = if waves { (rect.width() / if theme::lite().coarse_waves { 4.0 } else { 2.0 }) as usize } else { 0 };
+    wave_mesh(&p, rect.left(), mid, rect.width() / cols.max(1) as f32, cols, |i| {
         let t = t0 + (i as f64 / cols as f64) * WAVE_SPAN;
         if t < 0.0 || t > m.duration {
             return None;
@@ -553,6 +555,10 @@ fn waveform_sized(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, height: 
         let c = if t < m.position { Color32::from_rgba_unmultiplied(230, 235, 245, 70) } else { color };
         Some((v, c))
     });
+    if !waves {
+        // Feine Mittellinie, damit die leere Fläche als Spur erkennbar bleibt
+        p.line_segment([pos2(rect.left(), mid), pos2(rect.right(), mid)], Stroke::new(1.0, color.gamma_multiply(0.35)));
+    }
     p.line_segment([pos2(rect.center().x, rect.top()), pos2(rect.center().x, rect.bottom())], Stroke::new(2.0, Color32::WHITE));
 
     // Festhalten = anhalten, ziehen = scratchen, tippen = Play/Pause
