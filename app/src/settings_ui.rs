@@ -985,16 +985,15 @@ fn performance_page(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<Settin
     let lite = c.settings.lite;
     card(ui, tr("Voreinstellung"), |ui| {
         note(ui, tr("Für ältere oder langsame Rechner. Jeder Punkt spart Rechenzeit, der Ton bleibt gleich."));
-        // „Eigene“ ergibt sich aus den Schaltern darunter, anklicken lässt es sich nicht. Volle Optik heißt auch:
-        // mit Plattenspielern
+        // „Eigene“ ergibt sich aus den Schaltern darunter, anklicken lässt es sich nicht. Die Plattenspieler gehören
+        // dazu: volle Optik mit, sparsam ohne
         let full = lite == Lite::NONE && c.settings.platters;
-        let current = if full { Some(Lite::NONE) } else if lite == Lite::ALL { Some(Lite::ALL) } else { None };
+        let lean = lite == Lite::ALL && !c.settings.platters;
+        let current = if full { Some(Lite::NONE) } else if lean { Some(Lite::ALL) } else { None };
         let options = [(Some(Lite::NONE), tr("Volle Optik"), true), (Some(Lite::ALL), tr("Sparsam"), true), (None, tr("Eigene"), false)];
         if let Some(Some(p)) = segmented(ui, current, &options) {
             out.push(SettingsAction::Lite(p));
-            if p == Lite::NONE {
-                out.push(SettingsAction::Platters(true));
-            }
+            out.push(SettingsAction::Platters(p == Lite::NONE));
         }
     });
     let part = |ui: &mut egui::Ui, out: &mut Vec<SettingsAction>, label: &str, sub: &str, pick: fn(&mut Lite) -> &mut bool| {
@@ -1018,11 +1017,12 @@ fn performance_page(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<Settin
                 part(ui, out, tr("Ohne Schatten und Leuchten"), tr("Auch ohne Verläufe, Stahl und Aluminium."), |l| &mut l.flat);
                 part(ui, out, tr("Grobe Wellenformen"), tr("Halb so viele Spalten, kaum zu sehen."), |l| &mut l.coarse_waves);
                 part(ui, out, tr("Pads ohne Symbole"), tr("Nur Namen, Pegel als Balken."), |l| &mut l.simple_pads);
-                // Die kompakte Ansicht hat keine Teller: Schalter aus und gesperrt, die Einstellung selbst bleibt
-                let platters = c.settings.platters && !c.compact;
-                let r = switch(ui, tr("Plattenspieler zeigen"), platters, !c.compact, tr("Ohne Teller mehr Platz, Scratchen geht in der Wellenform."), "");
+                // Wie die übrigen Schalter: an = sparen. Die kompakte Ansicht hat keine Teller: Schalter an und gesperrt,
+                // die Einstellung selbst bleibt
+                let hidden = !c.settings.platters || c.compact;
+                let r = switch(ui, tr("Plattenspieler ausblenden"), hidden, !c.compact, tr("Ohne Teller mehr Platz, Scratchen geht in der Wellenform."), "");
                 if r.on_disabled_hover_text(tr("In der kompakten Ansicht gibt es keine Plattenteller.")).clicked() {
-                    out.push(SettingsAction::Platters(!platters));
+                    out.push(SettingsAction::Platters(hidden));
                 }
             });
         });

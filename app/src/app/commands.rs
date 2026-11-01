@@ -134,7 +134,7 @@ impl FadeWerkDjApp {
         let perf = tr("Einstellungen › Leistung");
         let lite = self.settings.lite;
         add(tr("Volle Optik").into(), perf, "", PaletteCmd::FullLook);
-        add(tr("Sparsam").into(), perf, "", PaletteCmd::Setting(SettingsAction::Lite(Lite::ALL)));
+        add(tr("Sparsam").into(), perf, "", PaletteCmd::Lean);
         type Pick = fn(&mut Lite) -> &mut bool;
         let parts: [(&str, Pick); 7] = [
             (tr("Einfache Formen"), |l| &mut l.shapes),
@@ -151,7 +151,7 @@ impl FadeWerkDjApp {
             *pick(&mut next) = !on;
             add(onoff(on, name), perf, "", PaletteCmd::Setting(SettingsAction::Lite(next)));
         }
-        add(onoff(self.settings.platters, tr("Plattenspieler")), perf, "", PaletteCmd::Setting(SettingsAction::Platters(!self.settings.platters)));
+        add(onoff(!self.settings.platters, tr("Plattenspieler ausblenden")), perf, "", PaletteCmd::Setting(SettingsAction::Platters(!self.settings.platters)));
         add(onoff(self.settings.opengl, tr("Grafik über OpenGL")), perf, "", PaletteCmd::Setting(SettingsAction::OpenGl(!self.settings.opengl)));
 
         let look = tr("Einstellungen › Aussehen");
@@ -181,6 +181,10 @@ impl FadeWerkDjApp {
             PaletteCmd::Zoom(z) => self.set_zoom(ctx, z),
             PaletteCmd::Slide => self.browser_slid = !self.browser_slid,
             PaletteCmd::Refresh => self.browser.refresh(),
+            PaletteCmd::Lean => {
+                self.settings_action(SettingsAction::Lite(theme::Lite::ALL), ctx, now);
+                self.settings_action(SettingsAction::Platters(false), ctx, now);
+            }
             PaletteCmd::FullLook => {
                 self.settings_action(SettingsAction::Lite(theme::Lite::NONE), ctx, now);
                 self.settings_action(SettingsAction::Platters(true), ctx, now);
@@ -204,6 +208,8 @@ enum PaletteCmd {
     /// Ordnerbereich der kompakten Ansicht hereinschieben oder zurück.
     Slide,
     Refresh,
+    /// Sparsam: alle Sparmaßnahmen an und Plattenspieler aus.
+    Lean,
     /// Volle Optik: alle Sparmaßnahmen aus und Plattenspieler an.
     FullLook,
 }
