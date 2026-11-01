@@ -428,11 +428,21 @@ pub fn paint_button(p: &Painter, rect: Rect, label: &str, font: FontId, look: Lo
     p.text(c, Align2::CENTER_CENTER, label, font, text);
 }
 
+/// Farbe nur für Zustand: Eine farbige Taste zeigt ihre Farbe erst, wenn sie leuchtet; in Ruhe ist sie grau wie
+/// alle anderen. Ausnahme sind die Farben der Player (Bernstein, Eisblau): Sie sagen, zu welchem Player etwas gehört.
+fn calm(look: Look, lit: bool) -> Look {
+    match look {
+        Look::Color(c) if !lit && c != theme::deck_color(0) && c != theme::deck_color(1) => Look::Plain,
+        other => other,
+    }
+}
+
 /// Zeichnet die Taste ohne Beschriftung. Liefert Mitte und Farbe für Beschriftung oder Symbol.
 fn paint_button_face(p: &Painter, rect: Rect, look: Look, lit: bool, pressed: bool, hovered: bool, enabled: bool) -> (Pos2, Color32) {
     if theme::alu() {
         return paint_alu_face(p, rect, look, lit, pressed, hovered, enabled);
     }
+    let look = calm(look, lit);
     let s = theme::skin();
     let r = 5.0;
     let base = match look {
@@ -509,7 +519,8 @@ fn paint_alu_face(p: &Painter, rect: Rect, look: Look, lit: bool, pressed: bool,
         Look::Color(c) => c,
     };
     let accent = if s.dark { lighten(led, 0.12) } else { darken(led, 0.12) };
-    let mut text = match look {
+    // In Ruhe neutrale Schrift; das LED-Fenster zeigt die Farbe schwach (siehe `calm`)
+    let mut text = match calm(look, lit) {
         Look::Plain => s.ink,
         Look::Color(_) if lit => accent,
         Look::Color(_) => mix(s.ink, accent, 0.7),

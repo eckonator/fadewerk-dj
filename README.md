@@ -3,130 +3,181 @@
 **Two decks, two playlists, auto-fade.** A DJ player for macOS, Windows and Linux,
 written in Rust. Click a folder and start playing: no database, no library import.
 
-![FadeWerk DJ with the “Anthracite” skin](docs/screenshot.png)
+![The live view with the “Anthracite” skin: turntables, mixer, transition bar and both playlists](docs/screenshot.png)
+
+![The automatic view: now playing, the transition with level meters and up next on top, both playlists below](docs/screenshot-auto.png)
 
 ![“Anthracite” with brushed steel in FadeWerk mode: waveforms behind the playlist tracks and the fade editor open below a track](docs/screenshot-fadewerk.png)
 
 *The screenshots show self-generated demo tracks (`scripts/make-demo-tracks.py`).*
 
+## Two ways to work
+
+The switch at the top of the window chooses how FadeWerk DJ looks:
+
+- **Live** – for mixing by hand: two decks with turntable, waveform, pitch and filter, the mixer with
+  EQ, level meters and crossfader in the middle, effect pads, headphones and loops.
+- **Automatic** – for a night that runs by itself: one bar across the top shows what is playing now
+  and what comes up next (each with play/pause and stop for its deck), the level meters, the coming
+  transition and the auto-fade controls with master fader and REC. Below, both playlists get the full width, each with an
+  overview waveform to jump within its track. The folder browser slides in from the left (click “FOLDERS”
+  or ⌘/Ctrl+B).
+
+On small screens (lower than 720 points, e.g. 1024×600 netbooks) FadeWerk DJ starts in the automatic
+view; otherwise in the live view. The choice is remembered.
+
 ## Features
 
-- **Two decks, each with its own playlist**, and **auto-fade**: when the playing track reaches
-  the fade time, the other deck starts and the crossfader blends over. The finished deck then
-  loads its next track. Fade curve smooth, linear, sharp or drawn by hand. Optional **bass swap**:
-  the incoming track starts without bass and the basses swap halfway through the fade.
-  Starting a deck while the other one is stopped glides the crossfader over to it.
-  **AUTO SYNC**: a deck that starts while the other one is audible takes over its tempo (also at
-  double or half speed) and follows it; once it plays alone, its pitch drifts slowly back to 0 %.
-- **FadeWerk mode**: the FADEWERK button in the playlist headers shows the waveform behind every
-  track. Click a track to mark where it fades in (first 30 s) and out (last 30 s), or set a hard cut.
-  The track then starts at its fade-in range and ends at the end of its fade-out range, so intros and
-  outros can be skipped. Auto-fade runs in two phases: the new track fades in while the old one stays
-  at full level, then the old one fades out. A side without a range uses half the fade time.
-  The ranges belong to the playlist entry, move with it and are saved with the playlists; two small
-  triangles in front of the headphone button mark tracks with custom fades.
-  In the editor, each range can be previewed on the headphones, alone or as the finished transition
-  with the neighbouring track from the other playlist.
-- **No import**: click a folder and all its tracks are there instantly, including subfolders
-  (switchable per folder; off by default for drives and the home folder). Refresh with 🔄, ⌘R or F5.
-  BPM and musical key found by the analysis are remembered; “Analyze” (above the track list and in the
-  track menu) and “Detect missing BPM and keys” (folders) run it in the background, decoding each track once for both.
-  Quick search across title, artist, album and path; the advanced search (magnifier, ⇧⌘F) filters
-  by title, artist, album, file name, folder, genre, year range and BPM range, shown as removable filter chips; “Whole words only” makes “Cro” find “Cro & Bausa” but not “Crosby”; duplicate copies of a track are hidden while searching (can be turned off). Tags, BPM and waveform are analysed in the background.
-  Select several tracks or folders (⌘/Ctrl-click, Shift-click) and drag them into a playlist, or use
-  the right-click menu: append, play next, shuffle in, spread across A and B, show in Finder.
-  Choose the track list columns (artist, album, genre, year, comment, subfolder, file name, format,
-  BPM, key, time) and drag their widths; click a column header to sort ascending or descending. All of
-  this is remembered.
-  Folders show as a tree or, like a column browser, as columns side by side (two buttons next to
-  “FOLDERS”); below the decks the columns take 40 % of the width.
+### Auto-fade and the transition bar
+
+- **Two decks, each with its own playlist**, and **auto-fade**: when the playing track reaches the fade
+  time, the other deck starts and the crossfader blends over. The finished deck then loads its next track.
+  Fade curve smooth, linear, sharp or drawn by hand. Optional **bass swap**: the incoming track starts
+  without bass and the basses swap halfway through the fade. Starting a deck while the other one is
+  stopped glides the crossfader over to it. When one playlist runs out, the other deck plays on alone.
+- **AUTO SYNC**: a deck that starts while the other one is audible takes over its tempo (also at double
+  or half speed) and follows it; once it plays alone, its pitch drifts slowly back to 0 %.
+- **The transition bar** shows the next transition at a glance: which track comes in, a countdown, two
+  lanes with the volume of the outgoing and the incoming track over time, the fade range, a line for
+  “now”, the fade time, curve and bass swap, and what follows afterwards. While fading it turns yellow and
+  counts down the rest. In the automatic view the fade time sits in the bar as a small display: click it to
+  type a value, or use the mouse wheel or arrow keys over it.
+- **FadeWerk mode**: the FADEWERK button in the playlist headers shows the waveform behind every track.
+  Click a track to mark where it fades in (first 30 s) and out (last 30 s), or set a hard cut. The track
+  then starts at its fade-in range and ends at the end of its fade-out range, so intros and outros can be
+  skipped. Auto-fade runs in two phases: the new track fades in while the old one stays at full level,
+  then the old one fades out – the transition bar shows both phases. A side without a range uses half the
+  fade time. The ranges belong to the playlist entry, move with it and are saved with the playlists; two
+  small triangles mark tracks with custom fades. In the editor, each range can be previewed on the
+  headphones, alone or as the finished transition with the neighbouring track from the other playlist.
+
+### Status line and command search
+
+- **Status line** across the top: the version (click for “About”), the track on air with deck, title and
+  time left (flashing red in the last seconds), what comes next and when – or the latest notice of the app –,
+  the live/automatic switch, the command search, a running recording, full screen and the settings.
+- **Command search** (⌘K / Ctrl+K, or click the search field in the status line): find commands and
+  settings by typing a few letters – switch the view, fade now, toggle bass swap or auto-sync, sort or
+  clear a playlist, start recording, open a settings page, change skin, language or any performance option.
+  Umlauts and case don't matter.
+
+### Decks
+
+- **A turntable per deck**: drag the platter or the waveform to scratch forwards and backwards (or use the
+  mouse wheel / trackpad over the platter); let go with momentum and the record coasts on. Hold it to stop
+  the record; click the platter to play or pause, right-click to stop; tap the waveform to play or pause.
+  Eject slides the record off the deck (A to the left, B to the right); a newly loaded one slides in.
+  Embedded cover art turns the record into a spinning picture disc. A tonearm swings onto the record on
+  play, follows the track from the outer groove inwards, lifts on pause and returns to its rest on stop;
+  drag it to drop the needle anywhere in the track.
+- **Motor**: start, pause and stop spin up and down like a real turntable (start and stop time adjustable
+  in the Motor tab). CUE jumps instantly.
+- **Controls in three levels**: big CUE and play/pause; previous, stop, next and loops of 4, 8 or 16 beats;
+  a slim row with repeat (off, track, list; track repeat fades the end into the start), pre-listen, sync and
+  reverse (the record spins down and starts up the other way). Pitch ±8 % and a **filter knob** (left
+  low-pass, right high-pass, centre off) sit next to the controls.
+- **Colour means state**: buttons are grey at rest and light up in their colour only while active; amber
+  and ice blue always mean deck A and deck B. The deck that is on air carries ON AIR, the other one steps
+  back slightly (fully visible again when you point at it). The frame of a playing deck flashes red in the
+  last 15 seconds of its track.
 - **Musical key in Camelot notation** (8A, 9B …): taken from the tag (any common notation, e.g. “Am”,
   “F#m”, “8A”, Open Key) or detected by FadeWerk DJ itself, never written into your files. Each deck shows
   it next to the BPM, coloured like the Camelot wheel, with **MATCH** when it fits the track on air.
-  Playlist rows carry a key badge, and tracks that mix harmonically with the track on air are framed in green
-  (same number, or ±1 with the same letter). Without keylock, pitch shifts the key; the deck then shows the
-  key you actually hear (a small arrow marks it). Uncertain results (rap, drums only) show “–” rather than a guess.
-- **Fast with large collections and network drives**: tags that were read once and the track lists
-  of slow folders are remembered (no database: the folder is still read live in the background and
-  its result wins, changed files are re-read). Tags are read with four threads. The caches can be
-  cleared under Settings → Music; Settings → General can also reset FadeWerk DJ completely.
-- **Track info & tags**: right-click a track in the folder browser or a playlist to view and edit
-  its tags (title, artist, album, album artist, genre, year, track number, BPM, comment).
-- **History**: below the folders, “History” lists every day with the tracks that were played, in order,
-  with time and deck. A track counts once it has been audible on master for 30 seconds; tracks until
-  6 am belong to the day before. Give a day a name (“Grandma’s birthday”), remove entries, export it as
-  M3U8 playlist, CSV table or FadeWerk DJ history file, and import such files or any M3U playlist.
-  “Restore” fills playlists A and B again the way the day was played.
-  Recording can be switched off in the settings.
-- **A turntable per deck**: drag the platter or the waveform to scratch forwards and backwards
-  (or use the mouse wheel / trackpad over the platter); let go with momentum and the record coasts on.
-  Hold it to stop the record; click the platter to play or pause, right-click to stop; tap the waveform to play or pause.
-  Eject slides the record off the deck (A to the left, B to the right); a newly loaded one slides in. Embedded cover art turns the record
-  into a spinning picture disc. A tonearm swings onto the record on play, follows the track from the
-  outer groove inwards, lifts on pause and returns to its rest on stop; drag it to drop the needle
-  anywhere in the track. Prefer a compact deck? Hide the turntables under Settings → Performance.
-- **Motor**: start, pause and stop spin up and down like a real turntable
-  (start and stop time adjustable in the Motor tab). CUE jumps instantly.
-- **Transport per deck**: CUE, play/pause, stop, previous, next, repeat (off, track, list;
-  track repeat fades the end into the start with the fade time and curve), eject, pitch ±8 %, sync, reverse (the record spins down and starts up the other way), loops of 4, 8 or 16 beats.
-  The frame of a playing deck flashes red in the last 15 seconds of its track.
-- **Pre-listening** per deck, in the playlists and right in the folder browser. Headphones via
-  split output (left master, right headphones), on outputs 3/4 of a multichannel interface,
-  or on a separate second audio device. A **test tone** next to each device under Settings → Audio checks
-  that the right output is chosen.
-- **Mixer** with LED meters (A, main, B; on wider windows the main meter adds a spectrum of up to
-  ten octave bands between left and right), channel faders, master and headphone mix, and a
-  **3-band EQ per deck** (isolator, −26 to +6 dB) with kill buttons. Each deck has a **filter knob** above its
-  pitch fader (left low-pass, right high-pass, centre off, slight resonance). Below the crossfader, tabs for
-  pads, headphones, curve (crossfade curve and fade time) and motor keep the centre column tidy; one is open at a time.
-  Right-click or double-click resets any fader to its default; with the mouse over a fader or knob,
-  the arrow keys or the mouse wheel move it step by step. Click the fade-time display to type in a value.
+  Without keylock, pitch shifts the key; the deck then shows the key you actually hear (a small arrow marks
+  it). Uncertain results (rap, drums only) show “–” rather than a guess.
+- Prefer a flat deck? Hide the turntables under Settings → Display → Performance (also hides the records in the automatic view).
+
+### Mixer
+
+- **LED meters** (A, main, B; on wider windows the main meter adds a spectrum of up to ten octave bands),
+  channel faders, master, crossfader and a **3-band EQ per deck** (isolator, −26 to +6 dB) with kill buttons.
+- Below the crossfader, tabs for **pads**, **headphones**, **curve** (crossfade curve and fade time) and
+  **motor**; at most one is open, click it again to close it.
+- Right-click or double-click resets any fader to its default; with the mouse over a fader or knob, the
+  arrow keys or the mouse wheel move it step by step. Click the fade-time display to type in a value.
+- **Effect pads**: eight DJ effects (air horn, siren, laser, boom, riser, drop, rewind, brake), synthesised
+  by FadeWerk DJ itself. Trigger them with a click or the keys 1–8, right-click to pre-listen in the
+  headphones; a separate FX fader sets their volume. Replace any of them with your own audio file, name and
+  one of 16 drawn symbols under Settings → Effects.
 - **Record the mix**: REC next to the master fader records what plays on master (before the master volume)
   as WAV (24 bit) or MP3 (320 kbit/s, LAME), by default into `Music/FadeWerk DJ Recordings`, file name with
-  date and time. Format and folder under Settings → Recording.
-- **Effect pads**: eight DJ effects (air horn, siren, laser, boom, riser, drop, rewind, brake), synthesised by
-  FadeWerk DJ itself. Trigger them with a click or the keys 1–8, right-click to pre-listen in the headphones;
-  a separate FX fader sets their volume. Replace any of them with your own audio file, name and one of
-  16 drawn symbols under Settings → Effects.
-- **Playlists**: fill and reorder by drag & drop, also between A and B (or via the right-click menu);
-  drop tracks straight onto a deck. The loaded track always moves to the top of its playlist, the
-  played ones stay above it. Playlists and settings are kept when you quit.
-  After clicking into a playlist or the folder track list, ↑/↓ move through the tracks; Enter loads
-  the marked track into the deck (playlists) or pre-listens to it (folder browser).
-  Each playlist has a quick search that jumps to the matching track (Enter: next match).
-  **Sort** reorders the upcoming tracks: *Shuffle*, or *Harmonic*, which plans both playlists in the
-  A – B – A order auto-fade plays them, so that every transition fits by key first and tempo second (missing
-  keys are detected first). *Undo* restores the previous order.
-- **Skins** Anthracite (default), Silver, Night, Classic, Day and Neon; Anthracite and Silver look like anodised aluminium hi-fi gear, all optionally with a brushed steel look.
-  The layout adapts to the window size, including 4K monitors; drag the handle between decks and
-  playlists to share the height, and zoom with ⌘/Ctrl +, − and 0 (70 to 150 %). **Full screen** via the button
-  in the folder browser, F11 or ⌃⌘F on macOS. On wide monitors, the button next to it moves the
-  folder browser from below the decks to their right (folder tree above the track list).
-  On **small screens** such as 1024×600 netbooks, the **compact view** (Settings → Appearance, automatic on screens
-  lower than 720 points) shows flat decks without platters and single-line playlist rows; the folder browser slides in from
-  the left edge over the whole window (click “FOLDERS” or ⌘/Ctrl+B) with a status line of both decks on top,
-  and slides away while you drag a track into a playlist. Full screen and the settings sit at the bottom of that strip.
-  For two monitors, **detach the folder browser into a window of its own**: its position and size are
-  remembered, folders sit above or to the left of the tracks, and tracks can be dragged from there onto
-  the playlists and decks in the main window (not on Wayland). Closing the window docks it again.
-  The version number sits next to the MIXER heading; clicking it opens “About”.
-- **Light on resources**: when nothing is playing, the interface only redraws on input. A
-  **lightweight display** for older or slower computers (Settings → Performance, every measure can be switched on its own)
-  drops shadows, gradients, glow, edge smoothing, rounded corners, the pad icons and the spectrum, shows the level meters
-  as plain bars and limits drawing to 30 frames per second; on very slow graphics (such as an Intel GMA 950
-  netbook) it draws less often so that the interface never takes more than about half the CPU from the audio.
-- **Keeps playing in the background**: auto-fade and the next track also work while the window is
-  minimised or covered by another app. When one playlist runs out, the other deck plays on alone.
-- **No sleep while playing**: display and computer stay awake as long as a deck or pre-listen is
-  playing (can be switched off).
+  date and time. Format and folder under Settings → Audio.
+- **Pre-listening** per deck, in the playlists and right in the folder browser. Headphones via split output
+  (left master, right headphones), on outputs 3/4 of a multichannel interface, or on a separate second audio
+  device. A **test tone** next to each device under Settings → Audio checks that the right output is chosen.
+
+### Playlists
+
+- Fill and reorder by drag & drop, also between A and B (or via the right-click menu); drop tracks straight
+  onto a deck. The loaded track always moves to the top of its playlist, the played ones stay above it.
+  Playlists and settings are kept when you quit.
+- Rows stay calm: the pre-listen button only shows for the loaded or marked track and under the mouse.
+  Playlist rows carry a key badge; tracks that mix harmonically with the track on air are framed in green.
+- After clicking into a playlist, ↑/↓ move through the tracks and Enter loads the marked one. Each playlist
+  has a quick search that jumps to the matching track (Enter: next match).
+- The **⋯ menu** in the playlist header sorts the upcoming tracks – *harmonically*, planning both playlists
+  in the A – B – A order auto-fade plays them so that every transition fits by key first and tempo second
+  (missing keys are detected first), or *shuffled* – undoes the last sorting, and clears the playlist.
+
+### Folders and library
+
+- **No import**: click a folder and all its tracks are there instantly, including subfolders (switchable per
+  folder; off by default for drives and the home folder). Refresh with 🔄, ⌘R or F5. Folders show as a tree
+  or as columns side by side.
+- Tags, BPM, key and waveforms are analysed in the background. BPM and key found by the analysis are
+  remembered; “Analyze” (above the track list and in the track menu) and “Detect missing BPM and keys”
+  (folders) run it for many tracks at once.
+- **Search**: the quick search covers title, artist, album and path; the advanced search (magnifier, ⇧⌘F)
+  filters by title, artist, album, file name, folder, genre, year range and BPM range, shown as removable
+  filter chips. “Whole words only” makes “Cro” find “Cro & Bausa” but not “Crosby”; duplicate copies of a
+  track are hidden while searching (can be turned off).
+- Select several tracks or folders (⌘/Ctrl-click, Shift-click) and drag them into a playlist, or use the
+  right-click menu: append, play next, shuffle in, spread across A and B, show in Finder. The pre-listen and
+  A/B buttons of a row show up under the mouse.
+- Choose the track list columns (artist, album, genre, year, comment, subfolder, file name, format, BPM,
+  key, time), drag their widths and click a header to sort. All of this is remembered.
+- **Track info & tags**: right-click a track to view and edit its tags. **Find tags online** (AcoustID and
+  MusicBrainz, only when you ask for it) fills in missing title, artist, album, year, genre and cover, for one
+  track or a whole folder, with an undo log.
+- **History**: below the folders, “History” lists every day with the tracks that were played, in order, with
+  time and deck. A track counts once it has been audible on master for 30 seconds; tracks until 6 am belong
+  to the day before. Name a day, remove entries, export it as M3U8, CSV or FadeWerk DJ history file, import
+  such files or any M3U playlist, and “Restore” fills playlists A and B again the way the day was played.
+- **Fast with large collections and network drives**: tags that were read once and the track lists of slow
+  folders are remembered (no database: the folder is still read live in the background and its result wins).
+- On wide monitors the folder browser can sit to the right of the decks; for two monitors, **detach it into
+  a window of its own** and drag tracks from there onto the playlists and decks in the main window (not on
+  Wayland).
+
+### Settings, look and resources
+
+- **Settings** (⚙ in the status line or ⌘/Ctrl+,) with a sidebar: General, Audio (devices, buffer, other
+  sounds, recording, history), Music (online recognition, caches), Effects, Display (appearance and
+  performance) and About. Settings → General can also reset FadeWerk DJ completely.
+- **Skins** Anthracite (default), Silver, Night, Classic, Day and Neon; Anthracite and Silver look like
+  anodised aluminium hi-fi gear, all optionally with a brushed steel look.
+- The layout adapts to the window size, including 4K monitors; drag the handle between decks and playlists
+  to share the height, and zoom with ⌘/Ctrl +, − and 0 (70 to 150 %). **Full screen** via the button in the
+  status line, F11 or ⌃⌘F on macOS.
+- On **small screens** the **compact view** (Settings → Display → Appearance, automatic on screens lower
+  than 720 points) uses flat decks and single-line playlist rows, and the folder browser slides in from the
+  left edge.
+- **Light on resources**: when nothing is playing, the interface only redraws on input. Under Settings →
+  Display → Performance, older or slower computers can switch off what costs drawing time – rounded shapes,
+  edge smoothing, shadows and glow, fine waveforms, pad icons, the spectrum, a high frame rate – each on its
+  own or all at once (“Lightweight”). On very slow graphics (such as an Intel GMA 950 netbook) the interface
+  never takes more than about half the CPU from the audio.
+- **Keeps playing in the background**: auto-fade and the next track also work while the window is minimised
+  or covered by another app.
+- **No sleep while playing**: display and computer stay awake as long as a deck or pre-listen is playing
+  (can be switched off).
 - **Quiet while you play** (optional, Settings → Audio): mutes system alert sounds while FadeWerk DJ is
-  running, and on Windows and Linux other programs too (as in the volume mixer). On macOS, the master
-  device can instead be used exclusively, so no other program plays on it. Everything comes back when you
-  quit, even after a crash (on the next start).
+  running, and on Windows and Linux other programs too (as in the volume mixer). On macOS, the master device
+  can instead be used exclusively. Everything comes back when you quit, even after a crash (on the next start).
 - User interface in **English and German**.
-- **No telemetry, no account.** The only network request is an optional check for new versions on
-  GitHub. FadeWerk DJ asks once before enabling it (switch it on or off under *Settings → General*; track recognition online under *Settings → Music*);
-  it sends nothing about your music or folders.
+- **No telemetry, no account.** The only network requests are an optional check for new versions on GitHub
+  (FadeWerk DJ asks once before enabling it, Settings → General) and, only when you ask for it, track
+  recognition online (Settings → Music). Nothing about your music or folders is sent otherwise.
 
 ## Download
 
@@ -136,9 +187,9 @@ Ready-to-run builds are on the [Releases](../../releases) page, one release per 
 |---|---|---|
 | macOS 11 or later (Apple Silicon and Intel) | `…-macOS.dmg` or `…-macOS.zip` | Easiest: the [one-line Terminal install](#macos-cannot-be-verified) below. Or open the DMG and drag FadeWerk DJ to Applications (or unzip and move it there). The app is not notarized by Apple, so see below for the first launch. |
 | Windows 10/11 (64-bit) | `…-Windows-Setup.exe` or `…-Windows.zip` | Run the setup: it installs FadeWerk DJ to Program Files, adds it to the Start menu and (optionally) puts a shortcut on the desktop; uninstall under Settings → Apps. Or unzip the portable version and run `FadeWerk DJ.exe`. SmartScreen warns about unknown apps: **More info → Run anyway**. |
-| Linux (x86_64) | `…-Linux-x86_64.tar.gz` | Unpack and run `./fadewerk-dj`, or run `./install.sh` to add it with its icon to the application menu (per user, `./install.sh --uninstall` removes it). Needs ALSA (or PipeWire/PulseAudio with the ALSA layer). |
-| Linux (arm64) | `…-Linux-arm64.tar.gz` | The same for 64-bit ARM, e.g. Raspberry Pi 4 or 5 with 64-bit Raspberry Pi OS (not yet tested on a real Pi). On a Pi 4, the lightweight display (Settings → Performance) is recommended. |
-| Linux (i386, 32-bit) | `…-Linux-i386.tar.gz` | The same for old 32-bit PCs and netbooks (built for Debian 12 and newer, not yet tested on real hardware). The CPU needs SSE2. The lightweight display (Settings → Performance) and OpenGL (`FW_RENDERER=glow`) are recommended. |
+| Linux (x86_64) | `…-Linux-x86_64.tar.gz` | Unpack and run `./fadewerk-dj`, or run `./install.sh` to add it with its icon to the application menu (per user, `./install.sh --uninstall` removes it). Plays through PulseAudio/PipeWire when available, otherwise ALSA. |
+| Linux (arm64) | `…-Linux-arm64.tar.gz` | The same for 64-bit ARM, e.g. Raspberry Pi 4 or 5 with 64-bit Raspberry Pi OS (not yet tested on a real Pi). On a Pi 4, the lightweight display (Settings → Display → Performance) is recommended. |
+| Linux (i386, 32-bit) | `…-Linux-i386.tar.gz` | The same for old 32-bit PCs and netbooks (built for Debian 12 and newer). The CPU needs SSE2. The lightweight display (Settings → Display → Performance) is recommended; on old Intel graphics FadeWerk DJ switches to OpenGL by itself. |
 
 ### macOS: "cannot be verified"
 
@@ -209,7 +260,7 @@ A push without a version change replaces that release; raise `version` for a new
 | Part | Purpose |
 |---|---|
 | `crates/engine` | Real-time audio: decks with motor, scratch, cue, loop and reverse, mixer, crossfader, EQ, filter, recording tap, headphone path, sampler for the effect pads, spectrum bands for the main meter, auto-fade logic. No GUI or system dependencies, tested. |
-| `crates/library` | Live folder reading, tags (lofty), decoding (Symphonia), waveform, BPM detection, synthesis of the built-in effects, background threads. |
+| `crates/library` | Live folder reading, tags (lofty), decoding (Symphonia), waveform, BPM and key detection, acoustic fingerprints, synthesis of the built-in effects, background threads. |
 | `app` | User interface with egui, audio output with cpal, settings, skins; ties everything together. |
 
 The engine runs in the audio thread and receives commands through a lock-free ring buffer.
@@ -226,8 +277,10 @@ Code comments are in German; issues and contributions in English are welcome.
 | `FW_SCREENSHOT=/path/image.bmp` | Saves a screenshot of the window shortly after start, then quits. |
 | `FW_SIZE=1600x1000` | Window size. |
 | `FW_SCREEN=1024x600` | Pretends the screen has this size (logical pixels), e.g. to check the compact view on small screens. |
-| `FW_SLIDE=1` | Starts the compact view with the folder browser slid in. |
-| `FW_SKIN=anthrazit\|silber\|nacht\|classic\|tag\|neon`, `FW_STEEL=1`, `FW_LITE=1`, `FW_LANG=de\|en` | Look (`FW_LITE` = lightweight display) and language. |
+| `FW_VIEW=live\|auto` | Starts in the live or the automatic view. |
+| `FW_SLIDE=1` | Starts with the sliding folder browser slid in. |
+| `FW_PALETTE=text` | Opens the command search with this text. |
+| `FW_SKIN=anthrazit\|silber\|nacht\|classic\|tag\|neon`, `FW_STEEL=1`, `FW_LITE=1`, `FW_LANG=de\|en` | Look (`FW_LITE` = all performance options on) and language. |
 | `FW_PREVIEW=1` | Pre-listens to the second track in the demo. |
 | `FW_SELECT=1` | Selects tracks 2 to 4 in the folder browser. |
 | `FW_HISTORY=1` | Creates two example days in the history (one with a missing file) and opens the newer one. |
@@ -237,9 +290,10 @@ Code comments are in German; issues and contributions in English are welcome.
 | `FW_COLUMNS=artist,album,genre,…` | Shows these columns in the track list. |
 | `FW_SORT=artist` / `FW_SORT=bpm:desc` | Sorts the track list by this column. |
 | `FW_BROWSER=rechts\|fenster`, `FW_FOLDERS=spalten` | Folder browser to the right of the decks or in its own window; folders as columns. |
+| `FW_FADEWERK=1\|edit\|auto` | FadeWerk mode; `edit` opens the fade editor with example ranges, `auto` plans a two-phase transition. |
 | `FW_QUIET=1` | Lets a debug build mute other sounds (normally only installed builds touch the system). |
 | `FW_POINTER=x,y` | Moves the mouse there (points); `x,y,1` clicks, `x,y,2` right-clicks, `x1,y1,x2,y2` drags. |
-| `FW_SETTINGS=allgemein\|audio\|effekte\|sprache\|aussehen\|ueber` | Opens the settings window. |
+| `FW_SETTINGS=allgemein\|audio\|musik\|effekte\|aussehen\|leistung\|ueber` | Opens the settings window on this page. |
 | `FW_TAB=pads\|kopfhoerer\|fade\|motor\|zu` | Opens this tab below the crossfader (`zu` = all closed). |
 | `FW_UPDATE_ASK=1` | Shows the question whether to check for updates. |
 | `FW_UPDATE_URL=file:///path/release.json` | Checks for updates against your own release JSON (`tag_name`, `html_url`, optionally `assets[].browser_download_url`). |
@@ -253,7 +307,6 @@ With these switches FadeWerk DJ saves nothing (`FW_PERSIST=1` forces saving, bes
 - Beat grid with phase, hot cues
 - Suggesting the next track by key and BPM
 - MIDI controllers (jog wheels as turntables)
-- Mix recording
 - Importing playlists from other DJ software
 
 ## Legal
@@ -266,8 +319,8 @@ Bundled third-party components:
   [DSEG](https://github.com/keshikan/DSEG) under the SIL Open Font License 1.1
   (`assets/fonts/OFL-*.txt`)
 - Rust libraries mostly under MIT/Apache-2.0; the audio decoders of
-  [Symphonia](https://github.com/pdeljanov/Symphonia) under MPL-2.0. The full list ships with
-  every release as `THIRD-PARTY-LICENSES.yml`.
+  [Symphonia](https://github.com/pdeljanov/Symphonia) under MPL-2.0; LAME for MP3 recording under
+  LGPL. The full list ships with every release as `THIRD-PARTY-LICENSES.yml`.
 
 ## License
 

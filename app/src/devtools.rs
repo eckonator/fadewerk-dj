@@ -20,6 +20,8 @@
 //! - `FW_AUTOSYNC=1` schaltet Auto-Sync ein (ohne zu speichern).
 //! - `FW_STEEL=1` schaltet gebürsteten Stahl ein (ohne zu speichern).
 //! - `FW_LITE=1` schaltet die sparsame Darstellung ein (ohne zu speichern).
+//! - `FW_VIEW=live|auto` wählt die Arbeitsweise (Live oder Automatik).
+//! - `FW_PALETTE=<Text>` öffnet die Befehlssuche mit diesem Suchtext.
 //! - `FW_SETTINGS=allgemein|audio|musik|effekte|aussehen|leistung|ueber` öffnet das Einstellungsfenster auf dieser Seite.
 //! - `FW_POINTER=x,y` bewegt die Maus (in Punkten) nach Bild 100 dorthin, etwa um Tooltips zu sehen;
 //!   `FW_POINTER=x,y,2` klickt dort rechts (Kontextmenü), `FW_POINTER=x,y,1` links;
@@ -67,6 +69,10 @@ pub struct DevTools {
     pub lang: Option<Lang>,
     pub steel: bool,
     pub lite: bool,
+    /// Arbeitsweise erzwingen (`FW_VIEW=live|auto`).
+    pub view: Option<crate::settings::ViewMode>,
+    /// Befehlssuche mit diesem Suchtext öffnen (`FW_PALETTE=bpm`).
+    pub palette: Option<String>,
     pub settings_tab: Option<String>,
     frame: u64,
     started: Option<std::time::Instant>,
@@ -99,6 +105,12 @@ impl DevTools {
             lang: std::env::var("FW_LANG").ok().map(|l| if l == "en" { Lang::En } else { Lang::De }),
             steel: std::env::var_os("FW_STEEL").is_some(),
             lite: std::env::var_os("FW_LITE").is_some(),
+            view: match std::env::var("FW_VIEW").as_deref() {
+                Ok("auto" | "automatik") => Some(crate::settings::ViewMode::Auto),
+                Ok("live") => Some(crate::settings::ViewMode::Live),
+                _ => None,
+            },
+            palette: std::env::var("FW_PALETTE").ok(),
             settings_tab: std::env::var("FW_SETTINGS").ok(),
             pointer: std::env::var("FW_POINTER")
                 .ok()

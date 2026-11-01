@@ -43,8 +43,6 @@ pub struct MixerModel<'a> {
 }
 
 pub enum MixerAction {
-    /// Einstellungen auf der Seite „Über“ öffnen (Klick auf die Versionsnummer).
-    OpenAbout,
     Volume(usize, f32),
     HeadMode(HeadMode),
     HeadMix(f32),
@@ -59,20 +57,6 @@ pub enum MixerAction {
     FxVolume(f32),
 }
 
-/// Versionsnummer klein rechts neben der Überschrift, ohne sie aus der Mitte zu schieben.
-/// Klick öffnet Einstellungen → Über.
-fn version_tag(ui: &mut egui::Ui, title: Rect, out: &mut Vec<MixerAction>) {
-    let galley = ui.painter().layout_no_wrap(format!("v{}", env!("CARGO_PKG_VERSION")), fonts::list(10.5), theme::faint());
-    // Grundlinie wie die Überschrift: unten bündig, etwas angehoben
-    let rect = Rect::from_min_size(pos2(title.right() + 6.0, title.bottom() - galley.size().y - 1.5), galley.size());
-    let resp = ui.interact(rect.expand(3.0), ui.id().with("version"), Sense::click()).on_hover_text(tr("Über FadeWerk DJ")).on_hover_cursor(egui::CursorIcon::PointingHand);
-    let color = if resp.hovered() { theme::dim() } else { theme::faint() };
-    ui.painter().galley_with_override_text_color(rect.min, galley, color);
-    if resp.clicked() {
-        out.push(MixerAction::OpenAbout);
-    }
-}
-
 fn small(text: &'static str) -> RichText {
     RichText::new(tr(text)).font(fonts::bold(10.5)).color(theme::dim()).extra_letter_spacing(0.8)
 }
@@ -83,8 +67,7 @@ fn scale(ui: &egui::Ui) -> f32 {
 }
 
 pub fn show_mixer(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerAction>) {
-    let title = ui.vertical_centered(|ui| ui.label(RichText::new(tr("MIXER")).font(fonts::bold(15.0)).extra_letter_spacing(2.5))).inner;
-    version_tag(ui, title.rect, out);
+    ui.vertical_centered(|ui| ui.label(RichText::new(tr("MIXER")).font(fonts::bold(15.0)).extra_letter_spacing(2.5)));
     eq_strip(ui, m, out);
 
     // Pegelbrücke: LED A | Fader A | MAIN | Fader B | LED B
@@ -134,6 +117,16 @@ pub fn show_mixer(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerActi
     p.text(pos2(fb_center, ly), Align2::CENTER_CENTER, "B", fonts::bold(13.0), theme::deck_color(1));
 
     ui.add_space(2.0);
+    master_row(ui, m, out);
+
+    // Das aktive Gerät steht in den Einstellungen; hier nur ein Hinweis, wenn es fehlt
+    if !m.audio_ok {
+        ui.colored_label(theme::cue(), tr("Keine Audio-Ausgabe gefunden"));
+    }
+}
+
+/// MASTER-Lautstärke mit der Aufnahmetaste daneben.
+pub fn master_row(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerAction>) {
     ui.horizontal(|ui| {
         ui.label(small("MASTER"));
         let rec_w = 62.0;
@@ -145,11 +138,6 @@ pub fn show_mixer(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerActi
             out.push(MixerAction::Record);
         }
     });
-
-    // Das aktive Gerät steht in den Einstellungen; hier nur ein Hinweis, wenn es fehlt
-    if !m.audio_ok {
-        ui.colored_label(theme::cue(), tr("Keine Audio-Ausgabe gefunden"));
-    }
 }
 
 /// Aufnahme-Taste: roter Punkt und REC, während der Aufnahme leuchtend mit blinkendem Punkt und Laufzeit.
@@ -179,7 +167,7 @@ fn record_button(ui: &mut egui::Ui, size: egui::Vec2, recording: Option<(f64, bo
     }
     match recording {
         Some((_, _, bytes)) => b.on_hover_text(trf("Aufnahme beenden ({} MB)", &[&format!("{:.0}", bytes as f64 / 1e6)])),
-        None => b.on_hover_text(tr("Mix aufnehmen (Format und Ordner unter Einstellungen → Aufnahme)")),
+        None => b.on_hover_text(tr("Mix aufnehmen (Format und Ordner unter Einstellungen → Audio)")),
     }
 }
 
@@ -239,12 +227,38 @@ fn eq_strip(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerAction>) {
     ui.add_space(2.0);
 }
 
+/// Was die Übergangsleiste zeigt (berechnet in `app::transition_view`).
+pub struct TransitionView {
+    /// Statuszeile; steht in der Leiste, solange kein Übergang geplant ist oder läuft.
+    pub status: String,
+    /// Player, der gerade spielt und ausgeblendet wird.
+    pub from: usize,
+    /// Geplant: Sekunden, bis die Überblendung beginnt.
+    pub until: Option<f64>,
+    /// Länge der ganzen Überblendung in Echtzeit.
+    pub lead: f32,
+    /// Eingestellte Überblendzeit (in der Automatik-Ansicht in der Leiste änderbar).
+    pub fade_secs: f32,
+    /// FadeWerk zweiphasig: so lange blendet erst der neue Titel ein, danach der alte aus.
+    pub split_in: Option<f32>,
+    /// Läuft gerade: Fortschritt 0…1 und Restsekunden.
+    pub fading: Option<(f32, f32)>,
+    /// Titel, der hereinkommt.
+    pub next: String,
+    /// Was danach auf dem jetzt spielenden Player folgt.
+    pub after: Option<(usize, String)>,
+    pub curve: Curve,
+    pub bass_swap: bool,
+}
+
 pub struct FadeModel<'a> {
     pub auto: bool,
     pub fade_secs: f32,
     pub curve: Curve,
     pub crossfader: f32,
-    pub status: &'a str,
+    pub transition: &'a TransitionView,
+    /// Übergangsleiste unter den Tasten zeigen (in der Automatik-Ansicht steht sie oben groß).
+    pub show_transition: bool,
     pub motor: Motor,
     pub bass_swap: bool,
     pub auto_sync: bool,
@@ -287,7 +301,10 @@ pub fn show_fade(ui: &mut egui::Ui, m: &FadeModel<'_>, out: &mut Vec<FadeAction>
             out.push(FadeAction::AutoSync(!m.auto_sync));
         }
     });
-    ui.vertical_centered(|ui| ui.label(RichText::new(m.status).size(12.0).color(theme::dim())));
+    if m.show_transition {
+        ui.add_space(2.0);
+        transition_bar(ui, m.transition, None, false, true);
+    }
     ui.add_space(4.0);
     // Crossfader über der Kurve, die weiße Linie darin zeigt seine Stellung
     // A und B direkt auf die Höhe der Fadermitte gezeichnet, damit beide gleich sitzen
@@ -303,6 +320,225 @@ pub fn show_fade(ui: &mut egui::Ui, m: &FadeModel<'_>, out: &mut Vec<FadeAction>
     let p = ui.painter();
     p.text(pos2(row.left() + label_w / 2.0 - 2.0, row.center().y), Align2::CENTER_CENTER, "A", fonts::bold(14.0), theme::deck_color(0));
     p.text(pos2(row.right() - label_w / 2.0 + 2.0, row.center().y), Align2::CENTER_CENTER, "B", fonts::bold(14.0), theme::deck_color(1));
+}
+
+/// Übergangsleiste: wann übergeblendet wird, wie lange und wohin. Zwei Spuren zeigen die Lautstärke des
+/// spielenden und des kommenden Titels über die Zeit, der weiße Strich ist „jetzt“. Vor der Überblendung läuft
+/// ein Countdown, währenddessen wandert der Strich durch den Überblendbereich und die Leiste wird gelb.
+/// Immer gleich hoch, damit die Mittelspalte nicht springt.
+/// `height`: feste Höhe, alles wächst mit (Automatik-Ansicht); sonst richtet sie sich nach der Breite. Mit
+/// `edit_secs` ist die Überblendzeit im Fuß ein kleines LCD: Klick zum Eintippen, Mausrad oder Pfeiltasten in
+/// halben Sekunden; liefert dann den neuen Wert. Ohne `framed` zeichnet sie kein eigenes Display (sie sitzt dann
+/// in einem gemeinsamen mit den Pegeln).
+pub fn transition_bar(ui: &mut egui::Ui, t: &TransitionView, height: Option<f32>, edit_secs: bool, framed: bool) -> Option<f32> {
+    let k = height.map_or(scale(ui).min(1.15), |h| h / 86.0);
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 86.0 * k), Sense::hover());
+    let painter = ui.painter().clone();
+    let p = &painter;
+    if framed {
+        hw::well(p, rect, 6.0);
+    }
+    let inner = rect.shrink2(vec2(10.0, 7.0));
+    let ink = theme::well_ink();
+    let (from, to) = (t.from, 1 - t.from);
+
+    let Some((now, until, fade_end)) = (match (t.fading, t.until) {
+        // Fenster während der Überblendung: etwas Vorlauf und Nachlauf um den Überblendbereich
+        (Some((progress, _)), _) => Some((progress * t.lead, 0.0, t.lead)),
+        (None, Some(until)) => Some((0.0, until as f32, until as f32 + t.lead)),
+        _ => None,
+    }) else {
+        // Nichts geplant: Statustext mittig in der leeren Leiste
+        let g = p.layout(t.status.clone(), fonts::bold(11.5 * k), ink.gamma_multiply(0.6), inner.width());
+        p.galley(rect.center() - g.size() / 2.0, g, ink);
+        return None;
+    };
+    let (w0, w1) = if t.fading.is_some() { (-0.12 * t.lead, t.lead * 1.12) } else { (0.0, (fade_end + t.lead * 0.25).max(t.lead * 3.0)) };
+    let x = |secs: f32| inner.left() + ((secs - w0) / (w1 - w0)).clamp(0.0, 1.0) * inner.width();
+
+    // Kopf: was hereinkommt und der Countdown bzw. die Restzeit
+    let head_y = inner.top() + 9.0 * k;
+    let (caption, cap_color, count, count_color) = match t.fading {
+        Some((_, rest)) => (tr("BLENDET ÜBER ZU"), theme::yellow(), rest as f64, theme::yellow()),
+        None => (tr("ÜBERGANG ZU"), ink.gamma_multiply(0.55), until as f64, ink),
+    };
+    let count_text = crate::deck_ui::fmt_time(count);
+    let count_w = p.layout_no_wrap(count_text.clone(), fonts::lcd(17.0 * k), ink).size().x;
+    hw::lcd_text(p, pos2(inner.right(), head_y), Align2::RIGHT_CENTER, &count_text, 17.0 * k, count_color);
+    let mut cx = inner.left();
+    // Wird es eng (Netbook), fällt „ÜBERGANG ZU“ weg; Buchstabe und Titel bleiben
+    let room = inner.width() - count_w - 10.0;
+    let cap_w = p.layout_no_wrap(caption.to_owned(), fonts::bold(9.5 * k), cap_color).size().x;
+    let caption = if room - cap_w < 90.0 * k { String::new() } else { caption.to_owned() };
+    for (text, font, color) in [
+        (caption, fonts::bold(9.5 * k), cap_color),
+        (format!(" {} ", theme::deck_letter(to)), fonts::bold(13.0 * k), theme::deck_color(to)),
+    ] {
+        let g = p.layout_no_wrap(text, font, color);
+        let w = g.size().x;
+        p.galley(pos2(cx, head_y - g.size().y / 2.0), g, color);
+        cx += w;
+    }
+    let title_w = (inner.right() - count_w - 10.0 - cx).max(0.0);
+    let mut job = egui::text::LayoutJob::single_section(t.next.clone(), egui::TextFormat::simple(fonts::bold(12.0 * k), ink));
+    job.wrap = egui::text::TextWrapping::truncate_at_width(title_w);
+    let g = p.layout_job(job);
+    p.galley(pos2(cx, head_y - g.size().y / 2.0), g, ink);
+
+    // Zwei Spuren: Lautstärke des spielenden (oben) und des kommenden Titels über die Zeit
+    let lane_h = 12.0 * k;
+    let top = inner.top() + 22.0 * k;
+    let in_end = until + t.split_in.unwrap_or(0.0);
+    let out_start = if t.split_in.is_some() { in_end } else { until };
+    let lanes = [
+        (from, [(w0, 1.0), (out_start, 1.0), (fade_end, 0.0), (w1, 0.0)]),
+        (to, [(w0, 0.0), (until, 0.0), (if t.split_in.is_some() { in_end } else { fade_end }, 1.0), (w1, 1.0)]),
+    ];
+    for (i, (d, pts)) in lanes.iter().enumerate() {
+        let lane = Rect::from_min_size(pos2(inner.left(), top + i as f32 * (lane_h + 4.0)), vec2(inner.width(), lane_h));
+        p.rect_filled(lane, 3.0, Color32::from_white_alpha(14));
+        let color = theme::deck_color(*d);
+        let mut mesh = egui::Mesh::default();
+        for pair in pts.windows(2) {
+            let ((t0, l0), (t1, l1)) = (pair[0], pair[1]);
+            let (x0, x1) = (x(t0), x(t1));
+            if x1 - x0 < 0.5 {
+                continue;
+            }
+            let (c0, c1) = (color.gamma_multiply(l0), color.gamma_multiply(l1));
+            let base = mesh.vertices.len() as u32;
+            for (pos, c) in [(pos2(x0, lane.top()), c0), (pos2(x1, lane.top()), c1), (pos2(x1, lane.bottom()), c1), (pos2(x0, lane.bottom()), c0)] {
+                mesh.colored_vertex(pos, c);
+            }
+            mesh.add_triangle(base, base + 1, base + 2);
+            mesh.add_triangle(base, base + 2, base + 3);
+        }
+        p.add(mesh);
+        // Buchstabe dunkel auf der vollen Spur, sonst in der Farbe des Players
+        let lit = pts[0].1 > 0.5;
+        let letter_color = if lit { Color32::from_black_alpha(220) } else { color };
+        p.text(pos2(lane.left() + 5.0, lane.center().y), Align2::LEFT_CENTER, theme::deck_letter(*d), fonts::bold(9.5 * k), letter_color);
+    }
+    // Überblendbereich gestrichelt begrenzen, „jetzt“ als weißer Strich über beide Spuren
+    let lanes_y = egui::Rangef::new(top - 2.0, top + 2.0 * lane_h + 6.0);
+    for secs in [until, fade_end] {
+        let xs = x(secs);
+        let mut y = lanes_y.min;
+        while y < lanes_y.max {
+            p.line_segment([pos2(xs, y), pos2(xs, (y + 3.0).min(lanes_y.max))], Stroke::new(1.0, Color32::from_white_alpha(90)));
+            y += 5.0;
+        }
+    }
+    p.vline(x(now), lanes_y, Stroke::new(2.0, Color32::WHITE));
+
+    // Fuß: Länge, Kurve, Bass-Swap links; was danach auf dem spielenden Player kommt rechts
+    let foot_y = inner.bottom() - 6.0 * k;
+    let curve = match t.curve {
+        Curve::Soft => tr("Weich"),
+        Curve::Linear => tr("Linear"),
+        Curve::Cut => tr("Hart"),
+        Curve::Custom(_) => tr("Eigene"),
+    };
+    let small = fonts::bold(10.0 * k);
+    let mut changed = None;
+    let mut x0 = inner.left();
+    let mut left = if edit_secs {
+        // Überblendzeit als kleines LCD zum Ändern; bei FadeWerk-Bereichen steht die geplante Länge dahinter
+        let lcd = Rect::from_min_size(pos2(x0, foot_y - 9.0 * k), vec2(44.0 * k, 18.0 * k));
+        hw::well(p, lcd, 3.0);
+        let resp = ui.interact(lcd, ui.id().with("trans_secs"), Sense::click());
+        let snap = |v: f32| ((v / FADE_TIME.step).round() * FADE_TIME.step).clamp(FADE_TIME.min, FADE_TIME.max);
+        let keyed = hw::nudge(ui, &resp, snap(t.fade_secs), FADE_TIME.step, FADE_TIME.min, FADE_TIME.max);
+        changed = secs_lcd(ui, lcd, resp, t.fade_secs, 11.0 * k, &FADE_TIME).or(keyed);
+        x0 = lcd.right() + 5.0;
+        if (t.lead - t.fade_secs).abs() > 0.05 { format!("s · FadeWerk {:.0} s · {curve}", t.lead) } else { format!("s · {curve}") }
+    } else {
+        format!("{:.0} s · {curve}", t.lead)
+    };
+    if t.bass_swap {
+        left.push_str(" · Bass-Swap");
+    }
+    let lg = p.layout_no_wrap(left, small.clone(), ink.gamma_multiply(0.75));
+    let left_w = lg.size().x + (x0 - inner.left());
+    p.galley(pos2(x0, foot_y - lg.size().y / 2.0), lg, ink);
+    if let Some((d, title)) = &t.after {
+        let room = inner.width() - left_w - 14.0;
+        let mut job = egui::text::LayoutJob::default();
+        job.append(tr("danach: "), 0.0, egui::TextFormat::simple(small.clone(), ink.gamma_multiply(0.6)));
+        job.append(theme::deck_letter(*d), 0.0, egui::TextFormat::simple(small.clone(), theme::deck_color(*d)));
+        job.append(&format!(" · {title}"), 0.0, egui::TextFormat::simple(small.clone(), ink.gamma_multiply(0.75)));
+        job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+        let g = p.layout_job(job);
+        p.galley(pos2(inner.right() - g.size().x, foot_y - g.size().y / 2.0), g, ink);
+    }
+    changed
+}
+
+/// Pegel A | MAIN | B im Display der Automatik-Ansicht. Ohne eigene Schächte (das Display ist schon dunkles Glas),
+/// die Beschriftung steht unten im Display, damit die Säulen mit dem Übergang daneben bündig enden.
+pub fn display_meters(p: &egui::Painter, rect: Rect, m: &MixerModel<'_>) {
+    let label_h = 12.0;
+    let bar = rect.with_max_y(rect.bottom() - label_h - 4.0);
+    let led_w = (rect.width() * 0.17).clamp(9.0, 13.0);
+    let gap = 5.0;
+    let main_w = rect.width() - 2.0 * (led_w + gap);
+    let a = Rect::from_min_size(bar.min, vec2(led_w, bar.height()));
+    let main = Rect::from_min_size(pos2(a.right() + gap, bar.top()), vec2(main_w, bar.height()));
+    let b = Rect::from_min_size(pos2(main.right() + gap, bar.top()), vec2(led_w, bar.height()));
+    m.meters[0].paint(p, a);
+    m.meters[2].paint_with_bands(p, main, (!theme::lite().no_bands).then_some(m.bands), led_w * 1.7);
+    m.meters[1].paint(p, b);
+    let ly = rect.bottom() - label_h / 2.0;
+    let ink = theme::well_ink().gamma_multiply(0.55);
+    p.text(pos2(a.center().x, ly), Align2::CENTER_CENTER, "A", fonts::bold(10.0), theme::deck_color(0));
+    p.text(pos2(main.center().x, ly), Align2::CENTER_CENTER, "MAIN", fonts::bold(9.0), ink);
+    p.text(pos2(b.center().x, ly), Align2::CENTER_CENTER, "B", fonts::bold(10.0), theme::deck_color(1));
+}
+
+/// Bedienfeld der Automatik-Ansicht rechts neben dem Display, über dessen ganze Höhe: drei gleich hohe Zeilen
+/// AUTO | FADE, BASS SWAP | AUTO SYNC, REC, rechts daneben der senkrechte MASTER-Fader wie an einem Mischpult. So enden alle
+/// Teile auf derselben Ober- und Unterkante wie das Display. Den Crossfader gibt es nur in der Live-Ansicht.
+pub fn auto_controls(ui: &mut egui::Ui, f: &FadeModel<'_>, m: &MixerModel<'_>, fade_out: &mut Vec<FadeAction>, mixer_out: &mut Vec<MixerAction>) {
+    let r = ui.max_rect();
+    let gap = 6.0;
+    // Master: Fader über die Höhe, Beschriftung darunter
+    let label_h = 13.0;
+    let fader_w = 40.0;
+    let fader = Rect::from_min_max(pos2(r.right() - fader_w, r.top()), pos2(r.right(), r.bottom() - label_h - 3.0));
+    let (resp, new) = hw::vertical_fader(ui, fader, "master_auto", m.master_volume, settings::DEFAULT_MASTER_VOLUME, false);
+    if let Some(v) = hw::nudge(ui, &resp, m.master_volume, VOLUME_STEP, 0.0, 1.0).or(new) {
+        mixer_out.push(MixerAction::MasterVolume(v));
+    }
+    resp.on_hover_text(tr("Master-Lautstärke"));
+    ui.painter().text(pos2(fader.center().x, r.bottom() - label_h / 2.0), Align2::CENTER_CENTER, "MASTER", fonts::bold(9.5), theme::dim());
+
+    // Drei gleich hohe Zeilen
+    let grid = Rect::from_min_max(r.min, pos2(fader.left() - 12.0, r.bottom()));
+    let row_h = (grid.height() - 2.0 * gap) / 3.0;
+    let bw = (grid.width() - gap) / 2.0;
+    let cell = |row: usize, col: usize, span: usize| {
+        Rect::from_min_size(pos2(grid.left() + col as f32 * (bw + gap), grid.top() + row as f32 * (row_h + gap)), vec2(bw * span as f32 + gap * (span - 1) as f32, row_h))
+    };
+    let big = fonts::bold((row_h * 0.36).clamp(12.0, 16.0));
+    let small_font = fonts::bold((row_h * 0.27).clamp(9.5, 11.5));
+    let mut put = |rect: Rect, add: &mut dyn FnMut(&mut egui::Ui) -> egui::Response| ui.put(rect, |ui: &mut egui::Ui| add(ui));
+    if put(cell(0, 0, 1), &mut |ui| hw::button(ui, cell(0, 0, 1).size(), "AUTO", big.clone(), hw::Look::Color(theme::play()), f.auto, true)).clicked() {
+        fade_out.push(FadeAction::Auto(!f.auto));
+    }
+    if put(cell(0, 1, 1), &mut |ui| hw::button(ui, cell(0, 1, 1).size(), tr("FADE"), big.clone(), hw::Look::Plain, false, true)).on_hover_text(tr("Jetzt überblenden")).clicked() {
+        fade_out.push(FadeAction::FadeNow);
+    }
+    let tip = tr("Beim Überblenden kommt der neue Titel ohne Bässe herein, in der Mitte tauschen die Bässe. Klingt sauberer als ein reiner Lautstärke-Fade.");
+    if put(cell(1, 0, 1), &mut |ui| hw::button(ui, cell(1, 0, 1).size(), "BASS SWAP", small_font.clone(), hw::Look::Color(theme::yellow()), f.bass_swap, true)).on_hover_text(tip).clicked() {
+        fade_out.push(FadeAction::BassSwap(!f.bass_swap));
+    }
+    let tip = tr("Beim Titelwechsel bekommt der neue Titel das Tempo des laufenden. Danach läuft sein Pitch langsam auf 0 % zurück (0,1 % pro Sekunde).");
+    if put(cell(1, 1, 1), &mut |ui| hw::button(ui, cell(1, 1, 1).size(), "AUTO SYNC", small_font.clone(), hw::Look::Color(theme::yellow()), f.auto_sync, true)).on_hover_text(tip).clicked() {
+        fade_out.push(FadeAction::AutoSync(!f.auto_sync));
+    }
+    if put(cell(2, 0, 2), &mut |ui| record_button(ui, cell(2, 0, 2).size(), m.recording)).clicked() {
+        mixer_out.push(MixerAction::Record);
+    }
 }
 
 /// Höhe der Kurvenbox bei Breite `cw`: flaches Breitformat, nach oben begrenzt.

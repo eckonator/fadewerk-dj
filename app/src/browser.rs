@@ -78,7 +78,6 @@ pub enum BrowserAction {
     AddRoot,
     RemoveRoot(PathBuf),
     OpenSettings,
-    ToggleFullscreen,
     /// Browser zwischen unten und rechts umsetzen.
     ToggleSide,
     /// Browser in ein eigenes Fenster ausklinken (`true`) oder zurückholen.
@@ -200,8 +199,6 @@ pub struct BrowserCtx<'a> {
     pub preview_dur: f64,
     /// Spielt Player A bzw. B gerade? Dann lässt er sich nicht neu laden.
     pub deck_playing: [bool; 2],
-    /// Läuft das Fenster im Vollbild?
-    pub fullscreen: bool,
     /// Steht der Browser rechts neben den Playern? Und ist das Fenster breit genug dafür?
     pub side: bool,
     pub side_possible: bool,
@@ -990,18 +987,17 @@ impl Browser {
         ui.horizontal(|ui| {
             // Alle Tasten und Felder der Kopfzeile gleich hoch, wie in den Playlists
             ui.spacing_mut().interact_size.y = theme::CTRL_H;
-            ui.label(RichText::new(tr("ORDNER")).font(fonts::bold(16.0)).extra_letter_spacing(1.5));
+            ui.label(RichText::new(tr("ORDNER")).font(fonts::bold(16.0)).extra_letter_spacing(1.5))
+                .on_hover_text(tr("Live gelesen, keine Datenbank: Ordner anklicken, Titel sind sofort da."));
             if !compact {
                 self.view_switch(ui, out);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let icon_size = vec2(theme::ICON_BTN_W, theme::CTRL_H);
-                if !ctx.compact && ui.add(Button::new(RichText::new("⚙").size(15.0)).min_size(icon_size)).on_hover_text(tr("Einstellungen (⌘,)")).clicked() {
+                // Einstellungen und Vollbild sitzen in der Statuszeile des Hauptfensters; im eigenen Fenster
+                // fehlt sie, dort bleibt das Zahnrad
+                if ctx.detached && ui.add(Button::new(RichText::new("⚙").size(15.0)).min_size(icon_size)).on_hover_text(tr("Einstellungen (⌘,)")).clicked() {
                     out.push(BrowserAction::OpenSettings);
-                }
-                // Vollbild gilt dem Hauptfenster; im eigenen Fenster wäre die Taste irreführend
-                if !ctx.detached && !ctx.compact && fullscreen_button(ui, ctx.fullscreen).clicked() {
-                    out.push(BrowserAction::ToggleFullscreen);
                 }
                 if detach_button(ui, ctx.detached).clicked() {
                     out.push(BrowserAction::Detach(!ctx.detached));
@@ -1753,6 +1749,9 @@ impl Browser {
             let mut frames: Vec<(egui::Rect, bool, bool)> = Vec::new();
             // Sichtbarer Bereich der Tabellenzeilen (ohne Kopf), zusammengesetzt aus den Zellen
             let mut body_clip = egui::Rect::NOTHING;
+            // Breite der Tabelle: Liegt der Zeiger darin auf Höhe einer Zeile, zeigt sie ihre Tasten
+            let table_x = ui.available_rect_before_wrap().x_range();
+            let pointer = ui.ctx().pointer_hover_pos();
             let mut table = TableBuilder::new(ui)
                 // Eigene Kennung je Spaltensatz, damit egui keine Breiten einer anderen Aufteilung übernimmt
                 .id_salt(table_id)
@@ -1831,9 +1830,13 @@ impl Browser {
                         // Gilt eine Aktion dieser Zeile für die ganze Auswahl oder nur für diesen Titel?
                         let targets = || if in_sel { sel_paths.clone() } else if gone { Vec::new() } else { vec![path.clone()] };
                         row.set_selected(in_sel);
+                        // Kopfhörer- und A/B-Tasten nur bei Bedarf: Maus über der Zeile, markiert oder beim Vorhören
+                        let mut hot = previewing || in_sel;
                         row.col(|ui| {
                             body_clip = body_clip.union(ui.clip_rect());
-                            if !gone && crate::hw::preview_button(ui, vec2(28.0, 20.0), previewing).clicked() {
+                            let rows_y = ui.max_rect().y_range();
+                            hot |= pointer.is_some_and(|pt| rows_y.contains(pt.y) && table_x.contains(pt.x) && ui.clip_rect().y_range().contains(pt.y));
+                            if hot && !gone && crate::hw::preview_button(ui, vec2(28.0, 20.0), previewing).clicked() {
                                 out.push(if previewing { BrowserAction::StopPreview } else { BrowserAction::Preview(path.clone()) });
                             }
                         });
@@ -1901,7 +1904,7 @@ impl Browser {
                         row.col(|ui| {
                             right_edge = ui.max_rect().right() + ui.spacing().item_spacing.x / 2.0;
                             // Feste Größe, damit die Tasten in die Zeilenhöhe passen und mittig sitzen
-                            for list in [0usize, 1] {
+                            for list in [0usize, 1].into_iter().filter(|_| hot) {
                                 let letter = theme::deck_letter(list);
                                 let b = crate::hw::button(ui, vec2(30.0, 20.0), letter, fonts::bold(12.0), crate::hw::Look::Color(theme::deck_color(list)), false, !gone);
                                 let hint = if in_sel && sel_rows.len() > 1 {
@@ -2709,10 +2712,6 @@ impl Browser {
                 .min_size(vec2(search_w, theme::CTRL_H))
                 .vertical_align(egui::Align::Center),
         );
-        // Kompakte Ansicht: Platz für Pfad und Suche in einer Zeile
-        if !compact && !ctx.compact {
-            ui.label(RichText::new(tr("⏺ Live gelesen, keine Datenbank")).size(12.0).color(theme::play()));
-        }
         if let Some((done, total)) = ctx.bpm_progress {
             if ui.small_button(tr("Stopp")).on_hover_text(tr("Wartende Analysen verwerfen")).clicked() {
                 out.push(BrowserAction::StopBpm);
@@ -2833,12 +2832,7 @@ fn detach_button(ui: &mut egui::Ui, detached: bool) -> egui::Response {
     resp
 }
 
-fn fullscreen_button(ui: &mut egui::Ui, fullscreen: bool) -> egui::Response {
-    let size = egui::vec2(theme::ICON_BTN_W, ui.spacing().interact_size.y);
-    fullscreen_button_sized(ui, size, fullscreen)
-}
-
-/// Vollbild-Taste in fester Größe (auch für die Leiste der kompakten Ansicht).
+/// Vollbild-Taste in fester Größe (Statuszeile).
 pub fn fullscreen_button_sized(ui: &mut egui::Ui, size: egui::Vec2, fullscreen: bool) -> egui::Response {
     let tip = match (fullscreen, cfg!(target_os = "macos")) {
         (false, true) => tr("Vollbild (⌃⌘F)"),

@@ -22,6 +22,15 @@ pub const DEFAULT_FADE_SECS: f32 = 8.0;
 pub const EQ_MIN_DB: f32 = -26.0;
 pub const EQ_MAX_DB: f32 = 6.0;
 
+/// Arbeitsweise der Oberfläche (Umschalter in der Statuszeile).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ViewMode {
+    /// Auflegen von Hand: Teller, EQ, Filter, Pads, Loops.
+    Live,
+    /// Der Abend läuft allein: was läuft, was kommt und der Übergang groß, dazu die Playlists.
+    Auto,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -33,6 +42,9 @@ pub struct Settings {
     pub platters: bool,
     /// Kompakte Ansicht für kleine Bildschirme: `None` = automatisch nach Bildschirmgröße, sonst fest an/aus.
     pub compact: Option<bool>,
+    /// Arbeitsweise: Live (Teller, EQ, Pads) oder Automatik (Playlists und Übergang groß). `None` = nach
+    /// Bildschirm: auf kleinen Bildschirmen Automatik, sonst Live.
+    pub view: Option<ViewMode>,
     /// Höhe des Ordnerbrowsers in Punkten, 0 = automatisch (ein knappes Drittel des Fensters).
     pub browser_height: f32,
     /// Ordnerbrowser rechts neben Playern und Playlists statt darunter (für breite Monitore).
@@ -147,6 +159,7 @@ impl Default for Settings {
             brushed_steel: false,
             platters: true,
             compact: None,
+            view: None,
             browser_height: 0.0,
             browser_side: false,
             browser_width: 0.0,
@@ -161,7 +174,7 @@ impl Default for Settings {
             columns_rev: 1,
             column_widths: Vec::new(),
             track_sort: None,
-            center_tab: Some("pads".into()),
+            center_tab: None,
             fx_slots: Vec::new(),
             fx_volume: DEFAULT_FX_VOLUME,
             remember_search: true,

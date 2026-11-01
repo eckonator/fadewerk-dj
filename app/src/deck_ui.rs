@@ -6,7 +6,7 @@
 use std::f32::consts::TAU;
 
 use eframe::egui::{
-    self, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, UiBuilder,
+    self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, UiBuilder,
     epaint::TextShape, pos2, vec2,
 };
 use fw_library::Waveform;
@@ -323,6 +323,122 @@ fn show_compact(ui: &mut egui::Ui, m: &DeckModel<'_>, out: &mut Vec<DeckAction>)
             }
         });
     });
+}
+
+/// Höhe der Übersicht unter einer Playlist in der Automatik-Ansicht.
+pub const MINI_H: f32 = 22.0;
+
+/// Automatik-Ansicht: schmale Übersicht der Wellenform unter der Playlist, ein Klick springt im Titel. Die Tasten
+/// für den Titel auf Sendung stehen oben in der Karte „Jetzt“.
+pub fn show_mini(ui: &mut egui::Ui, m: &DeckModel<'_>, out: &mut Vec<DeckAction>) {
+    SCALE.with(|s| s.set(1.0));
+    overview_sized(ui, m, theme::deck_color(m.deck), MINI_H, out);
+}
+
+/// Karte „Jetzt“ bzw. „Als Nächstes“ oben in der Automatik-Ansicht: Platte (mit Cover, dreht beim Spielen),
+/// Titel, Interpret, Zeit und Tonart/BPM. `mirrored` = Platte rechts, Text rechtsbündig (für „Als Nächstes“).
+/// Sind die Plattenspieler ausgeschaltet, fehlt die Platte auch hier und der Text steht am Rand. Mit `controls`
+/// stehen Play/Pause und Stopp neben dem Zeit-LCD (Karte „Jetzt“: Bedienung bei dem, was sie bewirkt).
+pub fn hero_card(ui: &mut egui::Ui, rect: Rect, m: &DeckModel<'_>, mirrored: bool, caption: &str, controls: Option<&mut Vec<DeckAction>>) {
+    let p = ui.painter_at(rect);
+    let color = theme::deck_color(m.deck);
+    // Platte so hoch wie die Leiste, damit sie mit Display und Bedienfeld auf einer Flucht liegt
+    let s = (rect.height() / 170.0).clamp(0.6, 1.0);
+    let r = if m.platter { (rect.height() / 2.0).min(rect.width() * 0.26) } else { 0.0 };
+    let c = if mirrored { pos2(rect.right() - r, rect.center().y) } else { pos2(rect.left() + r, rect.center().y) };
+    if m.platter {
+        paint_hero_disc(&p, c, r, m, color);
+    }
+
+    // Text neben der Platte (ohne Platte am Rand), als Block senkrecht mittig
+    let edge = if m.platter { 18.0 } else { 4.0 };
+    let text_w = rect.width() - 2.0 * r - edge - 2.0;
+    let x = if mirrored { c.x - r - edge } else { c.x + r + edge };
+    let block_h = if m.has_track { 112.0 } else { 48.0 } * s;
+    let mut y = rect.center().y - block_h / 2.0;
+    let text = |p: &egui::Painter, y: f32, t: &str, font: FontId, col: Color32| {
+        let mut job = egui::text::LayoutJob::single_section(t.to_owned(), egui::TextFormat::simple(font, col));
+        job.wrap = egui::text::TextWrapping { max_width: text_w.max(1.0), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
+        let g = p.layout_job(job);
+        let h = g.size().y;
+        let pos = if mirrored { pos2(x - g.size().x, y) } else { pos2(x, y) };
+        p.galley(pos, g, col);
+        h
+    };
+    let cap = format!("{caption} · {}", trf("PLAYER {}", &[&theme::deck_letter(m.deck)]));
+    y += text(&p, y, &cap, fonts::bold(11.0 * s), color) + 4.0 * s;
+    let title = if m.loading { tr("Lädt …") } else if m.has_track { m.title } else { tr("Kein Titel geladen") };
+    y += text(&p, y, title, fonts::bold(25.0 * s), theme::ink());
+    if m.has_track {
+        y += text(&p, y, m.artist, FontId::proportional(14.5 * s), theme::dim()) + 8.0 * s;
+        // Zeit als LCD: beim spielenden Titel die Restzeit, beim nächsten die Länge
+        let time = if m.playing || m.position > 0.5 { format!("-{}", fmt_time(m.duration - m.position)) } else { fmt_time(m.duration) };
+        let lcd_font = 21.0 * s;
+        let tw = p.layout_no_wrap(time.clone(), fonts::lcd(lcd_font), color).size().x;
+        let well = if mirrored { Rect::from_min_size(pos2(x - tw - 16.0, y), vec2(tw + 16.0, 34.0 * s)) } else { Rect::from_min_size(pos2(x, y), vec2(tw + 16.0, 34.0 * s)) };
+        hw::well(&p, well, 4.0);
+        hw::lcd_text(&p, well.center(), Align2::CENTER_CENTER, &time, lcd_font, color);
+        // Play/Pause und Stopp hinter dem LCD; danach (falls Platz) Tonart und BPM
+        let mut after = if mirrored { well.left() } else { well.right() };
+        if let Some(out) = controls {
+            let h = well.height();
+            let dir = if mirrored { -1.0 } else { 1.0 };
+            let play_w = 54.0 * s;
+            let stop_w = 40.0 * s;
+            let play = Rect::from_min_size(pos2(if mirrored { after - 8.0 - play_w } else { after + 8.0 }, well.top()), vec2(play_w, h));
+            after += dir * (8.0 + play_w);
+            let stop = Rect::from_min_size(pos2(if mirrored { after - 6.0 - stop_w } else { after + 6.0 }, well.top()), vec2(stop_w, h));
+            after += dir * (6.0 + stop_w);
+            let spinning_down = !m.playing && m.speed > 0.0;
+            let blink = spinning_down && (ui.input(|i| i.time) * 4.0) as i64 % 2 == 0;
+            let lit = m.playing || blink;
+            if ui.put(play, |ui: &mut egui::Ui| hw::play_pause_button(ui, play.size(), 12.0 * s, hw::Look::Color(theme::play()), lit, true)).clicked() {
+                out.push(DeckAction::TogglePlay);
+            }
+            let stop_resp = ui.put(stop, |ui: &mut egui::Ui| hw::button(ui, stop.size(), "⏹", FontId::proportional(15.0 * s), hw::Look::Plain, false, true));
+            if stop_resp.on_hover_text(tr("Stopp: Teller läuft aus, dann zurück zum Cue-Punkt")).clicked() {
+                out.push(DeckAction::Stop);
+            }
+        }
+        let mut info = Vec::new();
+        if let Some(k) = m.key {
+            info.push(k.label().to_string());
+        }
+        if let Some(b) = m.bpm {
+            info.push(format!("{:.1} BPM", b * (1.0 + m.pitch_pct / 100.0)));
+        }
+        let info_text = info.join(" · ");
+        let info_w = p.layout_no_wrap(info_text.clone(), fonts::bold(11.0 * s), theme::dim()).size().x;
+        let room = if mirrored { after - 10.0 - rect.left() } else { rect.right() - after - 10.0 };
+        if info_w <= room {
+            let info_pos = if mirrored { pos2(after - 10.0, well.center().y) } else { pos2(after + 10.0, well.center().y) };
+            let info_align = if mirrored { Align2::RIGHT_CENTER } else { Align2::LEFT_CENTER };
+            p.text(info_pos, info_align, info_text, fonts::bold(11.0 * s), theme::dim());
+        }
+    }
+}
+
+/// Platte der Automatik-Karte: Rillen, Label in der Farbe des Players oder das Cover, dreht mit der Position.
+fn paint_hero_disc(p: &egui::Painter, c: Pos2, r: f32, m: &DeckModel<'_>, color: Color32) {
+    p.circle_filled(c, r, Color32::from_rgb(0x0b, 0x0b, 0x0e));
+    if !theme::lite().shapes {
+        let mut rr = r * 0.4;
+        while rr < r * 0.97 {
+            p.circle_stroke(c, rr, Stroke::new(1.0, Color32::from_white_alpha(9)));
+            rr += r * 0.06;
+        }
+    }
+    let angle = (m.position * REV_PER_SEC * std::f64::consts::TAU) as f32;
+    match m.cover.filter(|_| m.has_track) {
+        Some(tex) => paint_cover(p, c, r * COVER_RADIUS, angle, tex),
+        None if m.has_track => {
+            p.circle_filled(c, r * 0.36, color);
+            let mark = c + vec2(angle.cos(), angle.sin()) * r * 0.24;
+            p.circle_filled(mark, r * 0.04, Color32::from_black_alpha(160));
+        }
+        None => {}
+    }
+    p.circle_filled(c, r * 0.04, Color32::from_rgb(0xcf, 0xd6, 0xe4));
 }
 
 /// Einzeiliger Text, der mit „…“ abgeschnitten wird, wenn er nicht in `width` passt.
@@ -961,9 +1077,11 @@ fn controls(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, out: &mut Vec<
         }
     });
 
-    // Zurück, Stopp, Vor, Repeat
+    // Mittlere Stufe: Zurück, Stopp, Vor, abgesetzt daneben die Loops
     ui.horizontal(|ui| {
-        let unit = (w - 3.0 * gap) / 4.7;
+        let loop_w = 34.0 * k();
+        let sep = 9.0;
+        let unit = (w - 5.0 * gap - sep - 3.0 * loop_w) / 3.0;
         let icon = FontId::proportional(15.0 * k());
         if hw::button(ui, vec2(unit, 32.0 * k()), "⏮", icon.clone(), hw::Look::Plain, false, enabled).on_hover_text(tr("Zurück: Titelanfang, in den ersten 3 s voriger Titel")).clicked() {
             out.push(DeckAction::Prev);
@@ -974,68 +1092,65 @@ fn controls(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, out: &mut Vec<
         if hw::button(ui, vec2(unit, 32.0 * k()), "⏭", icon, hw::Look::Plain, false, enabled).on_hover_text(tr("Nächster Titel der Playlist")).clicked() {
             out.push(DeckAction::Next);
         }
+        let (rect, _) = ui.allocate_exact_size(vec2(sep - gap, 32.0 * k()), Sense::hover());
+        ui.painter().vline(rect.center().x, rect.y_range().shrink(5.0), Stroke::new(1.0, theme::line()));
+        for beats in [4u32, 8, 16] {
+            let on = m.loop_beats == Some(beats);
+            if hw::button(ui, vec2(loop_w, 32.0 * k()), &beats.to_string(), fonts::bold(12.0 * k()), hw::Look::Color(theme::play()), on, enabled && m.bpm.is_some())
+                .on_hover_text(trf("Loop über {} Beats", &[&beats]))
+                .clicked()
+            {
+                out.push(DeckAction::Loop(beats));
+            }
+        }
+    });
+
+    // Kleine Stufe: Repeat, Vorhören, Sync, Rückwärts in einer flachen Leiste
+    ui.horizontal(|ui| {
+        let h = 26.0 * k();
+        let font = fonts::bold(10.5 * k());
+        let pfl_w = (w - 3.0 * gap) * 0.34;
+        let rest_w = (w - 3.0 * gap - pfl_w) / 3.0;
         let on = m.repeat != Repeat::Off;
         let label = format!("🔁 {}", m.repeat.label());
-        if hw::button(ui, vec2(w - 3.0 * gap - 3.0 * unit, 32.0 * k()), &label, fonts::bold(12.0 * k()), hw::Look::Color(color), on, true)
+        if hw::button(ui, vec2(rest_w, h), &label, font.clone(), hw::Look::Color(theme::yellow()), on, true)
             .on_hover_text(tr("Wiederholen: aus, Titel, ganze Playlist"))
             .clicked()
         {
             out.push(DeckAction::CycleRepeat);
         }
-    });
-
-    // Vorhören, Sync, Rückwärts
-    ui.horizontal(|ui| {
-        let pfl_w = (w - 2.0 * gap) * 0.46;
-        let rest_w = (w - 2.0 * gap - pfl_w) / 2.0;
         // In schmalen Playern erst ohne Symbol, dann kleiner, damit die Beschriftung nicht über SYNC ragt
         let fits = |text: &str, size: f32| ui.painter().layout_no_wrap(text.to_owned(), fonts::bold(size), Color32::WHITE).size().x <= pfl_w - 8.0;
         let full = format!("🎧 {}", tr("VORHÖREN"));
-        let size = 12.0 * k();
+        let size = 10.5 * k();
         let (label, size) = if fits(&full, size) {
             (full, size)
         } else {
             let short = tr("VORHÖREN").to_owned();
             let mut s = size;
-            while s > 8.0 && !fits(&short, s) {
+            while s > 7.5 && !fits(&short, s) {
                 s -= 0.5;
             }
             (short, s)
         };
-        if hw::button(ui, vec2(pfl_w, 28.0 * k()), &label, fonts::bold(size), hw::Look::Color(color), m.pfl, true)
+        if hw::button(ui, vec2(pfl_w, h), &label, fonts::bold(size), hw::Look::Color(color), m.pfl, true)
             .on_hover_text(tr("Auf dem Kopfhörer vorhören, unabhängig vom Crossfader"))
             .clicked()
         {
             out.push(DeckAction::Pfl(!m.pfl));
         }
         let tip = if m.auto_synced { tr("Auto-Sync steuert den Pitch; Pitch anfassen übernimmt von Hand") } else { tr("Tempo an den anderen Player angleichen") };
-        if hw::button(ui, vec2(rest_w, 28.0 * k()), "SYNC", fonts::bold(12.0 * k()), hw::Look::Color(theme::yellow()), m.auto_synced, enabled && m.bpm.is_some())
+        if hw::button(ui, vec2(rest_w, h), "SYNC", font.clone(), hw::Look::Color(theme::yellow()), m.auto_synced, enabled && m.bpm.is_some())
             .on_hover_text(tip)
             .clicked()
         {
             out.push(DeckAction::Sync);
         }
-        if hw::button(ui, vec2(rest_w, 28.0 * k()), "REV", fonts::bold(12.0 * k()), hw::Look::Color(theme::cue()), m.reverse, true)
+        if hw::button(ui, vec2(rest_w, h), "REV", font, hw::Look::Color(theme::cue()), m.reverse, true)
             .on_hover_text(tr("Rückwärts: der Motor dreht die Platte andersherum"))
             .clicked()
         {
             out.push(DeckAction::Reverse(!m.reverse));
-        }
-    });
-
-    // Loops
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("LOOP").font(fonts::bold(11.0 * k())).color(theme::dim()));
-        let rest = ui.available_width();
-        let bw = (rest - 2.0 * gap) / 3.0;
-        for beats in [4u32, 8, 16] {
-            let on = m.loop_beats == Some(beats);
-            if hw::button(ui, vec2(bw, 26.0 * k()), &beats.to_string(), fonts::bold(12.0 * k()), hw::Look::Color(theme::play()), on, enabled && m.bpm.is_some())
-                .on_hover_text(trf("Loop über {} Beats", &[&beats]))
-                .clicked()
-            {
-                out.push(DeckAction::Loop(beats));
-            }
         }
     });
 }

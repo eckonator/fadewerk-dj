@@ -985,12 +985,16 @@ fn performance_page(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<Settin
     let lite = c.settings.lite;
     card(ui, tr("Voreinstellung"), |ui| {
         note(ui, tr("Für ältere oder langsame Rechner. Jeder Punkt spart Rechenzeit, der Ton bleibt gleich."));
-        // „Eigene“ ergibt sich aus den Schaltern darunter, anklicken lässt es sich nicht
-        let custom = lite != Lite::NONE && lite != Lite::ALL;
-        let current = if custom { None } else { Some(lite) };
+        // „Eigene“ ergibt sich aus den Schaltern darunter, anklicken lässt es sich nicht. Volle Optik heißt auch:
+        // mit Plattenspielern
+        let full = lite == Lite::NONE && c.settings.platters;
+        let current = if full { Some(Lite::NONE) } else if lite == Lite::ALL { Some(Lite::ALL) } else { None };
         let options = [(Some(Lite::NONE), tr("Volle Optik"), true), (Some(Lite::ALL), tr("Sparsam"), true), (None, tr("Eigene"), false)];
         if let Some(Some(p)) = segmented(ui, current, &options) {
             out.push(SettingsAction::Lite(p));
+            if p == Lite::NONE {
+                out.push(SettingsAction::Platters(true));
+            }
         }
     });
     let part = |ui: &mut egui::Ui, out: &mut Vec<SettingsAction>, label: &str, sub: &str, pick: fn(&mut Lite) -> &mut bool| {

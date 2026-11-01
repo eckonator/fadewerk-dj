@@ -18,7 +18,8 @@ use crate::devtools::DevTools;
 use crate::i18n::{self, tr, trf};
 use crate::history::{Entry, ExportFormat, History, PlayTracker};
 use crate::history_ui::{DialogEvent, HistoryDialog};
-use crate::settings::Settings;
+use crate::settings::{Settings, ViewMode};
+use crate::statusbar::{OnAir, StatusAction, StatusModel};
 use crate::settings_ui::{SettingsAction, SettingsCtx, SettingsUi};
 use crate::tag_editor::{TagEditor, TagEditorEvent};
 use crate::meter::Meter;
@@ -26,6 +27,15 @@ use crate::mixer_ui::{self, FadeAction, FadeModel, MixerAction, MixerModel};
 use crate::playlist::{DragItem, Playlist};
 use crate::playlist_ui::{self, PlaylistAction};
 use crate::theme;
+
+mod actions;
+mod commands;
+mod fade;
+mod library;
+mod output;
+mod played;
+mod prefs;
+mod views;
 
 /// Höhe der Player-Zeile bei Vergrößerung 1,0.
 const DECK_ROW_HEIGHT: f32 = 420.0;
@@ -48,8 +58,6 @@ const COMPACT_AUTO_H: f32 = 720.0;
 /// Breite der Leiste „ORDNER“ am linken Rand und Dauer des Hereingleitens (kompakte Ansicht).
 const SLIDE_STRIP_W: f32 = 30.0;
 const SLIDE_SECS: f32 = 0.25;
-/// Höhe der Statuszeile über dem eingeschobenen Ordnerbereich.
-const SLIDE_STATUS_H: f32 = 26.0;
 /// So viel Bildschirmhöhe bleibt für Fensterleiste und Taskleiste frei (logische Pixel).
 const SCREEN_RESERVE_H: f32 = 60.0;
 /// So viele Sekunden vor Titelende beginnt der Rahmen eines laufenden Players zu blinken.
@@ -58,6 +66,9 @@ const END_WARNING_SECS: f64 = 15.0;
 const END_WARNING_FAST_SECS: f64 = 5.0;
 /// So schnell (Prozent Pitch pro Sekunde) läuft Auto-Sync nach der Überblendung auf 0 % zurück, unhörbar langsam.
 const AUTO_SYNC_RATE: f32 = 0.1;
+/// So stark tritt ein Player zurück, solange nur der andere zu hören ist (Deckkraft der Grundfarbe darüber).
+const OFF_AIR_DIM: f32 = 0.38;
+
 /// Bildabstand der sparsamen Darstellung (30 Bilder pro Sekunde), solange sich etwas bewegt.
 const LITE_FRAME: std::time::Duration = std::time::Duration::from_millis(33);
 /// Im Ruhezustand nur so oft neu zeichnen (ohne Eingaben), damit Zustände aus dem Audio-Thread ankommen.
@@ -204,7 +215,63 @@ struct ClipView {
     offset: f64,
 }
 
+/// Caches für große Sammlungen und Netzlaufwerke (siehe `tag_cache`, `folder_cache`, `analysis_cache`).
+#[derive(Default)]
+struct Caches {
+    tag: crate::tag_cache::TagCache,
+    folder: crate::folder_cache::FolderCache,
+    /// Ermittelte BPM bzw. Tonarten (`bpm.json`, `tonart.json`).
+    bpm: crate::analysis_cache::BpmCache,
+    key: crate::analysis_cache::KeyCache,
+    /// Gemessene Größen für Einstellungen → Musik und die laufende Messung.
+    sizes: Option<crate::caches::CacheSizes>,
+    sizes_rx: Option<std::sync::mpsc::Receiver<crate::caches::CacheSizes>>,
+}
+
+/// Update-Prüfung bei GitHub und Selbst-Update.
+#[derive(Default)]
+struct UpdateState {
+    /// Laufende Prüfung.
+    rx: Option<std::sync::mpsc::Receiver<Result<Option<crate::update::NewVersion>, crate::update::CheckError>>>,
+    /// Von Hand angestoßen: dann auch „aktuell“ und Fehler melden.
+    manual: bool,
+    /// Laufendes Herunterladen und Installieren, mit letztem Stand.
+    installing: Option<std::sync::mpsc::Receiver<crate::self_update::Progress>>,
+    progress: Option<crate::self_update::Progress>,
+    /// Gefundene neue Version (Leiste oben).
+    new_version: Option<crate::update::NewVersion>,
+    /// Beim ersten Start fragen, ob geprüft werden soll.
+    ask: bool,
+}
+
+/// Ruhezustand verhindern, solange ein Player oder das Vorhören spielt.
+#[derive(Default)]
+struct WakeLock {
+    lock: Option<keepawake::KeepAwake>,
+    /// Zuletzt etwas zu hören (für `AWAKE_HOLD_SECS`).
+    last_sound: f64,
+    /// Sperre scheiterte: erst nach dem nächsten Stillstand erneut versuchen.
+    failed: bool,
+}
+
+/// Wellenform-Skizzen der Playlist-Titel für den FadeWerk-Modus.
+#[derive(Default)]
+struct Sketches {
+    map: HashMap<PathBuf, Option<Arc<WaveSketch>>>,
+    requested: HashSet<PathBuf>,
+    /// Anfragen dieses Bildes je Playlist, abwechselnd abgeschickt.
+    batch: [Vec<PathBuf>; 2],
+}
+
 pub struct FadeWerkDjApp {
+    /// Tag-, Ordner-, BPM- und Tonart-Cache und die gemessenen Größen (Einstellungen → Musik).
+    caches: Caches,
+    /// Update-Prüfung, Selbst-Update und die Leiste dazu.
+    update: UpdateState,
+    /// Ruhezustand verhindern, solange etwas spielt.
+    wake: WakeLock,
+    /// Wellenform-Skizzen für den FadeWerk-Modus.
+    sketch: Sketches,
     audio: Option<AudioOut>,
     audio_error: Option<String>,
     /// Zuletzt gesetztes Mindestfenster in Punkten (`fit_screen`).
@@ -232,22 +299,11 @@ pub struct FadeWerkDjApp {
     /// Davon mit Vorrang angefordert (sichtbare Zeilen), damit jeder Pfad nur einmal vorgezogen wird.
     meta_urgent: HashSet<PathBuf>,
     bpms: HashMap<PathBuf, f32>,
-    /// Gemerkte BPM aus der Tempo-Erkennung (`bpm.json`).
-    bpm_cache: crate::analysis_cache::BpmCache,
     /// Ermittelte Tonarten, `None` = Analyse war unsicher (nicht erneut analysieren). Tonarten aus Tags stehen
     /// in `metas`; [`Self::key_of`] fragt beide ab.
     keys: HashMap<PathBuf, Option<Camelot>>,
-    /// Gemerkte Tonarten aus der Erkennung (`tonart.json`).
-    key_cache: crate::analysis_cache::KeyCache,
-    /// Gemerkte Tags (große Sammlungen, Netzlaufwerke): sofort gezeigt, im Hintergrund geprüft.
-    tag_cache: crate::tag_cache::TagCache,
-    /// Gemerkte Titellisten langsamer Ordner, gezeigt während der Live-Suche.
-    folder_cache: crate::folder_cache::FolderCache,
     /// Laufende Ordnersuche: Kennung, gesuchte Ordner, Start (zum Merken langsamer Ordner).
     scan_job: Option<(u64, crate::folder_cache::Roots, std::time::Instant)>,
-    /// Größe der Caches für die Einstellungen (gemessen, solange das Fenster offen ist).
-    cache_sizes: Option<crate::caches::CacheSizes>,
-    cache_sizes_rx: Option<std::sync::mpsc::Receiver<crate::caches::CacheSizes>>,
     /// Titel, deren BPM-Analyse noch läuft, und Gesamtzahl seit dem letzten Leerlauf (für die Fortschrittsanzeige).
     bpm_pending: HashSet<PathBuf>,
     bpm_total: usize,
@@ -258,11 +314,6 @@ pub struct FadeWerkDjApp {
     harmonic_pending: bool,
     /// Playlists vor dem letzten Sortieren (harmonisch oder zufällig), Fingerabdruck danach und Zeitpunkt (für „Rückgängig“).
     sort_undo: Option<([Playlist; 2], u64, f64)>,
-    /// Kleine Wellenformen für die Playlist-Zeilen (`None` = Datei nicht lesbar).
-    sketches: HashMap<PathBuf, Option<Arc<WaveSketch>>>,
-    sketch_requested: HashSet<PathBuf>,
-    /// In diesem Bild angeforderte Wellenformen je Playlist, von oben nach unten (siehe [`App::send_sketch_requests`]).
-    sketch_batch: [Vec<PathBuf>; 2],
     /// FadeWerk-Modus: Playlists zeigen Wellenformen und Fade-Bereiche.
     fadewerk: bool,
     autofade: AutoFade,
@@ -315,6 +366,8 @@ pub struct FadeWerkDjApp {
     dev: DevTools,
     settings: Settings,
     settings_ui: SettingsUi,
+    /// Befehlssuche (⌘K).
+    palette: crate::palette::Palette,
     tag_editor: Option<TagEditor>,
     tag_batch: Option<crate::tag_batch::TagBatch>,
     save_due: Option<f64>,
@@ -334,16 +387,6 @@ pub struct FadeWerkDjApp {
     browser_window_init: Option<[f32; 4]>,
     /// Wie viele Bilder das Ordnerfenster schon auf keinem Bildschirm liegt.
     browser_window_lost: u32,
-    update_rx: Option<std::sync::mpsc::Receiver<Result<Option<crate::update::NewVersion>, crate::update::CheckError>>>,
-    /// Prüfung von Hand angestoßen (Einstellungen): dann auch „nichts Neues“ melden.
-    update_manual: bool,
-    /// Läuft das Update per Knopf, kommt hierüber der Fortschritt.
-    self_update: Option<std::sync::mpsc::Receiver<crate::self_update::Progress>>,
-    update_progress: Option<crate::self_update::Progress>,
-    /// Gefundene neue Version (Hinweisleiste), bis der Nutzer sie wegklickt.
-    new_version: Option<crate::update::NewVersion>,
-    /// Frage „nach Updates suchen?“ beim ersten Start.
-    ask_update: bool,
     /// Gespielte Titel je Tag (`historie/`).
     history: History,
     /// Erkennt je Player, wann ein Titel als gespielt gilt.
@@ -356,12 +399,6 @@ pub struct FadeWerkDjApp {
     history_dialog: Option<HistoryDialog>,
     /// Zum Neuzeichnen aus Hintergrund-Threads.
     repaint_ctx: egui::Context,
-    /// Sperre gegen den Ruhezustand des Rechners, solange Musik spielt (`keep_awake`).
-    awake: Option<keepawake::KeepAwake>,
-    /// Zeitpunkt, zu dem zuletzt etwas spielte.
-    last_sound: f64,
-    /// Das System hat die Sperre verweigert; nicht jedes Bild erneut versuchen.
-    awake_failed: bool,
 }
 
 impl FadeWerkDjApp {
@@ -422,16 +459,7 @@ impl FadeWerkDjApp {
             meta_urgent: HashSet::new(),
             bpms: HashMap::new(),
             keys: HashMap::new(),
-            key_cache: Default::default(),
-            bpm_cache: Default::default(),
-            tag_cache: Default::default(),
-            folder_cache: Default::default(),
             scan_job: None,
-            cache_sizes: None,
-            cache_sizes_rx: None,
-            sketches: HashMap::new(),
-            sketch_requested: HashSet::new(),
-            sketch_batch: Default::default(),
             fadewerk: false,
             bpm_pending: HashSet::new(),
             bpm_total: 0,
@@ -480,7 +508,12 @@ impl FadeWerkDjApp {
             last_logic: 0.0,
             dev: DevTools::from_env(),
             settings,
+            caches: Caches::default(),
+            update: UpdateState::default(),
+            wake: WakeLock::default(),
+            sketch: Sketches::default(),
             settings_ui: SettingsUi::default(),
+            palette: Default::default(),
             tag_editor: None,
             tag_batch: None,
             save_due: None,
@@ -493,12 +526,6 @@ impl FadeWerkDjApp {
             cross: Default::default(),
             browser_window_init: None,
             browser_window_lost: 0,
-            update_rx: None,
-            update_manual: false,
-            self_update: None,
-            update_progress: None,
-            new_version: None,
-            ask_update: false,
             history: History::default(),
             play_trackers: Default::default(),
             history_ended: [0; 2],
@@ -506,9 +533,6 @@ impl FadeWerkDjApp {
             import_rx: None,
             history_dialog: None,
             repaint_ctx: cc.egui_ctx.clone(),
-            awake: None,
-            last_sound: 0.0,
-            awake_failed: false,
         };
         app.persist = !app.dev.isolated();
         // Update-Prüfung: beim ersten Start fragen, danach nur wenn erlaubt (nicht bei Entwicklerläufen,
@@ -516,10 +540,10 @@ impl FadeWerkDjApp {
         let dev_update = cfg!(debug_assertions) && std::env::var_os("FW_UPDATE_URL").is_some();
         let dev_ask = cfg!(debug_assertions) && std::env::var_os("FW_UPDATE_ASK").is_some();
         match app.settings.update_check {
-            _ if dev_ask => app.ask_update = true,
-            _ if dev_update => app.update_rx = Some(crate::update::check_in_background(cc.egui_ctx.clone())),
-            None if app.persist => app.ask_update = true,
-            Some(true) if app.persist => app.update_rx = Some(crate::update::check_in_background(cc.egui_ctx.clone())),
+            _ if dev_ask => app.update.ask = true,
+            _ if dev_update => app.update.rx = Some(crate::update::check_in_background(cc.egui_ctx.clone())),
+            None if app.persist => app.update.ask = true,
+            Some(true) if app.persist => app.update.rx = Some(crate::update::check_in_background(cc.egui_ctx.clone())),
             _ => {}
         }
         // Linux: Findet wgpu nur einen Software-Renderer (llvmpipe, etwa ältere Intel-Grafik ohne Vulkan), ist
@@ -551,15 +575,15 @@ impl FadeWerkDjApp {
             app.history = History::load();
         }
         if app.persist {
-            app.bpm_cache = crate::analysis_cache::BpmCache::load();
-            app.bpms.extend(app.bpm_cache.all().map(|(p, b)| (p.clone(), b.bpm)));
-            app.bpm_check = Some(app.bpm_cache.start_check());
-            app.key_cache = crate::analysis_cache::KeyCache::load();
-            app.keys.extend(app.key_cache.all().map(|(p, k)| (p.clone(), k.camelot())));
-            app.key_check = Some(app.key_cache.start_check());
-            app.tag_cache = crate::tag_cache::TagCache::load();
-            app.folder_cache = crate::folder_cache::FolderCache::load();
-            log::info!("Tag-Cache: {} Titel", app.tag_cache.len());
+            app.caches.bpm = crate::analysis_cache::BpmCache::load();
+            app.bpms.extend(app.caches.bpm.all().map(|(p, b)| (p.clone(), b.bpm)));
+            app.bpm_check = Some(app.caches.bpm.start_check());
+            app.caches.key = crate::analysis_cache::KeyCache::load();
+            app.keys.extend(app.caches.key.all().map(|(p, k)| (p.clone(), k.camelot())));
+            app.key_check = Some(app.caches.key.start_check());
+            app.caches.tag = crate::tag_cache::TagCache::load();
+            app.caches.folder = crate::folder_cache::FolderCache::load();
+            log::info!("Tag-Cache: {} Titel", app.caches.tag.len());
             let dir = crate::settings::config_dir().map(|d| d.join("wellenformen"));
             if let Some(dir) = dir.clone() {
                 let _ = std::thread::Builder::new().name("fw-wave-clean".into()).spawn(move || {
@@ -604,6 +628,12 @@ impl FadeWerkDjApp {
         if app.dev.steel {
             theme::set_brushed(true);
             theme::apply(&cc.egui_ctx);
+        }
+        if let Some(q) = app.dev.palette.clone() {
+            app.palette.open_with(&q);
+        }
+        if app.dev.view.is_some() {
+            app.settings.view = app.dev.view;
         }
         if app.dev.lite {
             app.settings.lite = theme::Lite::ALL;
@@ -725,1039 +755,12 @@ impl FadeWerkDjApp {
         app
     }
 
-    /// Bringt die Engine auf den Stand der Oberfläche (Start und nach einem Gerätewechsel).
-    fn push_mixer_state(&mut self) {
-        self.ctl.send(Command::SetCrossfader(self.crossfader));
-        self.split_sent = None;
-        self.ctl.send(Command::SetCurve(self.curve));
-        self.ctl.send(Command::SetRepeatFade(self.autofade.fade_secs));
-        self.ctl.send(Command::SetMotor(self.motor));
-        self.ctl.send(Command::SetMasterVolume(self.master_volume));
-        self.ctl.send(Command::SetFxVolume(self.fx_volume));
-        for (slot, sound) in self.fx.sounds.iter().enumerate() {
-            if let Some(sound) = sound {
-                self.ctl.send(Command::LoadFx { slot, sound: sound.clone() });
-            }
-        }
-        self.ctl.send(Command::SetHeadVolume(self.head_volume));
-        self.ctl.send(Command::SetHeadMix(self.head_mix));
-        self.ctl.send(Command::SetHeadMode(self.head_mode));
-        for d in 0..2 {
-            let v = &self.decks[d];
-            self.ctl.send(Command::SetChannelVolume { deck: d, volume: v.volume });
-            self.ctl.send(Command::SetPfl { deck: d, on: v.pfl });
-            self.ctl.send(Command::SetPitch { deck: d, pitch: v.pitch_pct / 100.0 });
-            self.ctl.send(Command::SetRepeatTrack { deck: d, on: v.repeat == Repeat::Track });
-            self.ctl.send(Command::SetReverse { deck: d, on: v.reverse });
-        }
-        self.eq_sent = [[f32::NAN; 3]; 2];
-        self.push_eq();
-        for d in 0..2 {
-            self.ctl.send(Command::SetFilter { deck: d, value: self.filter[d] });
-        }
-    }
-
-    /// Aufnahme des Mix starten oder beenden.
-    fn toggle_recording(&mut self, now: f64) {
-        if let Some(rec) = &self.recording {
-            if !rec.is_stopping() {
-                self.ctl.send(Command::SetRecording(false));
-                rec.stop();
-            }
-            return;
-        }
-        let Some(rx) = self.record_rx.take() else {
-            self.notify(tr("Aufnahme nicht möglich: keine Audio-Ausgabe"), now);
-            return;
-        };
-        let dir = self.settings.record_dir.clone().unwrap_or_else(crate::recorder::default_dir);
-        match crate::recorder::Recording::start(&dir, self.settings.record_format, self.ctl.shared.clone(), rx, self.audio_gen) {
-            Ok(rec) => {
-                self.record_dropped_at_start = self.ctl.shared.record_dropped();
-                self.ctl.send(Command::SetRecording(true));
-                log::info!("Aufnahme: {}", rec.path.display());
-                self.notify(trf("Aufnahme läuft: {}", &[&file_label(&rec.path)]), now);
-                self.recording = Some(rec);
-            }
-            Err((e, rx)) => {
-                log::warn!("Aufnahme: {e:#}");
-                self.record_rx = rx;
-                self.notify(trf("Aufnahme nicht möglich: {}", &[&format!("{e:#}")]), now);
-            }
-        }
-    }
-
-    /// Fertige (oder abgebrochene) Aufnahme abschließen und melden.
-    fn poll_recording(&mut self, now: f64) {
-        if !self.recording.as_ref().is_some_and(|r| r.is_done()) {
-            return;
-        }
-        let Some(rec) = self.recording.take() else { return };
-        // Endete der Thread wegen eines Fehlers, soll die Engine nicht weiter in den Puffer schreiben
-        self.ctl.send(Command::SetRecording(false));
-        let generation = rec.generation;
-        let secs = rec.secs();
-        let (rx, result) = rec.finish();
-        if generation == self.audio_gen && self.record_rx.is_none() {
-            self.record_rx = rx;
-        }
-        let lost = self.ctl.shared.record_dropped().saturating_sub(self.record_dropped_at_start);
-        match result {
-            Ok(files) => {
-                let names: Vec<String> = files.iter().map(|f| file_label(f)).collect();
-                log::info!("Aufnahme fertig ({secs:.0} s): {}", names.join(", "));
-                let mut text = trf("Aufnahme gespeichert ({}): {}", &[&format_duration(secs), &names.join(", ")]);
-                if lost > 0 && generation == self.audio_gen {
-                    text.push_str(&trf(" – mit Aussetzern ({} ms fehlen)", &[&(lost * 1000 / self.ctl.shared.sample_rate.max(1) as u64)]));
-                }
-                self.notice = Some((text, now + 6.0));
-            }
-            Err(e) => {
-                log::warn!("Aufnahme abgebrochen: {e:#}");
-                self.notice = Some((trf("Aufnahme abgebrochen: {}", &[&format!("{e:#}")]), now + 8.0));
-            }
-        }
-    }
-
-    /// Schickt geänderte EQ-Werte an die Engine. Mit Bass-Swap sind während einer Überblendung erst
-    /// die Bässe des neuen Titels aus, ab der Mitte die des alten.
-    fn push_eq(&mut self) {
-        let mut swap = [1.0f32; 2];
-        if self.bass_swap
-            && let Some(f) = self.autofade.fade()
-            && f.is_handover()
-        {
-            let late = f.progress() >= 0.5;
-            swap[f.to] = if late { 1.0 } else { 0.0 };
-            swap[f.from] = if late { 0.0 } else { 1.0 };
-        }
-        for (d, swap) in swap.into_iter().enumerate() {
-            for band in 0..3 {
-                let mut gain = if self.eq_kill[d][band] { 0.0 } else { db_to_gain(self.eq_db[d][band]) };
-                if band == eq::LOW {
-                    gain *= swap;
-                }
-                if gain != self.eq_sent[d][band] {
-                    self.eq_sent[d][band] = gain;
-                    self.ctl.send(Command::SetEq { deck: d, band, gain });
-                }
-            }
-        }
-    }
-
-    /// Öffnet das eigene Kopfhörergerät aus den Einstellungen (falls gewählt) und verbindet es mit der Engine.
-    /// Ohne `wanted` bleibt es zu: Ein Gerät, das beim Start fehlte und erst später auftaucht (etwa AirPods),
-    /// soll beim Neustart der Ausgabe nicht unbemerkt mitlaufen, sondern erst nach erneuter Auswahl.
-    fn start_head_audio(&mut self, now: f64, wanted: bool) {
-        self.head_audio = None;
-        self.ctl.send(Command::SetHeadSink(None));
-        let Some(id) = self.settings.head_device.clone() else {
-            if self.head_mode == HeadMode::Device {
-                self.set_head_mode(HeadMode::Split);
-            }
-            return;
-        };
-        if !wanted {
-            if self.head_mode == HeadMode::Device {
-                self.set_head_mode(HeadMode::Off);
-            }
-            return;
-        }
-        let Some(master) = self.audio.as_ref() else { return };
-        if master.id == id {
-            self.notify(tr("Das Kopfhörergerät ist dasselbe wie die Lautsprecher. Bitte ein anderes wählen oder im Mixer Split L/R nutzen."), now);
-            return;
-        }
-        match audio::start_head(&id, master.sample_rate, self.settings.buffer_frames) {
-            Ok((out, sink)) => {
-                self.ctl.send(Command::SetHeadSink(Some(sink)));
-                self.notify(trf("Kopfhörer: {}", &[&out.device]), now);
-                self.head_audio = Some(out);
-                // Wer ein Kopfhörergerät wählt, will es auch hören
-                if matches!(self.head_mode, HeadMode::Off | HeadMode::Split | HeadMode::Outputs34) {
-                    self.set_head_mode(HeadMode::Device);
-                }
-            }
-            Err(e) => {
-                log::warn!("Kopfhörergerät: {e:#}");
-                self.notify(trf("Kopfhörergerät nicht verfügbar: {}", &[&format!("{e:#}")]), now);
-                if self.head_mode == HeadMode::Device {
-                    self.set_head_mode(HeadMode::Split);
-                }
-            }
-        }
-    }
-
-    /// Modus für Vorhören, wenn der Kopfhörer noch aus ist: eigenes Gerät, sonst Split.
-    fn enable_headphones(&mut self, now: f64) {
-        if self.head_mode != HeadMode::Off {
-            return;
-        }
-        if self.head_audio.is_some() {
-            self.set_head_mode(HeadMode::Device);
-            self.notify(tr("Vorhören über das Kopfhörergerät"), now);
-        } else {
-            self.set_head_mode(HeadMode::Split);
-            self.notify(tr("Kopfhörer: links Master, rechts Vorhören"), now);
-        }
-    }
-
-    /// Testton aus den Einstellungen. Auf dem Kopfhörer geht er an das eigene Gerät, falls eines läuft,
-    /// sonst an den im Mixer gewählten Weg (ist der Kopfhörer aus, wie beim Vorhören an).
-    fn test_tone(&mut self, to_master: bool, now: f64) {
-        if !to_master {
-            if self.head_audio.is_some() && self.head_mode != HeadMode::Device {
-                self.set_head_mode(HeadMode::Device);
-                self.notify(tr("Vorhören über das Kopfhörergerät"), now);
-            } else {
-                self.enable_headphones(now);
-            }
-        }
-        self.ctl.send(Command::TestTone { to_master });
-    }
-
-    /// Exklusivmodus (macOS) für das laufende Master-Gerät, wenn eingestellt.
-    fn apply_exclusive(&mut self, now: f64) {
-        if !self.settings.exclusive_output || !cfg!(target_os = "macos") {
-            return;
-        }
-        let Some(audio) = &self.audio else { return };
-        match crate::quiet::set_exclusive(&audio.id, true) {
-            Ok(()) => log::info!("Ausgabegerät exklusiv: {}", audio.device),
-            Err(e) => {
-                log::warn!("Exklusivmodus: {e}");
-                self.notify(trf("Ausgabegerät lässt sich nicht exklusiv belegen: {}", &[&e]), now);
-            }
-        }
-    }
-
-    fn release_exclusive(&self) {
-        if let Some(audio) = &self.audio
-            && let Err(e) = crate::quiet::set_exclusive(&audio.id, false)
-        {
-            log::warn!("Exklusivmodus freigeben: {e}");
-        }
-    }
-
-    /// Startet die Audio-Ausgabe mit den aktuellen Einstellungen neu. Geladene Titel laufen an derselben Stelle weiter.
-    /// `done`: Hinweis bei Erfolg statt „Audiogerät gewechselt“.
-    /// Meldet der Audio-Stream Fehler in Massen, hängt er (beobachtet auf einem Netbook: ALSA über PulseAudio
-    /// nach einem Aussetzer, danach nur noch `snd_pcm_avail_delay`-Fehler, Ton stottert, Audio-Thread bei 80 %).
-    /// Dann die Ausgabe neu öffnen; die Titel laufen an derselben Stelle weiter. Höchstens alle 10 s.
-    fn check_audio_errors(&mut self, now: f64) {
-        let Some(count) = self.audio.as_ref().map(|a| a.errors.load(std::sync::atomic::Ordering::Relaxed)) else { return };
-        let (seen, at) = self.audio_errors_seen;
-        if count < seen {
-            // Neuer Stream, der Zähler beginnt von vorn
-            self.audio_errors_seen = (count, now);
-            return;
-        }
-        if now - at < 1.0 {
-            return;
-        }
-        self.audio_errors_seen = (count, now);
-        let per_sec = (count - seen) as f64 / (now - at);
-        if per_sec >= AUDIO_ERROR_STORM && now - self.audio_restarted >= 10.0 {
-            log::warn!("Audio-Ausgabe hängt ({per_sec:.0} Fehler/s), starte sie neu");
-            self.audio_restarted = now;
-            self.restart_audio(now, Some(tr("Die Audio-Ausgabe hing und wurde neu gestartet").to_owned()));
-            self.audio_errors_seen = (0, now);
-        }
-    }
-
-    fn restart_audio(&mut self, now: f64, done: Option<String>) {
-        let st: Vec<(f64, bool)> = (0..2).map(|d| (self.ctl.shared.decks[d].position_secs(), self.ctl.shared.decks[d].is_playing())).collect();
-        // Kopfhörergerät nur wieder öffnen, wenn es lief (siehe `start_head_audio`)
-        let head_was_on = self.head_audio.is_some();
-        // Eine laufende Aufnahme gehört zur alten Ausgabe: sauber abschließen
-        if let Some(rec) = &self.recording
-            && !rec.is_stopping()
-        {
-            rec.stop();
-            self.notify(tr("Aufnahme beendet, weil die Audio-Ausgabe neu startet"), now);
-        }
-        // Alte Geräte zuerst freigeben, manche Treiber erlauben nur einen Stream
-        self.release_exclusive();
-        self.head_audio = None;
-        self.audio = None;
-        let (audio, ctl, err) = audio::start(self.settings.output_device.as_deref(), self.settings.buffer_frames);
-        self.audio = audio;
-        self.ctl = ctl;
-        self.audio_gen += 1;
-        self.record_rx = self.ctl.take_recording();
-        self.audio_error = err.clone();
-        self.push_mixer_state();
-        self.start_head_audio(now, head_was_on);
-        for (d, &(pos, playing)) in st.iter().enumerate() {
-            self.decks[d].ended_seen = 0;
-            self.decks[d].reverse_ended_seen = 0;
-            if let Some(track) = self.decks[d].audio.clone() {
-                let id = self.decks[d].loaded_id;
-                self.ctl.send(Command::Load { deck: d, id, track, keep_playing: false, start_secs: pos });
-                let range = self.decks[d].loop_range;
-                self.ctl.send(Command::SetLoop { deck: d, range });
-                // Ohne Anlauf weiter: ein Gerätewechsel oder Neustart soll nicht wie ein neuer Start klingen
-                if playing {
-                    self.ctl.send(Command::Resume { deck: d });
-                }
-            }
-        }
-        self.preview = None;
-        match err {
-            Some(e) => self.notify(e, now),
-            None => {
-                let name = self.audio.as_ref().map_or(String::new(), |a| a.device.clone());
-                self.notify(done.unwrap_or_else(|| trf("Audiogerät gewechselt: {}", &[&name])), now);
-            }
-        }
-        // Zuletzt, damit ein Fehler dabei den Hinweis oben ersetzt
-        if self.quiet.is_some() {
-            self.apply_exclusive(now);
-        }
-    }
-
-    fn settings_action(&mut self, a: SettingsAction, ctx: &egui::Context, now: f64) {
-        match a {
-            SettingsAction::Device(id) => {
-                if self.settings.output_device != id {
-                    self.settings.output_device = id;
-                    self.restart_audio(now, None);
-                }
-            }
-            SettingsAction::HeadDevice(id) => {
-                // Dasselbe Gerät erneut wählen schaltet es ein, wenn es nicht läuft
-                if self.settings.head_device != id || self.head_audio.is_none() {
-                    self.settings.head_device = id;
-                    self.start_head_audio(now, true);
-                }
-            }
-            SettingsAction::TestTone(to_master) => self.test_tone(to_master, now),
-            SettingsAction::Buffer(b) => {
-                if self.settings.buffer_frames != b {
-                    self.settings.buffer_frames = b;
-                    self.restart_audio(now, None);
-                }
-            }
-            SettingsAction::Language(l) => {
-                self.settings.language = l;
-                i18n::set_lang(l);
-            }
-            SettingsAction::Skin(s) => {
-                self.settings.skin = s;
-                theme::set_skin(s);
-                theme::apply(ctx);
-            }
-            SettingsAction::Brushed(on) => {
-                self.settings.brushed_steel = on;
-                theme::set_brushed(on);
-                theme::apply(ctx);
-            }
-            SettingsAction::Lite(parts) => {
-                self.settings.lite = parts;
-                theme::set_lite(parts);
-                theme::apply(ctx);
-            }
-            SettingsAction::Platters(on) => self.settings.platters = on,
-            SettingsAction::Compact(c) => self.settings.compact = c,
-            SettingsAction::Zoom(z) => self.set_zoom(ctx, z),
-            // Wirkt erst beim nächsten Start
-            SettingsAction::OpenGl(on) => self.settings.opengl = on,
-            SettingsAction::RecordHistory(on) => self.settings.record_history = on,
-            SettingsAction::KeepAwake(on) => self.settings.keep_awake = on,
-            SettingsAction::RecordFormat(f) => self.settings.record_format = f,
-            SettingsAction::RecordPickDir => {
-                let start = self.settings.record_dir.clone().unwrap_or_else(crate::recorder::default_dir);
-                let mut dialog = rfd::FileDialog::new().set_title(tr("Ordner für Aufnahmen"));
-                if start.is_dir() {
-                    dialog = dialog.set_directory(&start);
-                }
-                if let Some(dir) = dialog.pick_folder() {
-                    self.settings.record_dir = Some(dir);
-                }
-            }
-            SettingsAction::RecordDirDefault => self.settings.record_dir = None,
-            SettingsAction::RecordRevealDir => {
-                let dir = self.settings.record_dir.clone().unwrap_or_else(crate::recorder::default_dir);
-                if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| reveal(&dir)) {
-                    self.notify(trf("Ordner lässt sich nicht öffnen: {}", &[&e]), now);
-                }
-            }
-            SettingsAction::MuteOthers(on) => {
-                self.settings.mute_others = on;
-                if let Some(q) = &self.quiet {
-                    q.set(on);
-                }
-            }
-            SettingsAction::Exclusive(on) => {
-                self.settings.exclusive_output = on;
-                if self.quiet.is_some() {
-                    // Belegen und Freigeben bringen bei manchen Geräten den laufenden Stream aus dem Tritt
-                    // (danach starteten die Player nicht mehr): Ausgabe dabei neu öffnen
-                    let done = if on { tr("Lautsprecher exklusiv belegt") } else { tr("Lautsprecher wieder für alle frei") };
-                    self.restart_audio(now, Some(done.to_owned()));
-                }
-            }
-            SettingsAction::FxName(slot, name) => {
-                self.settings.fx_slot_mut(slot).name = name;
-                self.save_due = Some(now + 1.0);
-            }
-            SettingsAction::FxPickFile(slot) => {
-                let mut dialog = rfd::FileDialog::new()
-                    .set_title(trf("Effekt für Pad {}", &[&(slot + 1)]))
-                    .add_filter(tr("Audiodateien"), &["mp3", "wav", "flac", "ogg", "m4a", "aac", "aif", "aiff"]);
-                if let Some(dir) = self.settings.fx_slot(slot).file.as_ref().and_then(|f| f.parent()) {
-                    dialog = dialog.set_directory(dir);
-                }
-                if let Some(file) = dialog.pick_file() {
-                    self.settings.fx_slot_mut(slot).file = Some(file.clone());
-                    self.fx.load(slot, Some(file));
-                    self.save_settings();
-                }
-            }
-            SettingsAction::FxReset(slot) => {
-                *self.settings.fx_slot_mut(slot) = Default::default();
-                self.fx.load(slot, None);
-                self.save_settings();
-            }
-            SettingsAction::FxPreview(slot) => self.trigger_fx(slot, false, now),
-            SettingsAction::MeasureCaches => {
-                if self.cache_sizes_rx.is_none() {
-                    self.cache_sizes_rx = Some(crate::caches::measure());
-                }
-            }
-            SettingsAction::ClearCaches { bpm } => {
-                self.tag_cache = Default::default();
-                self.folder_cache = Default::default();
-                if bpm {
-                    self.bpm_cache = Default::default();
-                    self.bpms.clear();
-                    self.key_cache = Default::default();
-                    self.keys.clear();
-                    self.data_gen += 1;
-                }
-                if self.persist {
-                    crate::caches::clear(bpm);
-                }
-                // Der Wellenform-Ordner wird noch im Hintergrund geleert: gleich als leer anzeigen
-                let kept_bpm = if bpm { 0 } else { self.cache_sizes.map_or(0, |s| s.bpm) };
-                self.cache_sizes = Some(crate::caches::CacheSizes { bpm: kept_bpm, ..Default::default() });
-                self.cache_sizes_rx = None;
-                self.notify(tr("Caches geleert."), now);
-            }
-            SettingsAction::ResetAll => self.reset_all(ctx, now),
-            SettingsAction::FxResetAll => {
-                self.settings.fx_slots.clear();
-                for slot in 0..fw_engine::FX_SLOTS {
-                    self.fx.load(slot, None);
-                }
-                self.save_settings();
-            }
-            SettingsAction::FxIcon(slot, key) => {
-                self.settings.fx_slot_mut(slot).icon = Some(key);
-                self.save_settings();
-            }
-            SettingsAction::OnlineLookup(on) => {
-                self.settings.online_lookup = on;
-                self.save_settings();
-            }
-            SettingsAction::UpdateCheck(on) => {
-                self.settings.update_check = Some(on);
-                self.ask_update = false;
-            }
-            SettingsAction::CheckUpdateNow => {
-                if self.update_rx.is_none() && self.self_update.is_none() {
-                    self.update_rx = Some(crate::update::check_in_background(ctx.clone()));
-                    self.update_manual = true;
-                }
-            }
-            SettingsAction::RevealLog => {
-                if let Some(path) = crate::diagnose::log_path()
-                    && let Err(e) = reveal(&path)
-                {
-                    self.notify(trf("Logdatei nicht gefunden: {}", &[&e]), now);
-                }
-            }
-        }
-        self.save_settings();
-    }
-
-    /// Übernimmt geänderte Werte in die Einstellungen und speichert verzögert (Schieberegler ändern sich laufend).
-    fn track_settings(&mut self, now: f64) {
-        let mut s = self.settings.clone();
-        s.spin_up_secs = self.motor.spin_up_secs;
-        s.spin_down_secs = self.motor.spin_down_secs;
-        s.fade_secs = self.autofade.fade_secs;
-        s.auto_fade = self.autofade.enabled;
-        s.curve = match self.curve {
-            Curve::Soft => 0,
-            Curve::Linear => 1,
-            Curve::Cut => 2,
-            Curve::Custom(pts) => {
-                s.curve_points = pts;
-                3
-            }
-        };
-        s.master_volume = self.master_volume;
-        s.fx_volume = self.fx_volume;
-        s.head_volume = self.head_volume;
-        s.head_mix = self.head_mix;
-        s.eq_db = self.eq_db;
-        s.bass_swap = self.bass_swap;
-        s.auto_sync = self.auto_sync;
-        if s != self.settings {
-            self.settings = s;
-            self.save_due = Some(now + 1.0);
-        }
-        if self.save_due.is_some_and(|t| now >= t) {
-            self.save_settings();
-            self.save_due = None;
-        }
-    }
-
-    /// Mindestfenster an den Bildschirm anpassen (z. B. Netbook mit 1024×600). Ist er kleiner als das
-    /// Layout, wird der Zoom einmalig so gesetzt, dass alles hineinpasst; danach entscheidet der Nutzer.
-    fn fit_screen(&mut self, ctx: &egui::Context) {
-        let zoom = ctx.zoom_factor();
-        // Bildschirm in logischen Pixeln (ohne Zoom), abzüglich Fenster- und Taskleiste
-        let Some(screen) = crate::devtools::fake_screen().or_else(|| ctx.input(|i| i.viewport().monitor_size).map(|m| m * zoom)) else {
-            return;
-        };
-        if screen.x < 1.0 || screen.y <= SCREEN_RESERVE_H {
-            return;
-        }
-        self.small_screen = screen.y < COMPACT_AUTO_H;
-        if !self.screen_known {
-            self.screen_known = true;
-            for (d, i, autoplay, keep_playing) in std::mem::take(&mut self.deferred_loads) {
-                self.load_index(d, i, autoplay, keep_playing);
-            }
-        }
-        let screen = screen - egui::vec2(0.0, SCREEN_RESERVE_H);
-        // Kleiner als das normale Layout (Netbook): einmal auf Vollbild hinweisen, das spart Fenster- und Taskleiste
-        let small = screen.x < MIN_WINDOW.x || screen.y < MIN_WINDOW.y;
-        if small && !self.settings.fullscreen_hinted && !ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)) {
-            self.settings.fullscreen_hinted = true;
-            let now = ctx.input(|i| i.time);
-            let text = if cfg!(target_os = "macos") {
-                tr("Kleiner Bildschirm: Vollbild (Ctrl+⌘+F) schafft mehr Platz. Die Ordner gleiten mit ⌘B von links herein.")
-            } else {
-                tr("Kleiner Bildschirm: Vollbild (F11) schafft mehr Platz. Die Ordner gleiten mit Strg+B von links herein.")
-            };
-            self.notice = Some((text.to_owned(), now + 12.0));
-            self.save_due = Some(now + 1.0);
-        }
-        // Das kleinere Mindestfenster nur, wenn die kompakte Ansicht auch wirklich an ist
-        let min_window = if self.compact() { MIN_WINDOW_COMPACT } else { MIN_WINDOW };
-        if !self.settings.zoom_fitted && (screen.x < min_window.x || screen.y < min_window.y) {
-            self.settings.zoom_fitted = true;
-            let fit = (screen.x / min_window.x).min(screen.y / min_window.y);
-            let fit = ((fit * 20.0).floor() / 20.0).max(ZOOM_MIN);
-            if fit < zoom {
-                log::info!("Kleiner Bildschirm ({:.0}×{:.0}): Zoom {:.0} %", screen.x, screen.y + SCREEN_RESERVE_H, fit * 100.0);
-                self.set_zoom(ctx, fit);
-                return;
-            }
-            self.save_due = Some(ctx.input(|i| i.time) + 1.0);
-        }
-        let min = min_window.min(screen) / zoom;
-        if self.min_window != Some(min) {
-            self.min_window = Some(min);
-            ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(min));
-        }
-    }
-
-    /// Kompakte Ansicht: fest eingestellt oder (automatisch) auf kleinen Bildschirmen.
-    fn compact(&self) -> bool {
-        self.settings.compact.unwrap_or(self.small_screen)
-    }
-
-    /// Zoom der ganzen Oberfläche setzen (begrenzt, auf 5 % gerundet) und merken.
-    fn set_zoom(&mut self, ctx: &egui::Context, z: f32) {
-        let z = ((z * 20.0).round() / 20.0).clamp(ZOOM_MIN, ZOOM_MAX);
-        ctx.set_zoom_factor(z);
-        self.settings.ui_zoom = z;
-        self.save_due = Some(ctx.input(|i| i.time) + 1.0);
-    }
-
-    /// Schwebende Leiste oben in der Mitte: einmalige Frage, ob nach Updates gesucht werden darf,
-    /// bzw. Hinweis auf eine neue Version samt Update per Knopf. Schwebt über der Oberfläche, damit sich
-    /// nichts verschiebt.
-    fn update_ui(&mut self, ctx: &egui::Context, now: f64) {
-        use crate::self_update::Progress;
-        if let Some(rx) = &self.update_rx
-            && let Ok(result) = rx.try_recv()
-        {
-            self.update_rx = None;
-            let manual = std::mem::take(&mut self.update_manual);
-            match result {
-                Ok(Some(v)) => {
-                    self.new_version = Some(v);
-                    self.update_progress = None;
-                }
-                Ok(None) if manual => self.notify(trf("FadeWerk DJ {} ist die neueste Version.", &[&env!("CARGO_PKG_VERSION")]), now),
-                // Ohne curl scheitert jede Prüfung still: auch bei der automatischen darauf hinweisen
-                Err(crate::update::CheckError::NoCurl) => {
-                    let text = tr("Für die Update-Prüfung fehlt das Programm curl (unter Debian/Ubuntu: sudo apt install curl).");
-                    self.notice = Some((text.to_owned(), now + 12.0));
-                }
-                Err(_) if manual => self.notify(tr("GitHub ist nicht erreichbar, bitte später noch einmal versuchen."), now),
-                _ => {}
-            }
-        }
-        if let Some(rx) = &self.self_update {
-            while let Ok(p) = rx.try_recv() {
-                if p == Progress::Restart {
-                    // Beim Schließen speichert `Drop` Einstellungen und Playlists; die neue Version startet danach
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-                self.update_progress = Some(p);
-            }
-            if matches!(self.update_progress, Some(Progress::Restart | Progress::Failed(_))) {
-                self.self_update = None;
-            }
-        }
-        if !self.ask_update && self.new_version.is_none() {
-            return;
-        }
-        let font = crate::fonts::bold(13.0);
-        let playing = self.ctl.shared.decks.iter().any(|s| s.is_playing());
-        let mut answer = None;
-        let mut close = false;
-        let mut install = None;
-        egui::Area::new(egui::Id::new("update")).anchor(Align2::CENTER_TOP, vec2(0.0, 12.0)).show(ctx, |ui| {
-            Frame::new()
-                .fill(theme::panel2())
-                .stroke(Stroke::new(1.0, theme::line()))
-                .corner_radius(CornerRadius::same(6))
-                .inner_margin(Margin::symmetric(14, 10))
-                .show(ui, |ui| {
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        if self.ask_update {
-                            ui.vertical(|ui| {
-                                ui.label(RichText::new(tr("Beim Start nach neuen Versionen suchen?")).strong().color(theme::ink()));
-                                ui.label(RichText::new(tr("Dabei fragt FadeWerk DJ nur bei GitHub nach der neuesten Version – ohne Daten über deine Musik.")).size(11.5).color(theme::dim()));
-                            });
-                            ui.add_space(10.0);
-                            if crate::hw::button(ui, vec2(100.0, 28.0), tr("Ja, prüfen"), font.clone(), crate::hw::Look::Color(theme::play()), false, true).clicked() {
-                                answer = Some(true);
-                            }
-                            if crate::hw::button(ui, vec2(70.0, 28.0), tr("Nein"), font.clone(), crate::hw::Look::Plain, false, true).clicked() {
-                                answer = Some(false);
-                            }
-                        } else if let Some(v) = &self.new_version {
-                            match &self.update_progress {
-                                Some(Progress::Downloading) => {
-                                    ui.spinner();
-                                    ui.label(RichText::new(trf("Lade FadeWerk DJ {} …", &[&v.version])).strong().color(theme::ink()));
-                                }
-                                Some(Progress::Installing | Progress::Restart) => {
-                                    ui.spinner();
-                                    ui.label(RichText::new(trf("Installiere FadeWerk DJ {} – die App startet gleich neu …", &[&v.version])).strong().color(theme::ink()));
-                                }
-                                progress => {
-                                    ui.vertical(|ui| {
-                                        ui.label(RichText::new(trf("FadeWerk DJ {} ist verfügbar (installiert: {}).", &[&v.version, &env!("CARGO_PKG_VERSION")])).strong().color(theme::ink()));
-                                        if let Some(Progress::Failed(e)) = progress {
-                                            ui.label(RichText::new(trf("Update fehlgeschlagen: {}", &[e])).size(11.5).color(theme::cue()));
-                                        } else if v.asset.is_some() && playing {
-                                            ui.label(RichText::new(tr("Die App startet dabei neu. Erst, wenn keine Musik mehr läuft.")).size(11.5).color(theme::dim()));
-                                        }
-                                    });
-                                    ui.add_space(10.0);
-                                    let failed = matches!(progress, Some(Progress::Failed(_)));
-                                    if let Some(asset) = &v.asset
-                                        && !failed
-                                        && crate::hw::button(ui, vec2(170.0, 28.0), tr("Jetzt aktualisieren"), font.clone(), crate::hw::Look::Color(theme::play()), false, !playing).clicked()
-                                    {
-                                        install = Some(asset.clone());
-                                    }
-                                    let look = if v.asset.is_some() && !failed { crate::hw::Look::Plain } else { crate::hw::Look::Color(theme::play()) };
-                                    if crate::hw::button(ui, vec2(190.0, 28.0), tr("Download-Seite öffnen"), font.clone(), look, false, true).clicked() {
-                                        ctx.open_url(egui::OpenUrl::new_tab(&v.url));
-                                        close = true;
-                                    }
-                                    if crate::hw::button(ui, vec2(80.0, 28.0), tr("Später"), font.clone(), crate::hw::Look::Plain, false, true).clicked() {
-                                        close = true;
-                                    }
-                                }
-                            }
-                        }
-                    });
-                });
-        });
-        if let Some(on) = answer {
-            self.settings.update_check = Some(on);
-            self.ask_update = false;
-            self.save_settings();
-            if on {
-                self.update_rx = Some(crate::update::check_in_background(ctx.clone()));
-            }
-        }
-        if let Some(url) = install {
-            self.update_progress = Some(Progress::Downloading);
-            self.self_update = Some(crate::self_update::start(url, ctx.clone()));
-        }
-        if close {
-            self.new_version = None;
-            self.update_progress = None;
-        }
-    }
-
-    fn save_settings(&self) {
-        if self.persist {
-            self.settings.save();
-        }
-    }
-
-    /// „FadeWerk DJ zurücksetzen“: Einstellungsordner leeren und neu starten. Danach wird nichts mehr
-    /// gespeichert, sonst schriebe das Beenden die alten Einstellungen gleich wieder hin.
-    fn reset_all(&mut self, ctx: &egui::Context, now: f64) {
-        if self.ctl.shared.decks.iter().any(|s| s.is_playing()) {
-            return;
-        }
-        if !self.persist {
-            self.notify(tr("Entwicklerlauf: es wird nichts gelöscht."), now);
-            return;
-        }
-        self.persist = false;
-        self.save_due = None;
-        self.lib.set_sketch_cache(None);
-        if let Err(e) = crate::caches::reset_all() {
-            log::warn!("Zurücksetzen unvollständig: {e}");
-        }
-        match crate::self_update::restart_after_exit(crate::self_update::AFTER_RESET_FLAG) {
-            Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-            Err(e) => {
-                log::warn!("Neustart nach dem Zurücksetzen nicht möglich: {e}");
-                self.notify(tr("Zurückgesetzt. Bitte FadeWerk DJ neu starten."), now);
-            }
-        }
-    }
-
-    /// Speichert die Playlists, wenn sie sich seit dem letzten Mal geändert haben.
-    fn save_session_if_changed(&mut self) {
-        if !self.persist {
-            return;
-        }
-        let fp = crate::session::fingerprint(&self.playlists);
-        if fp != self.session_saved {
-            crate::session::save(&self.playlists);
-            self.session_saved = fp;
-        }
-    }
-
-    /// Gemerkte BPM und Tonart für einen Titel prüfen: geänderte Datei → verwerfen, umgezogene Datei → übernehmen.
-    fn resolve_bpm(&mut self, path: &Path, stamp: Option<fw_library::Stamp>) {
-        use crate::analysis_cache::Resolved;
-        self.data_gen += 1;
-        match self.bpm_cache.resolve_stamped(path, stamp) {
-            Resolved::Value(b) => {
-                self.bpms.insert(path.to_path_buf(), b.bpm);
-            }
-            Resolved::Stale => {
-                self.bpms.remove(path);
-            }
-            Resolved::Unknown => {}
-        }
-        match self.key_cache.resolve_stamped(path, stamp) {
-            Resolved::Value(k) => {
-                self.keys.insert(path.to_path_buf(), k.camelot());
-            }
-            Resolved::Stale => {
-                self.keys.remove(path);
-            }
-            Resolved::Unknown => {}
-        }
-    }
-
-    /// Klingende Tonart eines Players und ihre Verschiebung in Halbtönen: ohne Keylock hebt bzw. senkt Pitch die
-    /// Tonhöhe mit (ab gut ±3 % ein Halbton).
-    fn deck_key(&self, d: usize) -> (Option<Camelot>, i32) {
-        let v = &self.decks[d];
-        let Some(path) = v.path.as_deref().filter(|_| v.loaded_id != 0) else { return (None, 0) };
-        let semis = (12.0 * (1.0 + v.pitch_pct / 100.0).max(0.01).log2()).round() as i32;
-        (self.key_of(path).map(|k| k.shifted(semis)), semis)
-    }
-
-    /// Player, nach dessen klingender Tonart sich „passt“ richtet: der auf Sendung; sind beide zu hören,
-    /// der, zu dem der Crossfader neigt.
-    fn key_reference(&self, deck_keys: &[(Option<Camelot>, i32); 2]) -> Option<(usize, Camelot)> {
-        let d = match (self.on_air(0), self.on_air(1)) {
-            (true, true) => usize::from(self.crossfader > 0.0),
-            (true, false) => 0,
-            (false, true) => 1,
-            (false, false) => return None,
-        };
-        Some((d, deck_keys[d].0?))
-    }
-
-    /// „Harmonisch“: erst fehlende Tonarten (und BPM) der kommenden Titel ermitteln, dann sortieren.
-    fn harmonic_start(&mut self, now: f64) {
-        let missing: Vec<PathBuf> =
-            self.playlists.iter().flat_map(|pl| pl.upcoming_entries()).filter(|p| self.needs_analysis(p)).cloned().collect();
-        if missing.is_empty() {
-            self.harmonic_sort(now);
-            return;
-        }
-        self.harmonic_pending = true;
-        self.notify(trf("Ermittle {} fehlende Tonarten, danach wird sortiert …", &[&missing.len()]), now);
-        self.browser_action(BrowserAction::Analyze { paths: missing, force: false }, now);
-    }
-
-    /// Ordnet die kommenden Titel beider Playlists nach `harmonic::plan`, ausgehend vom Titel auf Sendung.
-    fn harmonic_sort(&mut self, now: f64) {
-        let deck_keys = [self.deck_key(0), self.deck_key(1)];
-        let deck_bpm = |d: usize| self.decks[d].bpm.map(|b| b * (1.0 + self.decks[d].pitch_pct / 100.0));
-        // Auf Sendung ist der Ausgangspunkt, als Nächstes spielt der andere Player; spielt nichts,
-        // gilt der geladene Titel von A, sonst beginnt A
-        let (start, first) = match self.key_reference(&deck_keys) {
-            Some((d, key)) => (Some(crate::harmonic::Track { key: Some(key), bpm: deck_bpm(d) }), 1 - d),
-            None if self.has_track(0) => (Some(crate::harmonic::Track { key: deck_keys[0].0, bpm: deck_bpm(0) }), 1),
-            None => (None, 0),
-        };
-        let track = |p: &PathBuf| crate::harmonic::Track {
-            key: self.key_of(p),
-            bpm: self.bpms.get(p).copied().or_else(|| self.metas.get(p).and_then(|m| m.bpm)),
-        };
-        let lists: [Vec<crate::harmonic::Track>; 2] = std::array::from_fn(|d| self.playlists[d].upcoming_entries().iter().map(track).collect());
-        let order = crate::harmonic::plan(start, first, [&lists[0], &lists[1]]);
-        let before = self.playlists.clone();
-        for (pl, o) in self.playlists.iter_mut().zip(&order) {
-            pl.reorder_upcoming(o);
-        }
-        self.sort_undo = Some((before, crate::session::fingerprint(&self.playlists), now));
-        let unknown = lists.iter().flatten().filter(|t| t.key.is_none()).count();
-        if unknown > 0 {
-            self.notify(trf("Harmonisch sortiert; {} Titel ohne Tonart stehen am Ende", &[&unknown]), now);
-        } else {
-            self.notify(tr("Kommende Titel harmonisch sortiert"), now);
-        }
-    }
-
-    /// Zustand des Auswahlfelds „Sortieren“. „Rückgängig“ gilt eine Minute und nur, solange niemand die Playlists
-    /// verändert hat (sonst würde es Änderungen danach verwerfen).
-    fn harmonic_state(&mut self, now: f64) -> playlist_ui::Harmonic {
-        if self.harmonic_pending {
-            return playlist_ui::Harmonic::Analyzing;
-        }
-        let valid = self.sort_undo.as_ref().is_some_and(|(_, fp, t)| now - t < SORT_UNDO_SECS && *fp == crate::session::fingerprint(&self.playlists));
-        if valid {
-            playlist_ui::Harmonic::Undo
-        } else {
-            self.sort_undo = None;
-            playlist_ui::Harmonic::Ready
-        }
-    }
-
-    /// Tonart eines Titels: aus dem Tag, sonst aus der Erkennung.
-    fn key_of(&self, path: &Path) -> Option<Camelot> {
-        self.metas.get(path).and_then(|m| m.key).or_else(|| self.keys.get(path).copied().flatten())
-    }
-
-    /// Fehlt dem Titel noch BPM oder Tonart (dann lohnt „Analysieren“ ohne `force`)?
-    fn needs_analysis(&self, path: &Path) -> bool {
-        let tag = self.metas.get(path);
-        let bpm_known = self.bpms.contains_key(path) || tag.is_some_and(|m| m.bpm.is_some());
-        let key_known = self.keys.contains_key(path) || tag.is_some_and(|m| m.key.is_some());
-        !(bpm_known && key_known)
-    }
-
-    fn token(&mut self) -> u64 {
-        self.next_token += 1;
-        self.next_token
-    }
-
     fn notify(&mut self, text: impl Into<String>, now: f64) {
         self.notice = Some((text.into(), now + 3.0));
     }
 
     fn has_track(&self, d: usize) -> bool {
         self.decks[d].loaded_id != 0
-    }
-
-    fn request_meta(&mut self, path: PathBuf) {
-        if self.metas.contains_key(&path) || !self.meta_requested.insert(path.clone()) {
-            return;
-        }
-        // Gemerkte Tags gleich zeigen und im Hintergrund prüfen, ob die Datei sich geändert hat
-        match self.tag_cache.get(&path) {
-            Some((meta, stamp)) => {
-                self.metas.insert(path.clone(), meta);
-                self.data_gen += 1;
-                self.lib.check_meta(path, stamp);
-            }
-            None => self.lib.request_meta(path),
-        }
-    }
-
-    /// Tags einer gerade sichtbaren Zeile: vor allen anderen wartenden Anfragen lesen.
-    fn request_meta_now(&mut self, path: PathBuf) {
-        if self.metas.contains_key(&path) || !self.meta_urgent.insert(path.clone()) {
-            return;
-        }
-        if self.tag_cache.get(&path).is_some() {
-            self.request_meta(path);
-        } else {
-            self.meta_requested.insert(path.clone());
-            self.lib.request_meta_now(path);
-        }
-    }
-
-    /// Historie: Titel eintragen, sobald sie lange genug über Master zu hören waren.
-    fn record_plays(&mut self) {
-        let dt = self.history_clock.elapsed().as_secs_f64();
-        self.history_clock = std::time::Instant::now();
-        for d in 0..2 {
-            let st = &self.ctl.shared.decks[d];
-            // Zu Ende gelaufen: spielt der Titel noch einmal, zählt er erneut
-            let ended = st.ended_count();
-            if ended != self.history_ended[d] {
-                self.history_ended[d] = ended;
-                self.play_trackers[d].restart();
-            }
-            let id = if self.settings.record_history { self.decks[d].loaded_id } else { 0 };
-            let audible = self.on_air(d) && st.is_playing() && self.master_volume > 0.02;
-            let pos = st.position_secs();
-            let Some(at) = self.play_trackers[d].update(id, audible, pos, dt, crate::history::now_local) else { continue };
-            let v = &self.decks[d];
-            let Some(path) = v.path.clone() else { continue };
-            let meta = v.meta.clone().unwrap_or_else(|| TrackMeta::from_filename(&path));
-            let entry = Entry {
-                size: std::fs::metadata(&path).ok().map(|m| m.len()),
-                path,
-                title: meta.title,
-                artist: meta.artist,
-                album: meta.album,
-                duration_secs: meta.duration_secs,
-                played_at: Some(at.strftime("%Y-%m-%dT%H:%M:%S").to_string()),
-                deck: Some(d as u8),
-            };
-            log::info!("Historie: {} – {}", entry.artist, entry.title);
-            self.history.record(entry);
-        }
-    }
-
-    /// Entwicklerschalter `FW_HISTORY`: zwei Beispieltage aus den Demo-Titeln, der neuere ist geöffnet.
-    fn demo_history(&mut self, tracks: &[PathBuf]) {
-        let today = crate::history::history_date(crate::history::now_local());
-        // Ein Titel, dessen Datei fehlt (wird ausgegraut gezeigt)
-        // Namen passend zur Sprache, damit englische Screenshots nichts Deutsches zeigen
-        let en = i18n::lang() == i18n::Lang::En;
-        let (artist, title, name) = if en { ("Unknown", "Lost Track", "Grandma's birthday") } else { ("Unbekannt", "Verschollen", "Omas Geburtstag") };
-        let gone = PathBuf::from(format!("/gibt/es/nicht/{artist} - {title}.mp3"));
-        let at = today.at(19, 56, 0, 0);
-        self.history.record(Entry { path: gone, title: title.into(), artist: artist.into(), played_at: Some(at.strftime("%Y-%m-%dT%H:%M:%S").to_string()), deck: Some(0), ..Default::default() });
-        for (k, p) in tracks.iter().enumerate() {
-            let meta = TrackMeta::from_filename(p);
-            let day = if k < 3 { today.yesterday().unwrap_or(today) } else { today };
-            let at = day.at(20, 0, 0, 0) + jiff::Span::new().minutes(4 * k as i64);
-            self.history.record(Entry {
-                path: p.clone(),
-                title: meta.title,
-                artist: meta.artist,
-                duration_secs: 200.0,
-                played_at: Some(at.strftime("%Y-%m-%dT%H:%M:%S").to_string()),
-                deck: Some((k % 2) as u8),
-                ..Default::default()
-            });
-        }
-        self.history.rename(&today.to_string(), name);
-        self.browser.open_history_day(today.to_string());
-    }
-
-    /// Füllt die Playlists wieder so, wie an diesem Tag gespielt wurde: Titel von Player A nach A, von B
-    /// nach B, in der Reihenfolge von damals. Titel ohne Player-Angabe (importierte Playlists) werden
-    /// abwechselnd verteilt, fehlende Dateien übersprungen. Ein laufender Titel bleibt, der Rest folgt dahinter.
-    fn restore_history(&mut self, date: &str, now: f64) {
-        let Some(day) = self.history.day(date) else { return };
-        let mut lists: [Vec<PathBuf>; 2] = Default::default();
-        let mut next = 0;
-        for e in day.entries.iter().filter(|e| e.path.is_file()) {
-            let d = e.deck.map(usize::from).filter(|d| *d < 2).unwrap_or_else(|| {
-                next += 1;
-                (next - 1) % 2
-            });
-            lists[d].push(e.path.clone());
-        }
-        let counts = [lists[0].len(), lists[1].len()];
-        if counts == [0, 0] {
-            self.notify(tr("Keine der Dateien dieses Tages ist zu finden"), now);
-            return;
-        }
-        for (d, paths) in lists.into_iter().enumerate() {
-            let playing = self.has_track(d) && self.ctl.shared.decks[d].is_playing();
-            self.playlists[d].clear_keep(playing);
-            let first = self.playlists[d].entries.len();
-            let any = !paths.is_empty();
-            self.playlists[d].push(paths);
-            // Steht der Player, gleich den ersten Titel bereitlegen
-            if !playing && any {
-                self.load_index(d, first, false, false);
-            }
-        }
-        self.notify(trf("Wiederhergestellt: {} Titel in Playlist A, {} in B", &[&counts[0], &counts[1]]), now);
-    }
-
-    /// Speichert einen Tag in einem der Exportformate (Speicherort wählt der Nutzer).
-    fn export_history(&mut self, date: &str, format: ExportFormat, now: f64) {
-        let Some(day) = self.history.day(date) else { return };
-        let (filter, text) = match format {
-            ExportFormat::M3u => (tr("Playlist"), crate::history::to_m3u(day)),
-            ExportFormat::Csv => {
-                let sep = if i18n::lang() == i18n::Lang::De { ';' } else { ',' };
-                let headers = [tr("Nr."), tr("Uhrzeit"), tr("Interpret"), tr("Titel"), tr("Album"), tr("Länge"), tr("Player"), tr("Datei")];
-                (tr("Tabelle"), crate::history::to_csv(day, sep, headers))
-            }
-            ExportFormat::Json => (tr("FadeWerk-DJ-Historie"), crate::history::to_json(day)),
-        };
-        let ext = format.extension();
-        let Some(file) = rfd::FileDialog::new()
-            .set_title(tr("Historie exportieren"))
-            .set_file_name(format!("{}.{ext}", day.file_stem()))
-            .add_filter(filter, &[ext])
-            .save_file()
-        else {
-            return;
-        };
-        match std::fs::write(&file, text) {
-            Ok(()) => self.notify(trf("Exportiert: {}", &[&file.file_name().unwrap_or_default().to_string_lossy()]), now),
-            Err(e) => self.notify(trf("Export fehlgeschlagen: {}", &[&e]), now),
-        }
-    }
-
-    /// Ordner, in denen beim Import fehlende Titel gesucht werden: eigene Ordner und der Musikordner.
-    fn music_roots(&self) -> Vec<PathBuf> {
-        let mut roots = self.settings.folders.clone();
-        if let Some(m) = dirs::audio_dir()
-            && !roots.iter().any(|r| m.starts_with(r))
-        {
-            roots.push(m);
-        }
-        roots
-    }
-
-    fn poll_import(&mut self, now: f64) {
-        let Some(rx) = &self.import_rx else { return };
-        let Ok(result) = rx.try_recv() else { return };
-        self.import_rx = None;
-        match result {
-            Ok((crate::history::Imported::Day(day), found)) => {
-                let date = day.date.clone();
-                let n = day.entries.len();
-                let added = self.history.merge(day);
-                self.browser.open_history_day(date.clone());
-                let mut text = if added == n { trf("Historie {} importiert: {} Titel", &[&date, &n]) } else { trf("Historie {}: {} neue Titel", &[&date, &added]) };
-                if found > 0 {
-                    text.push_str(&trf(" ({} wiedergefunden)", &[&found]));
-                }
-                self.notify(text, now);
-            }
-            Ok((crate::history::Imported::List { name, entries }, found)) => {
-                let date = crate::history::history_date(crate::history::now_local()).to_string();
-                self.history_dialog = Some(HistoryDialog::Import { entries, found, date, name });
-            }
-            Err(e) => self.notify(trf("Import fehlgeschlagen: {}", &[&e]), now),
-        }
     }
 
     /// Ist der Player gerade über Master zu hören?
@@ -1775,14 +778,14 @@ impl FadeWerkDjApp {
     /// Hält Bildschirm und Rechner wach, solange ein Player oder das Vorhören spielt (und kurz danach).
     fn keep_awake(&mut self, now: f64) {
         if self.ctl.shared.decks.iter().any(|s| s.is_playing()) || self.recording.is_some() {
-            self.last_sound = now;
+            self.wake.last_sound = now;
         }
-        let want = self.settings.keep_awake && now - self.last_sound < AWAKE_HOLD_SECS && self.last_sound > 0.0;
+        let want = self.settings.keep_awake && now - self.wake.last_sound < AWAKE_HOLD_SECS && self.wake.last_sound > 0.0;
         if !want {
             // Freigeben gibt die Sperre beim System zurück
-            self.awake = None;
-            self.awake_failed = false;
-        } else if self.awake.is_none() && !self.awake_failed {
+            self.wake.lock = None;
+            self.wake.failed = false;
+        } else if self.wake.lock.is_none() && !self.wake.failed {
             let created = keepawake::Builder::default()
                 .display(true)
                 .idle(true)
@@ -1791,1159 +794,21 @@ impl FadeWerkDjApp {
                 .app_reverse_domain("de.eckonator.fadewerkdj")
                 .create();
             match created {
-                Ok(a) => self.awake = Some(a),
+                Ok(a) => self.wake.lock = Some(a),
                 Err(e) => {
                     log::warn!("Ruhezustand ließ sich nicht verhindern: {e}");
-                    self.awake_failed = true;
+                    self.wake.failed = true;
                 }
             }
         }
-    }
-
-    /// Pegel von A und B am Crossfader, wie die Engine sie gerade rechnet.
-    fn crossfader_gains(&self) -> (f32, f32) {
-        if self.split_sent == Some(true) { self.curve.split_gains(self.crossfader) } else { self.curve.gains(self.crossfader) }
-    }
-
-    fn on_air(&self, d: usize) -> bool {
-        let st = &self.ctl.shared.decks[d];
-        let (ga, gb) = self.crossfader_gains();
-        let g = if d == 0 { ga } else { gb };
-        self.has_track(d) && (st.is_playing() || st.speed() != 0.0) && g * self.decks[d].volume > 0.05
-    }
-
-    fn set_crossfader(&mut self, x: f32) {
-        self.crossfader = x.clamp(-1.0, 1.0);
-        self.ctl.send(Command::SetCrossfader(self.crossfader));
-    }
-
-    fn set_head_mode(&mut self, mode: HeadMode) {
-        self.head_mode = mode;
-        self.ctl.send(Command::SetHeadMode(mode));
     }
 
     // ---------- Laden ----------
 
-    fn load_index(&mut self, d: usize, i: usize, autoplay: bool, keep_playing: bool) -> bool {
-        let Some(path) = self.playlists[d].entries.get(i).cloned() else { return false };
-        if !self.screen_known {
-            self.deferred_loads.push((d, i, autoplay, keep_playing));
-            return true;
-        }
-        let token = self.token();
-        self.decks[d].pending = Some(Pending { token, index: Some(i), autoplay, keep_playing, started: false });
-        // Cover nur für sichtbare Plattenteller (nicht in der kompakten Ansicht, nicht bei ausgeblendeten)
-        let cover = self.settings.platters && !self.compact();
-        // Bekannte Tags mitgeben: ohne Cover muss der Tag-Block einer MP3 dann nicht übers Netz gelesen werden
-        let known = fw_library::Known { meta: self.metas.get(&path).cloned(), bpm: self.bpms.get(&path).copied(), key: self.keys.get(&path).copied() };
-        self.lib.load(d, token, path, cover, known);
-        true
-    }
-
-    fn load_next(&mut self, d: usize, autoplay: bool, keep_playing: bool) -> bool {
-        let wrap = self.decks[d].repeat == Repeat::List;
-        match self.playlists[d].next_index(wrap) {
-            Some(i) => self.load_index(d, i, autoplay, keep_playing),
-            None => false,
-        }
-    }
-
-    /// Player `d` wartet noch auf einen Titel. Spielt schon dessen Anfang (Laden in Stücken), ist er bereit.
-    fn loading(&self, d: usize) -> bool {
-        self.decks[d].pending.as_ref().is_some_and(|p| !p.started)
-    }
-
-    /// Lädt den ersten neuen Titel, wenn der Player leer ist.
-    fn fill_if_empty(&mut self, d: usize, index: usize) {
-        if !self.has_track(d) && self.decks[d].pending.is_none() {
-            self.load_index(d, index, false, false);
-        }
-    }
-
-    fn poll_library(&mut self, ctx: &egui::Context, now: f64) {
-        let responses: Vec<Response> = self.lib.poll().collect();
-        if !responses.is_empty() {
-            self.data_gen += 1;
-        }
-        for resp in responses {
-            match resp {
-                Response::Meta { path, meta, stamp } => {
-                    // Geladene Titel zeigen geänderte Tags sofort
-                    for v in self.decks.iter_mut().filter(|v| v.path.as_ref() == Some(&path)) {
-                        v.meta = Some(meta.clone());
-                    }
-                    if let Some(stamp) = stamp
-                        && self.persist
-                    {
-                        self.tag_cache.insert(&path, &meta, stamp);
-                    }
-                    self.resolve_bpm(&path, stamp);
-                    self.metas.insert(path, meta);
-                }
-                Response::MetaValid { path, stamp } => self.resolve_bpm(&path, Some(stamp)),
-                Response::Analysis { path, bpm, bpm_analyzed, key, key_analyzed, readable } => {
-                    self.bpm_pending.remove(&path);
-                    if self.bpm_pending.is_empty() {
-                        self.bpm_total = 0;
-                    }
-                    if let Some(bpm) = bpm {
-                        if bpm_analyzed {
-                            self.bpm_cache.insert(&path, crate::analysis_cache::Bpm { bpm });
-                        }
-                        self.bpms.insert(path.clone(), bpm);
-                    }
-                    // Nachgereichte Analyse eines eben geladenen Titels: auch der Player bekommt das Tempo
-                    if let Some(bpm) = bpm {
-                        for v in self.decks.iter_mut().filter(|v| v.path.as_ref() == Some(&path) && v.bpm.is_none()) {
-                            v.bpm = Some(bpm);
-                        }
-                    }
-                    // Auch „unsicher“ merken, damit „Analysieren“ den Titel nicht jedes Mal wieder dekodiert
-                    if readable && (key_analyzed || key.is_some()) {
-                        if key_analyzed {
-                            self.key_cache.insert(&path, crate::analysis_cache::Key::new(key));
-                        }
-                        self.keys.insert(path, key);
-                    }
-                }
-                Response::Sketch { path, sketch } => {
-                    self.sketches.insert(path, sketch);
-                }
-                Response::Scan { token, tracks, progress, done, limited } => {
-                    self.browser.receive_scan(token, tracks, progress, done, limited);
-                    // Langsame Ordner merken (und gemerkte auf den frischen Stand bringen)
-                    if done
-                        && let Some((_, roots, started)) = self.scan_job.take_if(|j| j.0 == token)
-                    {
-                        let slow = started.elapsed().as_secs_f64() >= crate::folder_cache::MIN_SCAN_SECS;
-                        if self.persist && (slow || self.folder_cache.contains(&roots)) {
-                            self.folder_cache.put(roots, self.browser.tracks());
-                        }
-                    }
-                }
-                Response::Partial { deck: d, token, path, meta, audio } => {
-                    // Der Anfang des Titels: Player spielt schon, der vollständige folgt mit derselben Kennung
-                    let Some(p) = self.decks.get(d).and_then(|v| v.pending.as_ref()).filter(|p| p.token == token) else { continue };
-                    // FadeWerk: Startstelle im Einblendbereich; liegt sie nicht sicher im Anfang, auf den ganzen warten
-                    let start = p.index.and_then(|i| self.playlists[d].fade(i).fade_in).map_or(0.0, |r| r.start as f64);
-                    if start > audio.len_frames() as f64 / audio.sample_rate as f64 - 10.0 {
-                        continue;
-                    }
-                    let (autoplay, keep_playing, index) = (p.autoplay, p.keep_playing, p.index);
-                    if let Some(p) = self.decks[d].pending.as_mut() {
-                        p.started = true;
-                    }
-                    self.ctl.send(Command::Load { deck: d, id: token, track: Arc::clone(&audio), keep_playing, start_secs: start });
-                    if autoplay {
-                        self.ctl.send(Command::Play { deck: d });
-                    }
-                    let bpm = self.bpms.get(&path).copied().or(meta.bpm);
-                    let v = &mut self.decks[d];
-                    v.path = Some(path);
-                    v.meta = Some(meta);
-                    v.waveform = None;
-                    v.bpm = bpm;
-                    v.cover = None;
-                    v.loaded_id = token;
-                    v.spent = false;
-                    v.audio = Some(audio);
-                    v.loop_beats = None;
-                    v.loop_range = None;
-                    if let Some(i) = index {
-                        self.playlists[d].current = Some(i);
-                    }
-                }
-                Response::Loaded(l) => {
-                    let l = *l;
-                    self.metas.insert(l.path.clone(), l.meta.clone());
-                    self.sketches.insert(l.path.clone(), Some(l.sketch.clone()));
-                    if let Some(bpm) = l.bpm {
-                        self.bpms.insert(l.path.clone(), bpm);
-                        if l.bpm_analyzed {
-                            self.bpm_cache.insert(&l.path, crate::analysis_cache::Bpm { bpm });
-                        }
-                    }
-                    if l.key_analyzed {
-                        self.key_cache.insert(&l.path, crate::analysis_cache::Key::new(l.key));
-                    }
-                    self.keys.insert(l.path.clone(), l.key);
-                    if l.deck == PREVIEW {
-                        if self.preview.as_ref().is_some_and(|p| p.token == l.token) {
-                            let start = l.audio.duration_secs() * 0.3;
-                            self.ctl.send(Command::Load { deck: PREVIEW, id: l.token, track: l.audio, keep_playing: false, start_secs: start });
-                            self.ctl.send(Command::Play { deck: PREVIEW });
-                        }
-                        continue;
-                    }
-                    let d = l.deck;
-                    let Some(p) = self.decks[d].pending.take_if(|p| p.token == l.token) else { continue };
-                    let audio = l.audio.clone();
-                    if p.started {
-                        // Der Anfang spielt schon: nur den vollständigen Titel einsetzen, an derselben Stelle
-                        self.ctl.send(Command::Complete { deck: d, id: l.token, track: l.audio });
-                        let v = &mut self.decks[d];
-                        v.meta = Some(l.meta);
-                        v.waveform = Some(Arc::new(l.waveform));
-                        v.bpm = l.bpm.or(v.bpm);
-                        v.audio = Some(audio);
-                        continue;
-                    }
-                    // FadeWerk: der Titel beginnt am Anfang seines Einblendbereichs
-                    let start = p.index.and_then(|i| self.playlists[d].fade(i).fade_in).map_or(0.0, |r| r.start as f64);
-                    self.ctl.send(Command::Load { deck: d, id: l.token, track: l.audio, keep_playing: p.keep_playing, start_secs: start });
-                    if p.autoplay {
-                        self.ctl.send(Command::Play { deck: d });
-                    }
-                    let v = &mut self.decks[d];
-                    v.path = Some(l.path);
-                    v.meta = Some(l.meta);
-                    v.waveform = Some(Arc::new(l.waveform));
-                    v.bpm = l.bpm;
-                    // Das Cover kommt danach (`Response::Cover`)
-                    v.cover = None;
-                    v.loaded_id = l.token;
-                    v.spent = false;
-                    v.audio = Some(audio);
-                    v.loop_beats = None;
-                    v.loop_range = None;
-                    if let Some(i) = p.index {
-                        self.playlists[d].current = Some(i);
-                    }
-                }
-                Response::Cover { deck, token, cover } => {
-                    // Nur, wenn der Titel noch geladen ist (inzwischen ausgeworfen oder ein anderer: verwerfen)
-                    if deck < 2 && self.decks[deck].loaded_id == token {
-                        self.decks[deck].cover = Some(cover_texture(ctx, deck, &cover));
-                    }
-                }
-                Response::Failed { path, deck, error } => {
-                    log::warn!("Laden fehlgeschlagen: {error}");
-                    if let Some(d) = deck.filter(|d| *d < 2) {
-                        self.decks[d].pending = None;
-                    }
-                    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    self.notify(trf("„{}“ lässt sich nicht abspielen", &[&name]), now);
-                }
-            }
-        }
-    }
-
     // ---------- Titelende und Auto-Fade ----------
-
-    fn handle_track_ends(&mut self) {
-        // Rückwärts am Titelanfang: die Engine hat REV ausgeschaltet, die Taste geht mit aus
-        for d in 0..2 {
-            let c = self.ctl.shared.decks[d].reverse_ended_count();
-            if c != self.decks[d].reverse_ended_seen {
-                self.decks[d].reverse_ended_seen = c;
-                self.decks[d].reverse = false;
-            }
-        }
-        for d in 0..2 {
-            let c = self.ctl.shared.decks[d].ended_count();
-            if c != self.decks[d].ended_seen {
-                self.decks[d].ended_seen = c;
-                if self.autofade.fade().is_some_and(|f| f.from == d || f.to == d) {
-                    continue;
-                }
-                // Ohne Auto-Fade oder wenn der andere Player nichts mehr hat, geht es in dieser Playlist weiter
-                let o = 1 - d;
-                let other_done = (!self.has_track(o) || self.decks[o].spent) && self.decks[o].pending.is_none();
-                let continuous = (!self.autofade.enabled || other_done) && self.autofade.active == d;
-                self.load_next(d, continuous, false);
-            }
-        }
-        if let Some(p) = &mut self.preview {
-            let c = self.ctl.shared.decks[PREVIEW].ended_count();
-            if p.ended_seen == 0 {
-                p.ended_seen = c;
-            } else if c != p.ended_seen {
-                self.preview = None;
-            }
-        }
-    }
-
-    /// Titel vor und nach Eintrag `i` der Playlist `d` in der anderen Playlist, wenn abwechselnd gespielt wird,
-    /// ausgehend vom aktuellen Stand (aktiver Player, geladene Titel).
-    fn fade_partners(&self, d: usize, i: usize) -> [Option<(usize, usize)>; 2] {
-        let a = self.autofade.active;
-        let o = 1 - a;
-        let ca = self.playlists[a].current.unwrap_or(0) as isize;
-        // Als Nächstes aus der anderen Playlist: der geladene Titel, wenn er noch dran ist, sonst der folgende
-        let no = match self.playlists[o].current {
-            Some(c) if self.has_track(o) && !self.decks[o].spent => c as isize,
-            Some(c) => c as isize + 1,
-            None => 0,
-        };
-        let i = i as isize;
-        let (other, before, after) = if d == a { (o, no + (i - ca) - 1, no + (i - ca)) } else { (a, ca + (i - no), ca + (i - no) + 1) };
-        let ok = |k: isize| (k >= 0 && (k as usize) < self.playlists[other].entries.len()).then_some((other, k as usize));
-        [ok(before), ok(after)]
-    }
-
-    /// Nachbartitel und Vorhör-Stand für den offenen Fade-Editor.
-    fn editor_audio(&self, ctx: &egui::Context) -> fade_preview::EditorAudio {
-        let Some((d, i)) = playlist_ui::open_editor(ctx).filter(|_| self.fadewerk) else { return Default::default() };
-        let name = |(l, k): (usize, usize)| {
-            let path = &self.playlists[l].entries[k];
-            let m = self.metas.get(path).cloned().unwrap_or_else(|| TrackMeta::from_filename(path));
-            fade_preview::Partner { list: l, name: m.title }
-        };
-        let partners = self.fade_partners(d, i).map(|p| p.map(name));
-        let playing = self.preview.as_ref().and_then(|p| p.clip.as_ref()).filter(|c| c.list == d && c.index == i).map(|c| {
-            let pos = c.rendering.is_none().then(|| (self.ctl.shared.decks[PREVIEW].position_secs() + c.offset) as f32);
-            (c.kind, pos)
-        });
-        fade_preview::EditorAudio { partners, playing }
-    }
-
-    /// Mischt den Vorhör-Ausschnitt für den Fade-Editor im Hintergrund; gespielt wird er, sobald er fertig ist.
-    fn start_fade_preview(&mut self, d: usize, i: usize, kind: fade_preview::Kind, now: f64) {
-        use fade_preview::Kind;
-        let Some(path) = self.playlists[d].entries.get(i).cloned() else { return };
-        let source = |app: &Self, l: usize, k: usize| {
-            let path = app.playlists[l].entries[k].clone();
-            // Liegt der Titel schon in einem Player, muss er nicht noch einmal dekodiert werden
-            let audio = app.decks.iter().find(|v| v.path.as_ref() == Some(&path)).and_then(|v| v.audio.clone());
-            fade_preview::Source { path, audio, fade: app.playlists[l].fade(k) }
-        };
-        let partner = match kind {
-            Kind::From => self.fade_partners(d, i)[0],
-            Kind::To => self.fade_partners(d, i)[1],
-            _ => None,
-        };
-        if matches!(kind, Kind::From | Kind::To) && partner.is_none() {
-            return;
-        }
-        let job = fade_preview::Job {
-            kind,
-            edited: source(self, d, i),
-            partner: partner.map(|(l, k)| source(self, l, k)),
-            curve: self.curve,
-            fade_secs: self.autofade.fade_secs,
-        };
-        self.ctl.send(Command::Eject { deck: PREVIEW });
-        let token = self.token();
-        let clip = ClipView { list: d, index: i, kind, rendering: Some(fade_preview::spawn(job)), offset: 0.0 };
-        self.preview = Some(PreviewView { path, token, ended_seen: 0, clip: Some(clip) });
-        self.enable_headphones(now);
-    }
-
-    /// Fertig gemischten Vorhör-Ausschnitt abspielen.
-    fn poll_fade_preview(&mut self, now: f64) {
-        let Some(p) = self.preview.as_mut() else { return };
-        let Some(c) = p.clip.as_mut() else { return };
-        let Some(rx) = &c.rendering else { return };
-        match rx.try_recv() {
-            Ok(Ok(clip)) => {
-                c.rendering = None;
-                c.offset = clip.offset;
-                let token = p.token;
-                self.ctl.send(Command::Load { deck: PREVIEW, id: token, track: clip.audio, keep_playing: false, start_secs: 0.0 });
-                self.ctl.send(Command::Play { deck: PREVIEW });
-            }
-            Ok(Err(e)) => {
-                log::warn!("Vorhören im Fade-Editor: {e}");
-                self.preview = None;
-                self.notify(tr("Vorhören nicht möglich, der Titel lässt sich nicht lesen"), now);
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.preview = None,
-        }
-    }
-
-    /// Wie die nächste Überblendung vom aktiven Player aus abläuft (FadeWerk-Bereiche oder Überblendzeit).
-    fn transition(&self) -> crate::fadewerk::Transition {
-        let (a, o) = (self.autofade.active, self.autofade.other());
-        let fade_of = |d: usize| self.playlists[d].current.map(|i| self.playlists[d].fade(i)).unwrap_or_default();
-        let old = if self.has_track(a) { fade_of(a) } else { Default::default() };
-        let ready = self.has_track(o) && !self.decks[o].spent && !self.loading(o);
-        let new = if ready { fade_of(o) } else { Default::default() };
-        let rate = |d: usize| 1.0 + self.decks[d].pitch_pct / 100.0;
-        let dur = self.ctl.shared.decks[a].duration_secs();
-        crate::fadewerk::plan(old, dur, new, self.autofade.fade_secs, rate(a), rate(o))
-    }
-
-    fn step_autofade(&mut self, dt: f32) {
-        self.step_fade(dt);
-        // Die Engine wertet den Crossfader zweiphasig aus, solange eine FadeWerk-Überblendung läuft
-        let split = self.autofade.fade().is_some_and(|f| f.is_split());
-        if self.split_sent != Some(split) {
-            self.split_sent = Some(split);
-            self.ctl.send(Command::SetSplitFade(split));
-        }
-        if self.autofade.fade().is_none() {
-            self.fade_track = None;
-        }
-    }
-
-    fn step_fade(&mut self, dt: f32) {
-        // FadeWerk: die Phasen richten sich nach der Stelle im alten Titel, damit er genau am Ende seines
-        // Ausblendbereichs still ist (auch mit Pitch). Steht der alte Titel, laufen sie nach Zeit weiter.
-        if let Some((d, out_start, out_end)) = self.fade_track
-            && self.ctl.shared.decks[d].is_playing()
-        {
-            let pos = self.ctl.shared.decks[d].position_secs();
-            let rate = (1.0 + self.decks[d].pitch_pct as f64 / 100.0).max(0.05);
-            let out = ((out_end - out_start) / rate) as f32;
-            let left = if self.autofade.in_second_phase() { (out_end - pos) / rate } else { (out_start - pos) / rate };
-            self.autofade.retime(left as f32, out);
-        }
-        if let Some(step) = self.autofade.step(dt) {
-            self.set_crossfader(step.crossfader);
-            if let Some(old) = step.finished {
-                log::info!("Überblendung fertig, Player {} hält bei {:.2} s", theme::deck_letter(old), self.ctl.shared.decks[old].position_secs());
-                self.ctl.send(Command::Pause { deck: old });
-                if !self.load_next(old, false, false) {
-                    self.decks[old].spent = true;
-                }
-            }
-            return;
-        }
-        let a = self.autofade.active;
-        let st = &self.ctl.shared.decks[a];
-        if !self.has_track(a) || self.decks[a].repeat == Repeat::Track || self.decks[a].loop_range.is_some() {
-            return;
-        }
-        let plan = self.transition();
-        let remaining = (plan.end - st.position_secs()) / (1.0 + self.decks[a].pitch_pct as f64 / 100.0);
-        if self.autofade.should_start(st.is_playing(), remaining, plan.lead) {
-            self.start_fade(false, 0.0);
-        }
-    }
-
-    fn start_fade(&mut self, manual: bool, now: f64) {
-        if self.autofade.fade().is_some() {
-            return;
-        }
-        let to = self.autofade.other();
-        if self.has_track(to) && !self.decks[to].spent && !self.loading(to) {
-            self.ctl.send(Command::Play { deck: to });
-            let from = self.autofade.active;
-            match self.transition().split {
-                // Zweiphasig nur aus der Endstellung, sonst sprängen die Pegel beim Umschalten der Auswertung
-                Some(sp) if self.crossfader == fw_engine::automix::side(from) => {
-                    self.autofade.start_split(self.crossfader, sp.in_secs, sp.out_secs);
-                    log::info!(
-                        "FadeWerk-Überblendung {}→{}: {:.1} s ein, {:.1} s aus ({:.1}–{:.1}), alter Titel bei {:.1}",
-                        theme::deck_letter(from), theme::deck_letter(to), sp.in_secs, sp.out_secs, sp.out_start, sp.out_end,
-                        self.ctl.shared.decks[from].position_secs()
-                    );
-                    self.fade_track = (!manual).then_some((from, sp.out_start, sp.out_end));
-                }
-                _ => self.autofade.start(self.crossfader),
-            }
-        } else if self.decks[to].pending.is_none() && !self.load_next(to, false, false) && manual {
-            self.notify(trf("Playlist {} hat keinen nächsten Titel", &[&theme::deck_letter(to)]), now);
-        }
-    }
-
-    /// Pitch, mit dem Player `d` im Tempo des anderen läuft, und der Tempofaktor dazu. Ohne `factor` wird der
-    /// nächstliegende aus 1, 2 und ½ gewählt (70 und 140 BPM passen zusammen). `None` ohne BPM.
-    fn sync_pitch(&self, d: usize, factor: Option<f32>) -> Option<(f32, f32)> {
-        let o = 1 - d;
-        let mine = self.decks[d].bpm?;
-        let theirs = self.decks[o].bpm.filter(|_| self.has_track(o))? * (1.0 + self.decks[o].pitch_pct / 100.0);
-        let pct = |f: f32| (theirs / (mine * f) - 1.0) * 100.0;
-        let f = factor.unwrap_or_else(|| [1.0, 2.0, 0.5].into_iter().min_by(|a, b| pct(*a).abs().total_cmp(&pct(*b).abs())).unwrap_or(1.0));
-        Some((pct(f), f))
-    }
-
-    fn send_pitch(&mut self, d: usize, pct: f32) {
-        self.decks[d].pitch_pct = pct;
-        self.ctl.send(Command::SetPitch { deck: d, pitch: pct / 100.0 });
-    }
-
-    /// Auto-Sync: startet ein Player, während der andere zu hören ist, übernimmt er dessen Tempo und hält es,
-    /// solange der andere zu hören ist (also auch während der Überblendung). Ist er allein auf Sendung, läuft sein
-    /// Pitch mit `AUTO_SYNC_RATE` auf 0 % zurück. Steht er still und ist nicht zu hören, geht der Pitch sofort auf 0.
-    fn step_auto_sync(&mut self, dt: f32, now: f64) {
-        for d in 0..2 {
-            let o = 1 - d;
-            let playing = self.has_track(d) && self.ctl.shared.decks[d].is_playing();
-            let started = playing && !self.decks[d].was_playing;
-            self.decks[d].was_playing = playing;
-            if !self.auto_sync {
-                continue;
-            }
-            if started && self.on_air(o) {
-                self.decks[d].sync = None;
-                if let Some((pct, factor)) = self.sync_pitch(d, None) {
-                    if pct.abs() <= PITCH_RANGE {
-                        self.decks[d].sync = Some(factor);
-                        self.send_pitch(d, pct);
-                    } else {
-                        let theirs = self.decks[o].bpm.unwrap_or(0.0) * (1.0 + self.decks[o].pitch_pct / 100.0);
-                        let mine = self.decks[d].bpm.unwrap_or(0.0);
-                        self.notify(trf("Auto-Sync: {} ↔ {} BPM liegen zu weit auseinander", &[&format!("{mine:.1}"), &format!("{theirs:.1}")]), now);
-                    }
-                }
-            }
-            let Some(factor) = self.decks[d].sync else { continue };
-            if !playing {
-                if !self.on_air(d) {
-                    self.decks[d].sync = None;
-                    self.send_pitch(d, 0.0);
-                }
-            } else if self.on_air(o) {
-                // Dem anderen folgen, auch wenn dessen Pitch sich ändert
-                if let Some((pct, _)) = self.sync_pitch(d, Some(factor))
-                    && pct.abs() <= PITCH_RANGE
-                    && pct != self.decks[d].pitch_pct
-                {
-                    self.send_pitch(d, pct);
-                }
-            } else {
-                let p = self.decks[d].pitch_pct;
-                let step = AUTO_SYNC_RATE * dt;
-                if p.abs() <= step {
-                    self.decks[d].sync = None;
-                    self.send_pitch(d, 0.0);
-                } else {
-                    self.send_pitch(d, p - step * p.signum());
-                }
-            }
-        }
-    }
-
-    fn fade_status(&self) -> String {
-        if let Some(f) = self.autofade.fade() {
-            return trf("Blende von {} auf {}, noch {} s", &[&theme::deck_letter(f.from), &theme::deck_letter(f.to), &format!("{:.1}", f.remaining_secs())]);
-        }
-        if !self.autofade.enabled {
-            return tr("Auto-Fade aus, Crossfader per Hand").into();
-        }
-        let a = self.autofade.active;
-        let st = &self.ctl.shared.decks[a];
-        if !self.has_track(a) || !st.is_playing() {
-            return trf("Player {} starten, dann blendet Auto-Fade selbst", &[&theme::deck_letter(a)]);
-        }
-        if self.decks[a].repeat == Repeat::Track || self.decks[a].loop_range.is_some() {
-            return trf("Repeat oder Loop in {}: Auto-Fade wartet", &[&theme::deck_letter(a)]);
-        }
-        let o = 1 - a;
-        let other_empty = (!self.has_track(o) || self.decks[o].spent)
-            && self.decks[o].pending.is_none()
-            && self.playlists[o].next_index(self.decks[o].repeat == Repeat::List).is_none();
-        if other_empty {
-            return trf("Playlist {} ist durch, {} spielt allein weiter", &[&theme::deck_letter(o), &theme::deck_letter(a)]);
-        }
-        let plan = self.transition();
-        let rem = (plan.end - st.position_secs()) / (1.0 + self.decks[a].pitch_pct as f64 / 100.0) - plan.lead as f64;
-        trf("Auto-Fade zu {} in {}", &[&theme::deck_letter(o), &deck_ui::fmt_time(rem)])
-    }
 
     // ---------- Aktionen ----------
 
-    fn deck_action(&mut self, d: usize, a: DeckAction, now: f64) {
-        let st_pos = self.ctl.shared.decks[d].position_secs();
-        let st_dur = self.ctl.shared.decks[d].duration_secs();
-        match a {
-            DeckAction::TogglePlay => {
-                let starting = !self.ctl.shared.decks[d].is_playing();
-                self.ctl.send(Command::TogglePlay { deck: d });
-                if starting {
-                    self.decks[d].spent = false;
-                }
-                if starting && self.autofade.fade().is_none() {
-                    let (ga, gb) = self.crossfader_gains();
-                    let gain = if d == 0 { ga } else { gb };
-                    let other_idle = !self.ctl.shared.decks[1 - d].is_playing();
-                    if self.autofade.enabled && other_idle && self.has_track(d) && self.crossfader != fw_engine::automix::side(d) {
-                        // Der andere Player steht: Crossfader zu diesem hinüberblenden
-                        self.autofade.glide_to(d, self.crossfader);
-                    } else if gain > 0.5 {
-                        self.autofade.active = d;
-                    }
-                }
-            }
-            DeckAction::Cue => self.ctl.send(Command::Cue { deck: d }),
-            DeckAction::Stop => self.ctl.send(Command::Stop { deck: d }),
-            DeckAction::Prev => match self.playlists[d].prev_index() {
-                Some(i) if st_pos <= 3.0 && self.has_track(d) => {
-                    self.load_index(d, i, false, true);
-                }
-                _ => self.ctl.send(Command::Seek { deck: d, secs: 0.0 }),
-            },
-            DeckAction::Next => {
-                let wrap = self.decks[d].repeat == Repeat::List;
-                match self.playlists[d].next_index(wrap) {
-                    Some(i) => {
-                        self.load_index(d, i, false, true);
-                    }
-                    None => self.notify(trf("Playlist {}: kein weiterer Titel", &[&theme::deck_letter(d)]), now),
-                }
-            }
-            DeckAction::Eject => {
-                if self.on_air(d) {
-                    self.notify(trf("Player {} ist gerade zu hören. Erst stoppen oder wegblenden.", &[&theme::deck_letter(d)]), now);
-                    return;
-                }
-                self.ctl.send(Command::Eject { deck: d });
-                let v = &mut self.decks[d];
-                // Platte mit ihrem Label/Cover noch zeigen, während sie hinausgleitet
-                let (title, artist) = v.meta.as_ref().map_or_else(Default::default, |m| (m.title.clone(), m.artist.clone()));
-                v.ejected = Some((title, artist, v.cover.take(), now));
-                v.path = None;
-                v.meta = None;
-                v.waveform = None;
-                v.audio = None;
-                v.bpm = None;
-                v.cover = None;
-                v.loaded_id = 0;
-                v.spent = false;
-                v.pending = None;
-                v.loop_beats = None;
-                v.loop_range = None;
-            }
-            DeckAction::Reverse(on) => {
-                self.decks[d].reverse = on;
-                self.ctl.send(Command::SetReverse { deck: d, on });
-            }
-            DeckAction::CycleRepeat => {
-                let r = self.decks[d].repeat.next();
-                self.decks[d].repeat = r;
-                self.ctl.send(Command::SetRepeatTrack { deck: d, on: r == Repeat::Track });
-            }
-            DeckAction::Pfl(on) => {
-                self.decks[d].pfl = on;
-                self.ctl.send(Command::SetPfl { deck: d, on });
-                if on {
-                    self.enable_headphones(now);
-                }
-            }
-            DeckAction::Sync => {
-                self.decks[d].sync = None;
-                let o = 1 - d;
-                match (self.decks[d].bpm, self.decks[o].bpm.filter(|_| self.has_track(o))) {
-                    (Some(mine), Some(theirs)) => {
-                        let target = theirs * (1.0 + self.decks[o].pitch_pct / 100.0);
-                        let pct = (target / mine - 1.0) * 100.0;
-                        if pct.abs() > PITCH_RANGE {
-                            self.notify(trf("Zu weit auseinander ({} ↔ {} BPM), Pitch reicht nur ±{} %", &[&format!("{mine:.1}"), &format!("{target:.1}"), &format!("{PITCH_RANGE:.0}")]), now);
-                        } else {
-                            let pct = (pct * 10.0).round() / 10.0;
-                            self.decks[d].pitch_pct = pct;
-                            self.ctl.send(Command::SetPitch { deck: d, pitch: pct / 100.0 });
-                        }
-                    }
-                    _ => self.notify(tr("Für Sync brauchen beide Player einen Titel mit BPM"), now),
-                }
-            }
-            DeckAction::Loop(beats) => {
-                let v = &mut self.decks[d];
-                if v.loop_beats == Some(beats) {
-                    v.loop_beats = None;
-                    v.loop_range = None;
-                } else if let Some(bpm) = v.bpm {
-                    let beat = 60.0 / (bpm as f64);
-                    let range = (st_pos, (st_pos + beats as f64 * beat).min(st_dur));
-                    v.loop_beats = Some(beats);
-                    v.loop_range = Some(range);
-                }
-                let range = v.loop_range;
-                self.ctl.send(Command::SetLoop { deck: d, range });
-            }
-            DeckAction::Filter(value) => {
-                self.filter[d] = value;
-                self.ctl.send(Command::SetFilter { deck: d, value });
-            }
-            DeckAction::Pitch(p) => {
-                self.decks[d].sync = None;
-                self.decks[d].pitch_pct = p;
-                self.ctl.send(Command::SetPitch { deck: d, pitch: p / 100.0 });
-            }
-            DeckAction::Seek(s) => self.ctl.send(Command::Seek { deck: d, secs: s }),
-            DeckAction::ScratchBegin => {
-                self.decks[d].scratching = true;
-                self.decks[d].scratch_pos = st_pos;
-                self.ctl.send(Command::ScratchBegin { deck: d });
-            }
-            DeckAction::ScratchBy(ds) => {
-                if self.decks[d].scratching {
-                    let p = (self.decks[d].scratch_pos + ds).clamp(0.0, st_dur);
-                    self.decks[d].scratch_pos = p;
-                    self.ctl.send(Command::ScratchTo { deck: d, secs: p });
-                }
-            }
-            DeckAction::ScratchEnd => {
-                self.decks[d].scratching = false;
-                self.ctl.send(Command::ScratchEnd { deck: d });
-            }
-        }
-    }
-
-    fn mixer_action(&mut self, a: MixerAction, now: f64) {
-        match a {
-            MixerAction::OpenAbout => self.settings_ui.open_at("ueber"),
-            MixerAction::Volume(d, v) => {
-                self.decks[d].volume = v;
-                self.ctl.send(Command::SetChannelVolume { deck: d, volume: v });
-            }
-            MixerAction::HeadMode(m) => {
-                if m == HeadMode::Outputs34 && self.ctl.shared.channels < 4 {
-                    self.notify(trf("Das Ausgabegerät hat nur {} Kanäle", &[&self.ctl.shared.channels]), now);
-                    return;
-                }
-                self.set_head_mode(m);
-            }
-            MixerAction::HeadMix(v) => {
-                self.head_mix = v;
-                self.ctl.send(Command::SetHeadMix(v));
-            }
-            MixerAction::HeadVolume(v) => {
-                self.head_volume = v;
-                self.ctl.send(Command::SetHeadVolume(v));
-            }
-            MixerAction::MasterVolume(v) => {
-                self.master_volume = v;
-                self.ctl.send(Command::SetMasterVolume(v));
-            }
-            MixerAction::Eq { deck, band, db } => self.eq_db[deck][band] = db,
-            MixerAction::EqKill { deck, band, on } => self.eq_kill[deck][band] = on,
-            MixerAction::Record => self.toggle_recording(now),
-            MixerAction::Fx { slot, to_master } => self.trigger_fx(slot, to_master, now),
-            MixerAction::FxVolume(v) => {
-                self.fx_volume = v;
-                self.ctl.send(Command::SetFxVolume(v));
-            }
-        }
-    }
-
-    /// Effekt-Pad auslösen: über Master, oder zum Vorhören nur auf dem Kopfhörer.
-    fn trigger_fx(&mut self, slot: usize, to_master: bool, now: f64) {
-        if !to_master {
-            self.enable_headphones(now);
-        }
-        self.ctl.send(Command::TriggerFx { slot, to_master });
-    }
-
-    /// Geladene Effekt-Klänge an die Engine geben.
-    fn poll_fx(&mut self, now: f64) {
-        for (slot, sound, err) in self.fx.poll() {
-            self.ctl.send(Command::LoadFx { slot, sound });
-            if err.is_some() {
-                self.notify(trf("Effekt {}: Datei nicht lesbar, es klingt der mitgelieferte Effekt", &[&(slot + 1)]), now);
-            }
-        }
-    }
-
-    /// Tasten 1 bis 8 lösen die Effekt-Pads aus (nicht beim Tippen, nicht mit ⌘/Strg/⌥, ohne Tastenwiederholung).
-    fn fx_keys(&mut self, ctx: &egui::Context, now: f64) {
-        for slot in pad_keys(ctx) {
-            self.trigger_fx(slot, true, now);
-        }
-    }
-
-    fn fade_action(&mut self, a: FadeAction, now: f64) {
-        match a {
-            FadeAction::Auto(on) => self.autofade.enabled = on,
-            FadeAction::FadeSecs(s) => {
-                self.autofade.fade_secs = s;
-                self.ctl.send(Command::SetRepeatFade(s));
-            }
-            FadeAction::Curve(c) => {
-                self.curve = c;
-                self.ctl.send(Command::SetCurve(c));
-            }
-            FadeAction::Crossfader(x) => {
-                self.autofade.cancel();
-                self.set_crossfader(x);
-                self.autofade.follow_crossfader(x);
-            }
-            FadeAction::FadeNow => self.start_fade(true, now),
-            FadeAction::Motor(m) => {
-                self.motor = m;
-                self.ctl.send(Command::SetMotor(m));
-            }
-            FadeAction::BassSwap(on) => self.bass_swap = on,
-            FadeAction::AutoSync(on) => {
-                self.auto_sync = on;
-                for v in &mut self.decks {
-                    v.sync = None;
-                }
-            }
-        }
-    }
-
-    /// Schickt die Wellenform-Anfragen dieses Bildes abwechselnd aus A und B, je von oben nach unten.
-    /// So bauen sich beide Playlists gleichzeitig von oben auf (der Thread rechnet nur eine Wellenform zur Zeit).
-    fn send_sketch_requests(&mut self) {
-        let [a, b] = std::mem::take(&mut self.sketch_batch);
-        if a.is_empty() && b.is_empty() {
-            return;
-        }
-        let mut order = Vec::with_capacity(a.len() + b.len());
-        let (mut a, mut b) = (a.into_iter(), b.into_iter());
-        loop {
-            match (a.next(), b.next()) {
-                (None, None) => break,
-                (x, y) => order.extend(x.into_iter().chain(y)),
-            }
-        }
-        self.lib.request_sketches(order);
-    }
-
-    fn playlist_action(&mut self, d: usize, a: PlaylistAction, now: f64) {
-        match a {
-            PlaylistAction::Load(i) => {
-                if self.ctl.shared.decks[d].is_playing() {
-                    self.notify(trf("Titel nicht geladen: Player {} spielt gerade. Erst stoppen.", &[&theme::deck_letter(d)]), now);
-                } else {
-                    self.load_index(d, i, false, false);
-                }
-            }
-            PlaylistAction::LoadBehindPlayed(i) => {
-                if self.ctl.shared.decks[d].is_playing() {
-                    self.notify(trf("Titel nicht geladen: Player {} spielt gerade. Erst stoppen.", &[&theme::deck_letter(d)]), now);
-                } else {
-                    let i = self.playlists[d].move_behind_played(i);
-                    self.load_index(d, i, false, false);
-                }
-            }
-            PlaylistAction::Remove(i) => {
-                self.playlists[d].remove(i);
-            }
-            PlaylistAction::RemoveMany(indices) => {
-                let indices = self.without_loaded(d, indices, now);
-                self.playlists[d].remove_many(&indices);
-            }
-            PlaylistAction::MoveManyToOther(indices) => {
-                self.playlist_action(1 - d, PlaylistAction::Drop { item: DragItem::Rows { list: d, indices }, before: usize::MAX }, now)
-            }
-            PlaylistAction::Harmonic => self.harmonic_start(now),
-            PlaylistAction::SortUndo => {
-                if let Some((before, _, _)) = self.sort_undo.take() {
-                    self.playlists = before;
-                    self.notify(tr("Reihenfolge wiederhergestellt"), now);
-                }
-            }
-            PlaylistAction::Shuffle => {
-                let before = self.playlists.clone();
-                self.playlists[d].shuffle_upcoming(shuffle_seed());
-                self.sort_undo = Some((before, crate::session::fingerprint(&self.playlists), now));
-            }
-            PlaylistAction::Clear => {
-                let keep = self.has_track(d) && self.ctl.shared.decks[d].is_playing();
-                self.playlists[d].clear_keep(keep);
-            }
-            PlaylistAction::NeedMeta(p) => self.request_meta(p),
-            PlaylistAction::ShowMeta(p) => self.request_meta_now(p),
-            PlaylistAction::NeedSketch(p) => {
-                if self.sketch_requested.insert(p.clone()) {
-                    self.sketch_batch[d].push(p);
-                }
-            }
-            PlaylistAction::FadeWerk(on) => self.fadewerk = on,
-            PlaylistAction::SetFade(i, fade) => {
-                let start = |f: crate::fadewerk::TrackFade| f.fade_in.map_or(0.0, |r| r.start as f64);
-                let old = start(self.playlists[d].fade(i));
-                self.playlists[d].set_fade(i, fade);
-                // Liegt der Titel schon gestoppt im Player, rückt er an den neuen Anfang (auch als Cue-Punkt)
-                let st = &self.ctl.shared.decks[d];
-                if self.playlists[d].current == Some(i) && self.has_track(d) && !st.is_playing() && start(fade) != old {
-                    self.ctl.send(Command::Seek { deck: d, secs: start(fade) });
-                    self.ctl.send(Command::Cue { deck: d });
-                }
-            }
-            PlaylistAction::FadePreview(i, kind) => self.start_fade_preview(d, i, kind, now),
-            PlaylistAction::ResetAllFades => {
-                self.playlists.iter_mut().for_each(Playlist::clear_fades);
-                self.notify(tr("Alle Fade-Bereiche entfernt"), now);
-            }
-            PlaylistAction::Preview(p) => self.browser_action(BrowserAction::Preview(p), now),
-            PlaylistAction::StopPreview => self.browser_action(BrowserAction::StopPreview, now),
-            PlaylistAction::PlayNext(i) => {
-                let pl = &mut self.playlists[d];
-                let before = pl.current.map_or(0, |c| c + 1);
-                pl.move_entry(i, before);
-            }
-            PlaylistAction::EditTags(p) => self.browser_action(BrowserAction::EditTags(p), now),
-            // Wie Ziehen ans Ende der anderen Playlist
-            PlaylistAction::MoveToOther(i) => self.playlist_action(1 - d, PlaylistAction::Drop { item: DragItem::Row { list: d, index: i }, before: usize::MAX }, now),
-            PlaylistAction::Analyze(p) => self.browser_action(BrowserAction::Analyze { paths: vec![p], force: true }, now),
-            PlaylistAction::Drop { item, before } => match item {
-                DragItem::Files(paths) => {
-                    let at = before.min(self.playlists[d].entries.len());
-                    self.playlists[d].insert(at, paths);
-                    self.fill_if_empty(d, at);
-                }
-                DragItem::Row { list, index } if list == d => self.playlists[d].move_entry(index, before),
-                DragItem::Row { list, index } => {
-                    if self.playlists[list].current == Some(index) && self.has_track(list) {
-                        self.notify(trf("Der Titel ist in Player {} geladen und bleibt in dessen Playlist", &[&theme::deck_letter(list)]), now);
-                        return;
-                    }
-                    if let Some(item) = self.playlists[list].remove_with_fade(index) {
-                        let at = before.min(self.playlists[d].entries.len());
-                        self.playlists[d].insert_with_fades(at, [item]);
-                        self.fill_if_empty(d, at);
-                    }
-                }
-                DragItem::Rows { list, indices } if list == d => self.playlists[d].move_entries(&indices, before),
-                DragItem::Rows { list, indices } => {
-                    let indices = self.without_loaded(list, indices, now);
-                    let items = self.playlists[list].remove_many(&indices);
-                    if !items.is_empty() {
-                        let at = before.min(self.playlists[d].entries.len());
-                        self.playlists[d].insert_with_fades(at, items);
-                        self.fill_if_empty(d, at);
-                    }
-                }
-            },
-        }
-    }
-
-    /// Mehrere Einträge der Playlist `d` ohne den Titel, der im Player liegt: der bleibt in seiner Playlist.
-    fn without_loaded(&mut self, d: usize, mut indices: Vec<usize>, now: f64) -> Vec<usize> {
-        if let Some(c) = self.playlists[d].current.filter(|_| self.has_track(d))
-            && indices.contains(&c)
-        {
-            indices.retain(|&i| i != c);
-            self.notify(trf("Der Titel ist in Player {} geladen und bleibt in dessen Playlist", &[&theme::deck_letter(d)]), now);
-        }
-        indices
-    }
-
-    /// Titel per Drag & Drop auf einen Player gezogen. Aus der eigenen Playlist wird direkt geladen;
-    /// sonst kommt der Titel hinter den aktuellen in die Playlist dieses Players, damit Vor/Zurück
-    /// und Auto-Fade danach stimmig weiterlaufen.
-    fn drop_on_deck(&mut self, d: usize, item: DragItem, now: f64) {
-        if self.ctl.shared.decks[d].is_playing() {
-            self.notify(trf("Player {} spielt gerade. Erst stoppen.", &[&theme::deck_letter(d)]), now);
-            return;
-        }
-        // Mehrere Zeilen: der Player nimmt die erste
-        let item = match item {
-            DragItem::Rows { list, indices } => match indices.first() {
-                Some(&index) => DragItem::Row { list, index },
-                None => return,
-            },
-            item => item,
-        };
-        let paths = match item {
-            DragItem::Row { list, index } if list == d => {
-                self.load_index(d, index, false, false);
-                return;
-            }
-            DragItem::Row { list, index } => match self.playlists[list].entries.get(index) {
-                // Kopie samt Fade-Bereichen hinter den aktuellen Titel
-                Some(p) => {
-                    let item = (p.clone(), self.playlists[list].fade(index));
-                    let at = self.drop_insert_point(d);
-                    self.playlists[d].insert_with_fades(at, [item]);
-                    self.load_index(d, at, false, false);
-                    return;
-                }
-                None => return,
-            },
-            DragItem::Files(paths) => paths,
-            DragItem::Rows { .. } => return,
-        };
-        if paths.is_empty() {
-            return;
-        }
-        let at = self.drop_insert_point(d);
-        self.playlists[d].insert(at, paths);
-        self.load_index(d, at, false, false);
-    }
-
-    /// Wohin ein auf den Player gezogener Titel in dessen Playlist kommt: hinter den geladenen Titel. War der
-    /// noch gar nicht zu hören (steht an seinem Anfang bzw. am Beginn seines Einblendbereichs), davor, damit
-    /// er der nächste bleibt und nicht als gespielt übersprungen wird.
-    fn drop_insert_point(&self, d: usize) -> usize {
-        let pl = &self.playlists[d];
-        let Some(c) = pl.current.filter(|&c| c < pl.entries.len()) else { return pl.entries.len() };
-        let start = pl.fade(c).fade_in.map_or(0.0, |r| r.start as f64);
-        let untouched = self.has_track(d) && !self.decks[d].spent && self.ctl.shared.decks[d].position_secs() <= start + 1.0;
-        if untouched { c } else { c + 1 }
-    }
-
-    fn browser_action(&mut self, a: BrowserAction, now: f64) {
-        match a {
-            BrowserAction::Add { list, paths } => {
-                let n = paths.len();
-                let first = self.playlists[list].entries.len();
-                self.playlists[list].push(paths);
-                self.fill_if_empty(list, first);
-                self.notify(trf("{} Titel in Playlist {}", &[&n, &theme::deck_letter(list)]), now);
-            }
-            BrowserAction::AddShuffled { list, mut paths } => {
-                shuffle(&mut paths);
-                self.browser_action(BrowserAction::Add { list, paths }, now);
-            }
-            BrowserAction::AddNext { list, paths } => {
-                let n = paths.len();
-                let pl = &mut self.playlists[list];
-                let at = pl.current.map_or(0, |c| c + 1).min(pl.entries.len());
-                pl.insert(at, paths);
-                self.fill_if_empty(list, at);
-                self.notify(trf("{} Titel als Nächstes in Playlist {}", &[&n, &theme::deck_letter(list)]), now);
-            }
-            BrowserAction::Distribute(paths) => {
-                // Mit dem Player beginnen, der als Nächstes einblendet: Spielt A, ist B dran
-                let st = &self.ctl.shared.decks;
-                let start = usize::from(st[0].is_playing() && !st[1].is_playing());
-                let n = paths.len();
-                let mut split: [Vec<PathBuf>; 2] = Default::default();
-                for (k, p) in paths.into_iter().enumerate() {
-                    split[(start + k) % 2].push(p);
-                }
-                for (list, paths) in split.into_iter().enumerate() {
-                    let first = self.playlists[list].entries.len();
-                    self.playlists[list].push(paths);
-                    self.fill_if_empty(list, first);
-                }
-                self.notify(trf("{} Titel auf Playlist A und B verteilt", &[&n]), now);
-            }
-            BrowserAction::LoadDeck { deck, path } => self.drop_on_deck(deck, DragItem::Files(vec![path]), now),
-            BrowserAction::Reveal(path) => {
-                if let Err(e) = reveal(&path) {
-                    log::warn!("Anzeigen im Dateimanager: {e}");
-                    self.notify(trf("Lässt sich nicht anzeigen: {}", &[&e]), now);
-                }
-            }
-            BrowserAction::StopScan => self.lib.cancel_scan(),
-            BrowserAction::FolderRecursion(list) => {
-                self.settings.folder_recursion = list;
-                self.save_settings();
-            }
-            BrowserAction::EditTags(path) => self.tag_editor = Some(TagEditor::open(path)),
-            BrowserAction::OnlineTags(paths) => {
-                match &mut self.tag_batch {
-                    None => self.tag_batch = Some(crate::tag_batch::TagBatch::new(paths)),
-                    // Läuft schon (evtl. im Hintergrund): erst den laufenden Durchlauf zeigen
-                    Some(b) => b.bring_back(),
-                }
-            }
-            BrowserAction::SearchMemory(remember, hide_duplicates, whole_words, search) => {
-                self.settings.remember_search = remember;
-                self.settings.hide_duplicates = hide_duplicates;
-                self.settings.search_whole_words = whole_words;
-                self.settings.advanced_search = search;
-                self.save_settings();
-            }
-            BrowserAction::TrackColumns(visible, widths) => {
-                self.settings.track_columns = visible;
-                self.settings.column_widths = widths;
-                self.save_settings();
-            }
-            BrowserAction::TrackSort(sort) => {
-                self.settings.track_sort = sort;
-                self.save_settings();
-            }
-            BrowserAction::TreeWidth(w) => {
-                self.settings.tree_width = w;
-                self.save_settings();
-            }
-            BrowserAction::TreeHeight(h) => {
-                self.settings.tree_height = h;
-                self.save_settings();
-            }
-            BrowserAction::FolderColumns(on) => {
-                self.settings.folder_columns = on;
-                self.save_settings();
-            }
-            BrowserAction::ColumnsShare(share) => {
-                self.settings.columns_share = share;
-                self.save_settings();
-            }
-            BrowserAction::Preview(path) => {
-                let token = self.token();
-                self.preview = Some(PreviewView { path: path.clone(), token, ended_seen: 0, clip: None });
-                self.lib.load(PREVIEW, token, path, false, fw_library::Known::default());
-                self.enable_headphones(now);
-            }
-            BrowserAction::StopPreview => {
-                self.ctl.send(Command::Eject { deck: PREVIEW });
-                self.preview = None;
-            }
-            BrowserAction::PreviewSeek(s) => self.ctl.send(Command::Seek { deck: PREVIEW, secs: s }),
-            BrowserAction::NeedMeta(p) => self.request_meta(p),
-            BrowserAction::ShowMeta(p) => self.request_meta_now(p),
-            BrowserAction::Analyze { paths, force } => {
-                for p in paths {
-                    // Vielleicht nur umgezogen (Ordner umbenannt): dann sind BPM und Tonart schon bekannt
-                    if !force {
-                        self.resolve_bpm(&p, fw_library::file_stamp(&p));
-                    }
-                    // Ohne `force` nur Titel, denen BPM oder Tonart fehlt
-                    if (force || self.needs_analysis(&p)) && self.bpm_pending.insert(p.clone()) {
-                        self.bpm_total += 1;
-                        self.lib.analyze(p, force);
-                    }
-                }
-            }
-            BrowserAction::ShowTagBatch => {
-                if let Some(b) = &mut self.tag_batch {
-                    b.bring_back();
-                }
-            }
-            BrowserAction::StopTagBatch => {
-                if let Some(b) = &self.tag_batch {
-                    b.stop();
-                }
-            }
-            BrowserAction::StopBpm => {
-                self.lib.cancel_analysis();
-                self.bpm_pending.clear();
-                self.bpm_total = 0;
-            }
-            BrowserAction::AddRoot => {
-                if let Some(dir) = rfd::FileDialog::new().set_title(tr("Musikordner hinzufügen")).pick_folder()
-                    && self.browser.add_root(dir.clone())
-                {
-                    self.settings.folders.push(dir);
-                    self.save_settings();
-                }
-            }
-            BrowserAction::RemoveRoot(dir) => {
-                self.browser.remove_root(&dir);
-                self.settings.folders.retain(|p| p != &dir);
-                self.save_settings();
-            }
-            BrowserAction::HistoryRename { date, name } => self.history.rename(&date, &name),
-            BrowserAction::HistoryRestore(date) => self.restore_history(&date, now),
-            BrowserAction::HistoryRemove { date, slots } => {
-                self.history.remove_entries(&date, &slots);
-                self.notify(trf("{} Einträge aus der Historie entfernt", &[&slots.len()]), now);
-            }
-            BrowserAction::HistoryDelete(date) => {
-                if let Some(day) = self.history.day(&date) {
-                    self.history_dialog = Some(HistoryDialog::Delete { date, label: day.label(), count: day.entries.len() });
-                }
-            }
-            BrowserAction::HistoryExport { date, format } => self.export_history(&date, format, now),
-            BrowserAction::HistoryImport => {
-                if self.import_rx.is_none()
-                    && let Some(file) = rfd::FileDialog::new()
-                        .set_title(tr("Historie importieren"))
-                        .add_filter(tr("Historie oder Playlist"), &["json", "m3u", "m3u8"])
-                        .pick_file()
-                {
-                    let ctx = self.repaint_ctx.clone();
-                    self.import_rx = Some(crate::history::import_in_background(file, self.music_roots(), move || ctx.request_repaint()));
-                }
-            }
-            BrowserAction::OpenSettings => self.settings_ui.toggle(),
-            BrowserAction::ToggleFullscreen => self.toggle_fullscreen = true,
-            BrowserAction::ToggleSide => {
-                self.settings.browser_side = !self.settings.browser_side;
-                self.save_due = Some(now + 1.0);
-            }
-            BrowserAction::TreeLeft(on) => {
-                self.settings.browser_window_tree_left = on;
-                self.save_due = Some(now + 1.0);
-            }
-            BrowserAction::Detach(on) => {
-                self.settings.browser_detached = on;
-                self.browser_window_init = None;
-                self.browser_window_lost = 0;
-                self.cross = Default::default();
-                self.save_due = Some(now + 1.0);
-            }
-        }
-    }
 }
 
 /// Plastisches Gehäuse-Panel hinter dem Inhalt der Zelle.
@@ -2962,45 +827,8 @@ fn end_warning(ui: &egui::Ui, rect: egui::Rect, m: &DeckModel<'_>) {
     ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
 }
 
-/// Was ein Player gerade spielt, für die Statuszeile des eingeschobenen Ordnerbereichs.
-struct SlideStatus {
-    title: String,
-    left: f64,
-    playing: bool,
-}
-
-/// Was in der Leiste der kompakten Ansicht angeklickt wurde.
-enum StripClick {
-    Folders,
-    Fullscreen,
-    Settings,
-}
-
-/// Senkrechte Leiste am linken Rand der kompakten Ansicht: „ORDNER“ schiebt den Ordnerbereich ein oder aus,
-/// unten Vollbild und Einstellungen (sonst nur im eingeschobenen Bereich zu finden).
-fn slide_strip(ui: &mut egui::Ui, open: bool, fullscreen: bool) -> Option<StripClick> {
-    let full = ui.max_rect();
-    let button = vec2(full.width() - 4.0, 28.0);
-    let (rest, tools) = full.split_top_bottom_at_y(full.bottom() - 2.0 * button.y - 10.0);
-    let mut click = None;
-    ui.scope_builder(egui::UiBuilder::new().max_rect(tools).layout(egui::Layout::top_down(egui::Align::Center)), |ui| {
-        ui.spacing_mut().item_spacing.y = 2.0;
-        // Ohne Innenabstand bleiben beide Tasten genau gleich groß (das Zahnrad würde sonst breiter)
-        ui.spacing_mut().button_padding = egui::Vec2::ZERO;
-        if crate::browser::fullscreen_button_sized(ui, button, fullscreen).clicked() {
-            click = Some(StripClick::Fullscreen);
-        }
-        if ui.add_sized(button, egui::Button::new(RichText::new("⚙").size(15.0))).on_hover_text(tr("Einstellungen (⌘,)")).clicked() {
-            click = Some(StripClick::Settings);
-        }
-    });
-    if folder_strip(ui, rest, open).clicked() {
-        click = Some(StripClick::Folders);
-    }
-    click
-}
-
-/// Der Teil der Leiste mit der senkrechten Aufschrift „ORDNER“.
+/// Leiste „ORDNER“ am linken Rand der kompakten Ansicht: senkrechte Aufschrift, Klick schiebt den Ordnerbereich
+/// ein oder aus.
 fn folder_strip(ui: &mut egui::Ui, rect: Rect, open: bool) -> egui::Response {
     let resp = ui.interact(rect, ui.id().with("browser_strip"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
     let p = ui.painter();
@@ -3023,37 +851,6 @@ fn folder_strip(ui: &mut egui::Ui, rect: Rect, open: bool) -> egui::Response {
     }
     let tip = if cfg!(target_os = "macos") { tr("Ordner einblenden oder ausblenden (⌘B)") } else { tr("Ordner einblenden oder ausblenden (Strg+B)") };
     resp.on_hover_text(tip)
-}
-
-/// Statuszeile oben im eingeschobenen Ordnerbereich: Titel und Restzeit beider Player, kurz vor Titelende
-/// blinkend wie der Rahmen des Players (der jetzt verdeckt ist).
-fn slide_status_line(ui: &mut egui::Ui, status: &[SlideStatus; 2]) {
-    let now = ui.input(|i| i.time);
-    ui.horizontal(|ui| {
-        let half = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
-        for (d, s) in status.iter().enumerate() {
-            let (rect, _) = ui.allocate_exact_size(vec2(half, SLIDE_STATUS_H), Sense::hover());
-            let p = ui.painter();
-            crate::hw::well(p, rect, 4.0);
-            let warn = s.playing && s.left > 0.0 && s.left <= END_WARNING_SECS;
-            let period = if s.left <= END_WARNING_FAST_SECS { 0.4 } else { 0.8 };
-            if warn {
-                if now % period < period * 0.6 {
-                    crate::hw::alert_border(p, rect, theme::cue());
-                }
-                ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
-            }
-            let color = theme::deck_color(d);
-            p.text(pos2(rect.left() + 10.0, rect.center().y), Align2::LEFT_CENTER, theme::deck_letter(d), crate::fonts::bold(15.0), color);
-            let time = if s.left > 0.0 { format!("-{}", deck_ui::fmt_time(s.left)) } else { String::new() };
-            let time_w = 56.0;
-            crate::hw::lcd_text(p, pos2(rect.right() - 8.0, rect.center().y), Align2::RIGHT_CENTER, &time, 13.0, if warn { theme::cue() } else { color });
-            let mut job = egui::text::LayoutJob::single_section(s.title.clone(), egui::TextFormat::simple(crate::fonts::bold(13.0), theme::well_ink()));
-            job.wrap = egui::text::TextWrapping { max_width: (rect.width() - 36.0 - time_w).max(1.0), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
-            let galley = p.layout_job(job);
-            p.galley(pos2(rect.left() + 30.0, rect.center().y - galley.size().y / 2.0), galley, theme::well_ink());
-        }
-    });
 }
 
 /// Textur für das Cover auf dem Plattenteller von Player `d`.
@@ -3109,10 +906,10 @@ impl eframe::App for FadeWerkDjApp {
             self.session_checked = now;
             self.save_session_if_changed();
             if self.persist {
-                self.bpm_cache.save_if_dirty();
-                self.key_cache.save_if_dirty();
-                self.tag_cache.save_if_dirty(false);
-                self.folder_cache.save_if_dirty();
+                self.caches.bpm.save_if_dirty();
+                self.caches.key.save_if_dirty();
+                self.caches.tag.save_if_dirty(false);
+                self.caches.folder.save_if_dirty();
                 self.history.save_dirty();
             }
         }
@@ -3120,7 +917,7 @@ impl eframe::App for FadeWerkDjApp {
             && let Ok(results) = rx.try_recv()
         {
             self.bpm_check = None;
-            let removed = self.bpm_cache.apply_check(results);
+            let removed = self.caches.bpm.apply_check(results);
             if removed > 0 {
                 log::info!("BPM-Cache: {removed} Einträge ohne Datei entfernt");
             }
@@ -3129,7 +926,7 @@ impl eframe::App for FadeWerkDjApp {
             && let Ok(results) = rx.try_recv()
         {
             self.key_check = None;
-            let removed = self.key_cache.apply_check(results);
+            let removed = self.caches.key.apply_check(results);
             if removed > 0 {
                 log::info!("Tonart-Cache: {removed} Einträge ohne Datei entfernt");
             }
@@ -3164,27 +961,38 @@ impl eframe::App for FadeWerkDjApp {
         self.ctl.shared.set_spectrum(!theme::lite().no_bands);
         self.bands.update(self.ctl.shared.take_bands(), dt, now);
 
-        let mut deck_actions: [Vec<DeckAction>; 2] = Default::default();
-        let mut mixer_actions = Vec::new();
-        let mut fade_actions = Vec::new();
-        let mut pl_actions: [Vec<PlaylistAction>; 2] = Default::default();
+        // Aktionen aus Playern, Mixer und Playlists (Hauptbereich, siehe `views`)
+        let mut vout = views::ViewOut::default();
         let mut browser_actions = Vec::new();
-        let mut deck_drops: Vec<(usize, DragItem)> = Vec::new();
 
         // Neu geöffneter Ordner: Titel samt Unterordnern im Hintergrund suchen
         if let Some(dirs) = self.browser.take_pending_scan() {
             let token = self.token();
             self.browser.begin_scan(token);
-            if let Some(cached) = self.folder_cache.get(&dirs) {
+            if let Some(cached) = self.caches.folder.get(&dirs) {
                 self.browser.prefill(cached);
             }
             self.scan_job = Some((token, dirs.clone(), std::time::Instant::now()));
             self.lib.scan(token, dirs);
         }
 
+        // Statuszeile über allem: was läuft, was kommt, Arbeitsweise, Befehlssuche, Einstellungen
+        let transition = self.transition_view(self.fade_status());
+        let status_model = self.status_model(&transition, &ctx);
+        let mut status_actions = Vec::new();
+        let status_rect = egui::Panel::top("statusbar")
+            .exact_size(crate::statusbar::STATUS_H)
+            .show_separator_line(false)
+            .frame(Frame::new().fill(theme::panel()).stroke(Stroke::new(1.0, theme::line())).inner_margin(Margin::symmetric(10, 0)))
+            .show(ui, |ui| crate::statusbar::show(ui, &status_model, &mut status_actions))
+            .response
+            .rect;
+
         // Ordnerbrowser unten oder rechts; in der kompakten Ansicht gleitet er von links über die Oberfläche
         let compact = self.compact();
-        let slide = compact && !self.settings.browser_detached;
+        // Automatik: der Ordnerbereich gleitet wie in der kompakten Ansicht von links herein
+        let auto_view = self.view() == ViewMode::Auto;
+        let slide = (compact || auto_view) && !self.settings.browser_detached;
         if slide {
             // Ein Titel wird gezogen: Player und Playlists freigeben, nach dem Ablegen wieder herein
             let dragging_item = egui::DragAndDrop::has_any_payload(&ctx);
@@ -3206,15 +1014,7 @@ impl eframe::App for FadeWerkDjApp {
             self.browser_slid = false;
             self.browser_slid_for_drag = false;
         }
-        // Statuszeile im eingeschobenen Bereich: was läuft und wie lange noch
-        let slide_status: [SlideStatus; 2] = std::array::from_fn(|d| {
-            let st = &self.ctl.shared.decks[d];
-            let v = &self.decks[d];
-            let title = if v.loaded_id == 0 { tr("Kein Titel geladen").to_owned() } else { v.meta.as_ref().map_or_else(String::new, |m| m.title.clone()) };
-            SlideStatus { title, left: st.duration_secs() - st.position_secs(), playing: st.is_playing() }
-        });
         let mut slid = self.browser_slid;
-        let mut strip_click: Option<StripClick> = None;
         let preview_st = &self.ctl.shared.decks[PREVIEW];
         let bctx = BrowserCtx {
             metas: &self.metas,
@@ -3226,7 +1026,6 @@ impl eframe::App for FadeWerkDjApp {
             preview_pos: preview_st.position_secs(),
             preview_dur: preview_st.duration_secs(),
             deck_playing: [self.ctl.shared.decks[0].is_playing(), self.ctl.shared.decks[1].is_playing()],
-            fullscreen: ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)),
             side: false,
             side_possible: false,
             compact: slide,
@@ -3323,14 +1122,16 @@ impl eframe::App for FadeWerkDjApp {
                 .exact_size(SLIDE_STRIP_W)
                 .show_separator_line(false)
                 .frame(Frame::new().fill(theme::panel()).stroke(Stroke::new(1.0, theme::line())))
-                .show(ui, |ui| match slide_strip(ui, slid, ctx.input(|i| i.viewport().fullscreen.unwrap_or(false))) {
-                    Some(StripClick::Folders) => slid = !slid,
-                    other => strip_click = other,
+                .show(ui, |ui| {
+                    if folder_strip(ui, ui.max_rect(), slid).clicked() {
+                        slid = !slid;
+                    }
                 });
             let t = ctx.animate_bool_with_time(egui::Id::new("browser_slide"), slid, if theme::lite().frame_limit { 0.0 } else { SLIDE_SECS });
             if t > 0.0 {
+                // Unter der Statuszeile, die zeigt weiter, was läuft
                 let full = ctx.content_rect();
-                let area = Rect::from_min_max(pos2(full.left() + SLIDE_STRIP_W, full.top()), full.max);
+                let area = Rect::from_min_max(pos2(full.left() + SLIDE_STRIP_W, status_rect.bottom()), full.max);
                 let x = area.left() - (1.0 - t) * area.width();
                 egui::Area::new(egui::Id::new("browser_slide_area")).fixed_pos(pos2(x, area.top())).order(egui::Order::Middle).constrain(false).show(&ctx, |ui| {
                     ui.set_clip_rect(area);
@@ -3340,12 +1141,7 @@ impl eframe::App for FadeWerkDjApp {
                     ui.painter().rect_filled(rect, 0.0, theme::panel());
                     // Kante beim Hereingleiten sichtbar machen
                     ui.painter().vline(rect.right() - 0.5, rect.y_range(), Stroke::new(1.0, theme::line()));
-                    // Statuszeile oben, darunter der Browser. Die Zeile wird danach gezeichnet, weil der Browser
-                    // (Stahl, Alu) seine Oberfläche etwas über den eigenen Rand hinaus malt
-                    let inner = rect.shrink(10.0);
-                    let (status_rect, browser_rect) = inner.split_top_bottom_at_y(inner.top() + SLIDE_STATUS_H);
-                    ui.scope_builder(egui::UiBuilder::new().max_rect(browser_rect.with_min_y(browser_rect.top() + 6.0)), |ui| show_browser(ui));
-                    ui.scope_builder(egui::UiBuilder::new().max_rect(status_rect), |ui| slide_status_line(ui, &slide_status));
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(rect.shrink(10.0)), |ui| show_browser(ui));
                 });
             }
             0.0
@@ -3475,144 +1271,78 @@ impl eframe::App for FadeWerkDjApp {
             fx_playing: self.ctl.shared.fx_playing(),
             fx_volume: self.fx_volume,
         };
-        let status = self.fade_status();
         let fade_model = FadeModel {
             auto: self.autofade.enabled,
             fade_secs: self.autofade.fade_secs,
             curve: self.curve,
             crossfader: self.crossfader,
-            status: &status,
+            transition: &transition,
+            show_transition: !auto_view,
             motor: self.motor,
             bass_swap: self.bass_swap,
             auto_sync: self.auto_sync,
         };
-        let playlists = &self.playlists;
-        let keys_map = &self.keys;
         let key_ref_track = key_ref.and_then(|(r, k)| Some((k, self.decks[r].path.as_deref()?)));
-        let metas = &self.metas;
-        let bpms = &self.bpms;
-        let sketches = self.fadewerk.then_some(&self.sketches);
-        let has = [self.decks[0].loaded_id != 0, self.decks[1].loaded_id != 0];
-        let playing = [self.ctl.shared.decks[0].is_playing(), self.ctl.shared.decks[1].is_playing()];
-        let preview_path = self.preview.as_ref().filter(|p| p.clip.is_none()).map(|p| p.path.as_path());
         let editor_audio = self.editor_audio(&ctx);
-        let deck_height_setting = self.settings.deck_height;
-        let center_tab = self.settings.center_tab.clone();
-        let mut new_center_tab: Option<Option<mixer_ui::CenterTab>> = None;
-        // Je Seite: Zelle des Players und Oberkante der Playlist, für den Griff dazwischen
-        let mut split_bounds = [(Rect::NOTHING, 0.0f32); 2];
-        let mut split_change: Option<f32> = None;
-
+        let views = views::Views {
+            decks: &decks_models,
+            mixer: &mixer_model,
+            fade: &fade_model,
+            transition: &transition,
+            playlists: &self.playlists,
+            info: playlist_ui::TrackInfo { metas: &self.metas, bpms: &self.bpms, keys: &self.keys, reference: key_ref_track, harmonic, compact },
+            has: [self.decks[0].loaded_id != 0, self.decks[1].loaded_id != 0],
+            playing: [self.ctl.shared.decks[0].is_playing(), self.ctl.shared.decks[1].is_playing()],
+            preview: self.preview.as_ref().filter(|p| p.clip.is_none()).map(|p| p.path.as_path()),
+            sketches: self.fadewerk.then_some(&self.sketch.map),
+            editor_audio: &editor_audio,
+            compact,
+            air_deck: status_model.on_air.as_ref().map_or(self.autofade.active, |o| o.deck),
+            off_air: std::array::from_fn(|d| self.on_air(1 - d) && !self.on_air(d)),
+            deck_height: self.settings.deck_height,
+            center_tab: self.settings.center_tab.as_deref().and_then(mixer_ui::CenterTab::from_key),
+        };
         egui::CentralPanel::default().frame(Frame::new().fill(theme::ground()).inner_margin(Margin::same(8))).show(ui, |ui| {
             if theme::brushed() {
                 crate::hw::brushed_overlay(ui.painter(), ui.max_rect().expand(8.0), 0.0, theme::skin().dark);
             } else if theme::alu() {
                 crate::hw::grain_overlay(ui.painter(), ui.max_rect().expand(8.0), 0.0, theme::skin().dark);
             }
-            // Links Player A über Playlist A, rechts B über B. Die Mitte (Mixer und Auto-Fade)
-            // läuft über die ganze Höhe, damit keine Zeile die andere in die Länge zieht.
-            let center_w = center_width(ui.available_width());
-            // Player wachsen mit ihrer Breite auch in der Höhe, damit sie nicht zu flachen Streifen werden
-            let deck_inner = (ui.available_width() - center_w) / 2.0 - 36.0;
-            // Höchstens gut die Hälfte der Höhe, damit die Playlist darunter Platz behält; auf kleinen
-            // Bildschirmen schrumpfen die Player. Hat der Nutzer die Kante gezogen, gilt seine Höhe.
-            let avail_h = ui.available_height();
-            let deck_max = DECK_ROW_HEIGHT * deck_ui::deck_scale(deck_inner);
-            let wanted = if deck_height_setting > 0.0 { deck_height_setting } else { deck_max.min(avail_h * 0.58) };
-            let deck_h = if compact { deck_ui::COMPACT_ROW } else { wanted.min(deck_max).min(avail_h - PLAYLIST_MIN).max(DECK_ROW_MIN) };
-            StripBuilder::new(ui).size(Size::remainder()).size(Size::exact(center_w)).size(Size::remainder()).horizontal(|mut cols| {
-                for side in [0usize, 2] {
-                    let d = side / 2;
-                    if side == 2 {
-                        cols.cell(|ui| {
-                            panel_frame(ui).show(ui, |ui| {
-                                ui.set_min_size(ui.available_size());
-                                egui::ScrollArea::vertical().id_salt("center").auto_shrink([false, false]).show(ui, |ui| {
-                                    mixer_ui::show_mixer(ui, &mixer_model, &mut mixer_actions);
-                                    ui.separator();
-                                    mixer_ui::show_fade(ui, &fade_model, &mut fade_actions);
-                                    let open = center_tab.as_deref().and_then(mixer_ui::CenterTab::from_key);
-                                    if let Some(t) = mixer_ui::show_tabs(ui, open, &mixer_model, &mut mixer_actions, &fade_model, &mut fade_actions) {
-                                        new_center_tab = Some(t);
-                                    }
-                                });
-                            });
-                        });
-                    }
-                    cols.strip(|b| {
-                        b.size(Size::exact(deck_h)).size(Size::remainder().at_least(120.0)).vertical(|mut rows| {
-                            rows.cell(|ui| {
-                                let cell = ui.max_rect();
-                                split_bounds[d].0 = cell;
-                                panel_frame(ui).show(ui, |ui| {
-                                    ui.set_min_size(ui.available_size());
-                                    deck_ui::show(ui, &decks_models[d], &mut deck_actions[d]);
-                                });
-                                end_warning(ui, cell.shrink(3.0), &decks_models[d]);
-                                if let Some(item) = deck_drop_zone(ui, cell.shrink(3.0), d) {
-                                    deck_drops.push((d, item));
-                                }
-                            });
-                            rows.cell(|ui| {
-                                split_bounds[d].1 = ui.max_rect().top();
-                                panel_frame(ui).show(ui, |ui| {
-                                    ui.set_min_size(ui.available_size());
-                                    let info = playlist_ui::TrackInfo { metas, bpms, keys: keys_map, reference: key_ref_track, harmonic, compact };
-                                    playlist_ui::show(ui, d, &playlists[d], has[d], playing[d], preview_path, &info, sketches, &editor_audio, &mut pl_actions[d]);
-                                });
-                            });
-                        });
-                    });
-                }
-            });
-            // Griff zwischen Player und Playlist: ziehen ändert die Höhe der Player, Doppelklick = automatisch
-            for (d, (cell, list_top)) in split_bounds.iter().enumerate().filter(|_| !compact) {
-                let y = (cell.bottom() + list_top) / 2.0;
-                let rect = Rect::from_min_max(pos2(cell.left() + 6.0, y - 4.0), pos2(cell.right() - 6.0, y + 4.0));
-                let resp = ui.interact(rect, egui::Id::new(("deck_split", d)), Sense::click_and_drag()).on_hover_cursor(egui::CursorIcon::ResizeRow);
-                if resp.hovered() || resp.dragged() {
-                    let line = Rect::from_center_size(rect.center(), vec2(rect.width() * 0.3, 3.0));
-                    ui.painter().rect_filled(line, 1.5, theme::dim());
-                }
-                if resp.double_clicked() {
-                    split_change = Some(0.0);
-                } else if resp.dragged() && resp.drag_delta().y != 0.0 {
-                    split_change = Some((deck_h + resp.drag_delta().y).max(DECK_ROW_MIN));
-                }
-                resp.on_hover_text(tr("Ziehen ändert die Höhe der Player, Doppelklick stellt sie wieder automatisch ein"));
+            if auto_view {
+                views::automatic(ui, &views, &mut vout);
+            } else {
+                views::live(ui, &views, &mut vout);
             }
         });
         drop(decks_models);
         self.browser_slid = slid;
-        match strip_click {
-            Some(StripClick::Settings) => browser_actions.push(BrowserAction::OpenSettings),
-            Some(StripClick::Fullscreen) => browser_actions.push(BrowserAction::ToggleFullscreen),
-            _ => {}
+        for a in status_actions {
+            self.status_action(a, now);
         }
-        if let Some(h) = split_change {
+        if let Some(h) = vout.deck_height {
             self.settings.deck_height = h;
             self.save_due = Some(now + 1.0);
         }
 
-        for (d, acts) in deck_actions.into_iter().enumerate() {
+        for (d, acts) in vout.deck.into_iter().enumerate() {
             for a in acts {
                 self.deck_action(d, a, now);
             }
         }
-        for (d, item) in deck_drops {
+        for (d, item) in vout.drops {
             self.drop_on_deck(d, item, now);
         }
-        for a in mixer_actions {
+        for a in vout.mixer {
             self.mixer_action(a, now);
         }
-        if let Some(t) = new_center_tab {
+        if let Some(t) = vout.center_tab {
             self.settings.center_tab = t.map(|t| t.key().to_owned());
             self.save_settings();
         }
-        for a in fade_actions {
+        for a in vout.fade {
             self.fade_action(a, now);
         }
-        for (d, acts) in pl_actions.into_iter().enumerate() {
+        for (d, acts) in vout.playlist.into_iter().enumerate() {
             for a in acts {
                 self.playlist_action(d, a, now);
             }
@@ -3625,32 +1355,22 @@ impl eframe::App for FadeWerkDjApp {
 
         self.update_ui(&ctx, now);
 
-        // Hinweis unten in der Mitte
+        // Hinweise stehen in der Statuszeile; hier nur, wie lange sie gelten
         if let Some((text, until)) = self.notice.clone() {
             if until > 0.0 && now > until {
                 self.notice = None;
+            } else if until == 0.0 {
+                self.notice = Some((text, now + 6.0));
             } else {
-                if until == 0.0 {
-                    self.notice = Some((text.clone(), now + 6.0));
-                }
-                egui::Area::new(egui::Id::new("notice")).anchor(Align2::CENTER_BOTTOM, vec2(0.0, -24.0)).show(&ctx, |ui| {
-                    Frame::new().fill(theme::ink()).corner_radius(CornerRadius::same(5)).inner_margin(Margin::symmetric(14, 8)).show(ui, |ui| {
-                        // Die Fläche kennt ihre Breite erst nach dem ersten Bild und bräche sonst zu früh um:
-                        // kurze Hinweise einzeilig, lange auf eine feste Breite umbrechen
-                        const NOTICE_MAX_W: f32 = 560.0;
-                        let font = egui::TextStyle::Body.resolve(ui.style());
-                        let w = ui.painter().layout_no_wrap(text.clone(), font, theme::ground()).size().x;
-                        let label = egui::Label::new(RichText::new(text).color(theme::ground()).strong());
-                        if w <= NOTICE_MAX_W {
-                            ui.add(label.wrap_mode(egui::TextWrapMode::Extend));
-                        } else {
-                            ui.set_width(NOTICE_MAX_W);
-                            ui.add(label.wrap());
-                        }
-                    });
-                });
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64((until - now).max(0.05)));
             }
         }
+
+        // Befehlssuche: ⌘K bzw. Strg+K
+        if ctx.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::K))) {
+            self.palette.open();
+        }
+        self.show_palette(&ctx, now);
 
         // Vollbild: F11 überall, auf macOS zusätzlich ⌃⌘F (wie die grüne Fenstertaste)
         let fs_key = ctx.input_mut(|i| {
@@ -3693,14 +1413,14 @@ impl eframe::App for FadeWerkDjApp {
         }
         let mut settings_actions = Vec::new();
         // Cache-Größen nur messen, solange die Einstellungen offen sind; beim nächsten Öffnen frisch
-        if let Some(rx) = &self.cache_sizes_rx
+        if let Some(rx) = &self.caches.sizes_rx
             && let Ok(sizes) = rx.try_recv()
         {
-            self.cache_sizes = Some(sizes);
-            self.cache_sizes_rx = None;
+            self.caches.sizes = Some(sizes);
+            self.caches.sizes_rx = None;
         }
         if !self.settings_ui.open {
-            self.cache_sizes = None;
+            self.caches.sizes = None;
         }
         let sctx = SettingsCtx {
             settings: &self.settings,
@@ -3709,7 +1429,7 @@ impl eframe::App for FadeWerkDjApp {
             active_head: self.head_audio.as_ref().map(|h| h.device.as_str()),
             sample_rate: self.ctl.shared.sample_rate,
             channels: self.ctl.shared.channels,
-            cache_sizes: self.cache_sizes,
+            cache_sizes: self.caches.sizes,
             playing: self.ctl.shared.decks.iter().any(|s| s.is_playing()),
             compact: self.compact(),
         };
@@ -3872,10 +1592,10 @@ impl Drop for FadeWerkDjApp {
         self.save_settings();
         self.save_session_if_changed();
         if self.persist {
-            self.bpm_cache.save_if_dirty();
-            self.key_cache.save_if_dirty();
-            self.tag_cache.save_if_dirty(true);
-            self.folder_cache.save_if_dirty();
+            self.caches.bpm.save_if_dirty();
+            self.caches.key.save_if_dirty();
+            self.caches.tag.save_if_dirty(true);
+            self.caches.folder.save_if_dirty();
             self.history.save_dirty();
         }
     }
