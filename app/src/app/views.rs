@@ -70,14 +70,12 @@ pub(super) fn automatic(ui: &mut egui::Ui, v: &Views<'_>, out: &mut ViewOut) {
                 let right = Rect::from_min_max(pos2(band.right() - card_w, band.top()), band.max);
                 let controls = Rect::from_min_max(pos2(right.left() - gap - controls_w, band.top()), pos2(right.left() - gap, band.bottom()));
                 let display = Rect::from_min_max(pos2(left.right() + gap, band.top()), pos2(controls.left() - gap, band.bottom()));
-                // Jede Karte bedient ihren eigenen Player (Tasten nur in einer wirkten, als gehörten sie zu A)
-                let air = v.air_deck;
-                let (now_out, next_out) = {
-                    let [a, b] = &mut out.deck;
-                    if air == 0 { (a, b) } else { (b, a) }
-                };
-                deck_ui::hero_card(ui, left, &v.decks[air], false, tr("JETZT"), Some(now_out));
-                deck_ui::hero_card(ui, right, &v.decks[1 - air], true, tr("ALS NÄCHSTES"), Some(next_out));
+                // A sitzt immer links, B immer rechts; nur die Beschriftung zeigt, wer gerade spielt. Jede Karte
+                // bedient ihren eigenen Player (Tasten nur in einer wirkten, als gehörten sie zu A)
+                let caption = |d: usize| if d == v.air_deck { tr("JETZT") } else { tr("ALS NÄCHSTES") };
+                let [a_out, b_out] = &mut out.deck;
+                deck_ui::hero_card(ui, left, &v.decks[0], false, caption(0), Some(a_out));
+                deck_ui::hero_card(ui, right, &v.decks[1], true, caption(1), Some(b_out));
                 // Display: Pegel links, feine Trennlinie, rechts der Übergang
                 crate::hw::well(ui.painter(), display, 6.0);
                 // Kompakt schmaler, aber nur ohne Frequenzbänder: zwischen L und R von MAIN passen sonst keine Säulen
