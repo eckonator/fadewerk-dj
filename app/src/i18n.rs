@@ -476,6 +476,7 @@ fn en(de: &str) -> Option<&'static str> {
         "In der kompakten Ansicht gibt es keine Plattenteller." => "The compact view has no platters.",
         "Kompakte Ansicht" => "Compact view",
         "Auf diesem Mac zeichnet nur der Prozessor. FadeWerk DJ zeichnet deshalb sparsam (umstellbar unter Einstellungen → Leistung)." => "On this Mac only the processor draws. FadeWerk DJ therefore uses lean drawing (can be changed under Settings → Performance).",
+        "Datum und Uhrzeit automatisch einstellen: Die Uhr steht auf dem {}, so scheitern Updates." => "Set date and time automatically: the clock is set to {}, so updates fail.",
         "Die Grafik zeichnete nur in Software. FadeWerk DJ nutzt jetzt OpenGL (abschaltbar unter Einstellungen → Leistung)." => "Graphics were only drawn in software. FadeWerk DJ now uses OpenGL (can be turned off under Settings → Performance).",
         "Für die Update-Prüfung fehlt das Programm curl (unter Debian/Ubuntu: sudo apt install curl)." => "The update check needs the program curl (on Debian/Ubuntu: sudo apt install curl).",
         "Die Audio-Ausgabe hing und wurde neu gestartet" => "The audio output got stuck and was restarted",

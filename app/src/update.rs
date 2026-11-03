@@ -29,6 +29,22 @@ pub enum CheckError {
     Offline,
     /// Das Programm `curl` fehlt (etwa auf schlanken Linux-Installationen).
     NoCurl,
+    /// Die Uhr des Rechners geht falsch (vor dem Bau dieser Version, oder curl hält das Zertifikat für noch nicht
+    /// gültig). Dann scheitert jede sichere Verbindung (MacBook mit Datum 2001, Nutzerbericht 2026-11-03).
+    ClockWrong,
+}
+
+/// Toleranz, bevor die Uhr als falsch gilt (Zeitzonen, Bau kurz vor Mitternacht).
+const CLOCK_SLACK_SECS: u64 = 24 * 60 * 60;
+
+/// Steht die Uhr vor dem Bauzeitpunkt dieser Version (mit einem Tag Spielraum)?
+pub fn clock_wrong() -> bool {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    before_build(now, env!("FW_BUILD_SECS").parse().unwrap_or(0))
+}
+
+fn before_build(now: u64, build: u64) -> bool {
+    now + CLOCK_SLACK_SECS < build
 }
 
 /// Startet die Abfrage im Hintergrund; das Ergebnis kommt über den Empfänger (`Ok(None)` = nichts Neues).
@@ -54,6 +70,10 @@ fn check() -> Result<Option<NewVersion>, CheckError> {
         .ok()
         .filter(|_| cfg!(debug_assertions))
         .unwrap_or_else(|| LATEST_URL.into());
+    if clock_wrong() {
+        log::warn!("Update-Prüfung: Die Uhr des Rechners steht vor dem Bau dieser Version");
+        return Err(CheckError::ClockWrong);
+    }
     let mut cmd = Command::new("curl");
     cmd.args(["-fsSL", "--max-time", "8", "-H", "Accept: application/vnd.github+json", "-A", "FadeWerk-DJ-Updatepruefung"])
         .arg(&url);
@@ -68,8 +88,16 @@ fn check() -> Result<Option<NewVersion>, CheckError> {
             log::warn!("Update-Prüfung: curl nicht gefunden");
             return Err(CheckError::NoCurl);
         }
-        Err(_) => return Err(CheckError::Offline),
-        Ok(o) if !o.status.success() => return Err(CheckError::Offline),
+        Err(e) => {
+            log::warn!("Update-Prüfung: curl ließ sich nicht starten ({e})");
+            return Err(CheckError::Offline);
+        }
+        Ok(o) if !o.status.success() => {
+            let err = String::from_utf8_lossy(&o.stderr);
+            log::warn!("Update-Prüfung gescheitert ({}): {}", o.status, err.trim());
+            // Zertifikat „noch nicht gültig“: Die Uhr geht nach, auch wenn sie nach dem Bau dieser Version steht
+            return Err(if err.contains("not yet valid") { CheckError::ClockWrong } else { CheckError::Offline });
+        }
         Ok(o) => o,
     };
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|_| CheckError::Offline)?;
@@ -98,6 +126,16 @@ pub fn newer(a: &str, b: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn clock_before_build_is_wrong() {
+        let build = 1_793_000_000; // November 2026
+        assert!(super::before_build(978_307_200, build)); // 1. Januar 2001
+        assert!(!super::before_build(build, build));
+        // Ein paar Stunden Zeitzone schaden nicht
+        assert!(!super::before_build(build - 6 * 3600, build));
+        assert!(!super::before_build(build + 86_400 * 400, build));
+    }
+
     use super::*;
 
     #[test]

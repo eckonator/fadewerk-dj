@@ -288,6 +288,12 @@ impl FadeWerkDjApp {
                     let text = tr("Für die Update-Prüfung fehlt das Programm curl (unter Debian/Ubuntu: sudo apt install curl).");
                     self.notice = Some((text.to_owned(), now + 12.0));
                 }
+                // Falsche Uhr: Auch die automatische Prüfung meldet es, sonst bleibt unerklärlich, warum nie ein Update kommt
+                Err(crate::update::CheckError::ClockWrong) => {
+                    let date = jiff::Zoned::now().strftime("%d.%m.%Y").to_string();
+                    let text = trf("Datum und Uhrzeit automatisch einstellen: Die Uhr steht auf dem {}, so scheitern Updates.", &[&date]);
+                    self.notice = Some((text, now + 20.0));
+                }
                 Err(_) if manual => self.notify(tr("GitHub ist nicht erreichbar, bitte später noch einmal versuchen."), now),
                 _ => {}
             }
