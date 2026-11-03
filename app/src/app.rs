@@ -71,6 +71,8 @@ const OFF_AIR_DIM: f32 = 0.38;
 
 /// Bildabstand der sparsamen Darstellung (30 Bilder pro Sekunde), solange sich etwas bewegt.
 const LITE_FRAME: std::time::Duration = std::time::Duration::from_millis(33);
+/// Bildabstand der vollen Optik, solange sich etwas bewegt (60 Bilder pro Sekunde).
+const FULL_FRAME: std::time::Duration = std::time::Duration::from_micros(16_667);
 /// Im Ruhezustand nur so oft neu zeichnen (ohne Eingaben), damit Zustände aus dem Audio-Thread ankommen.
 const IDLE_FRAME: std::time::Duration = std::time::Duration::from_millis(250);
 /// Dasselbe in der sparsamen Darstellung: Eingaben und Antworten aus dem Hintergrund zeichnen ohnehin sofort.
@@ -564,6 +566,9 @@ impl FadeWerkDjApp {
         }
         if std::env::args().any(|a| a == crate::self_update::AFTER_OPENGL_FLAG) {
             app.notice = Some((tr("Die Grafik zeichnete nur in Software. FadeWerk DJ nutzt jetzt OpenGL (abschaltbar unter Einstellungen → Leistung).").to_owned(), 0.0));
+        }
+        if crate::diagnose::LEAN_FOR_OLD_GPU.load(std::sync::atomic::Ordering::Relaxed) {
+            app.notice = Some((tr("Diese Grafikkarte kann kein Metal. FadeWerk DJ zeichnet deshalb sparsam (umstellbar unter Einstellungen → Leistung).").to_owned(), 0.0));
         }
         if std::env::args().any(|a| a == crate::self_update::AFTER_RESET_FLAG) {
             app.notice = Some((tr("FadeWerk DJ wurde zurückgesetzt.").to_owned(), 0.0));
@@ -1530,7 +1535,13 @@ impl eframe::App for FadeWerkDjApp {
             let monitor_frame = std::time::Duration::from_secs_f32(ctx.input(|i| i.predicted_dt).clamp(0.0, 0.05));
             ctx.request_repaint_after(pause + monitor_frame);
         } else {
-            ctx.request_repaint();
+            // Volle Optik: höchstens 60 Bilder/s (auf 120-Hz-Bildschirmen kaum zu sehen, halbiert die Arbeit).
+            // Dauert ein Bild länger als die Pause (alte Rechner), wartet die nächste so lange, wie das Bild
+            // brauchte: Die Oberfläche nimmt dann höchstens etwa die Hälfte der Rechenzeit
+            let work = frame.info().cpu_usage.unwrap_or(0.0).clamp(0.0, 0.5);
+            let pause = FULL_FRAME.max(std::time::Duration::from_secs_f32(work));
+            let monitor_frame = std::time::Duration::from_secs_f32(ctx.input(|i| i.predicted_dt).clamp(0.0, 0.05));
+            ctx.request_repaint_after(pause + monitor_frame);
         }
     }
 }

@@ -753,31 +753,29 @@ const RECORD_SLIDE_SECS: f32 = 0.5;
 /// nach außen aus dem Player (A nach links, B nach rechts), beim Laden von dort wieder herein.
 fn paint_platter(ui: &egui::Ui, c: Pos2, r: f32, angle: f32, color: Color32, m: &DeckModel<'_>, grabbing: bool) {
     let p = ui.painter();
-    let rot = |a: f32, rr: f32| c + vec2((a + angle).cos(), (a + angle).sin()) * rr;
     // Ohne Effekte kein Schatten und Lichtreflex, einfache Formen: weniger Stroboskop-Punkte und Rillen
     let lite = theme::lite();
 
-    // Schatten unter dem Teller, dann Metallrand mit Glanz oben links und Stroboskop-Punkten
+    // Schatten unter dem Teller, dann Metallrand mit Stroboskop-Punkten und Gummimatte mit feinen Ringen (sichtbar,
+    // wenn keine Platte aufliegt). Teller und Matte sind ein fertiges Bild, das mitdreht (siehe `paint_disc`)
     for k in 0..if lite.flat { 0 } else { 6 } {
         p.circle_filled(c + vec2(0.0, 5.0), r + 4.0 - k as f32 * 1.5, Color32::from_black_alpha(18));
     }
-    p.circle_filled(c, r, hw::platter_rim());
+    let mut platter = vec![
+        Disc::Fill(1.0, hw::platter_rim()),
+        Disc::Ring(0.915, 2.0, Color32::from_black_alpha(140)),
+        Disc::Dots(72, 0.955, (r * 0.012).max(1.0), Color32::from_rgb(0xcf, 0xd6, 0xe4)),
+        Disc::Fill(0.91, Color32::from_rgb(0x1a, 0x1d, 0x24)),
+    ];
+    platter.extend((1..=5).map(|k| Disc::Ring((0.18 * k as f32).min(0.88), 1.0, Color32::from_white_alpha(10))));
+    paint_disc(p, c, r, angle, &platter);
+    // Glanz oben links, Schatten unten rechts: steht still, während der Teller dreht
     let arc = |from: f32, to: f32, rr: f32, stroke: Stroke| {
         let pts: Vec<Pos2> = (0..=24).map(|i| { let t = from + (to - from) * i as f32 / 24.0; c + vec2(t.cos(), t.sin()) * rr }).collect();
         p.add(egui::Shape::line(pts, stroke));
     };
     arc(3.4, 5.4, r - 1.5, Stroke::new(2.5, Color32::from_white_alpha(60)));
     arc(0.3, 2.3, r - 1.5, Stroke::new(2.5, Color32::from_black_alpha(90)));
-    p.circle_stroke(c, r * 0.915, Stroke::new(2.0, Color32::from_black_alpha(140)));
-    let dots = if lite.shapes { 24 } else { 72 };
-    for i in 0..dots {
-        p.circle_filled(rot(i as f32 / dots as f32 * TAU, r * 0.955), (r * 0.012).max(1.0), Color32::from_rgb(0xcf, 0xd6, 0xe4));
-    }
-    // Gummimatte mit feinen Ringen, sichtbar, wenn keine Platte aufliegt
-    p.circle_filled(c, r * 0.91, Color32::from_rgb(0x1a, 0x1d, 0x24));
-    for k in 1..=if lite.shapes { 2 } else { 5 } {
-        p.circle_stroke(c, r * (0.18 * k as f32).min(0.88), Stroke::new(1.0, Color32::from_white_alpha(10)));
-    }
     let pin = |p: &egui::Painter| p.circle_filled(c, r * 0.03, Color32::from_rgb(0xcf, 0xd6, 0xe4));
     pin(p);
 
@@ -812,18 +810,13 @@ fn paint_platter(ui: &egui::Ui, c: Pos2, r: f32, angle: f32, color: Color32, m: 
         p.circle_filled(c + vec2(0.0, 4.0), r * 0.92, Color32::from_black_alpha(70));
     }
 
-    // Vinyl mit Rillen; mit Cover bleibt nur ein schmaler Rillenrand außen (Picture-Disc)
-    p.circle_filled(c, r * 0.91, Color32::from_rgb(0x0b, 0x0b, 0x0e));
+    // Vinyl mit Rillen; mit Cover bleibt nur ein schmaler Rillenrand außen (Picture-Disc). Die Rillen sind rund,
+    // das Bild braucht nicht mitzudrehen
+    let inner = if cover.is_some() { COVER_RADIUS + 0.012 } else { 0.36 };
+    paint_disc(p, c, r, 0.0, &[Disc::Fill(0.91, Color32::from_rgb(0x0b, 0x0b, 0x0e)), Disc::Grooves(inner, 0.89, 0.022)]);
     if let Some(tex) = cover {
         paint_cover(p, c, r * COVER_RADIUS, angle, tex);
         p.circle_stroke(c, r * COVER_RADIUS, Stroke::new((r * 0.008).max(1.0), Color32::from_black_alpha(200)));
-    }
-    let mut rr = if cover.is_some() { r * (COVER_RADIUS + 0.012) } else { r * 0.36 };
-    let mut k = 0;
-    while rr < r * 0.89 {
-        p.circle_stroke(c, rr, Stroke::new(1.0, Color32::from_white_alpha(if k % 3 == 0 { 12 } else { 6 })));
-        rr += r * if lite.shapes { 0.066 } else { 0.022 };
-        k += 1;
     }
     // Lichtreflex steht still, während die Platte darunter dreht
     let reflexes: &[(f32, u8)] = if lite.flat { &[] } else { &[(-2.4, 16), (0.7, 10)] };
@@ -1047,6 +1040,113 @@ fn paint_cover(p: &egui::Painter, c: Pos2, radius: f32, angle: f32, tex: egui::T
         }
     }
     p.add(mesh);
+}
+
+/// Bestandteil eines runden Bildes für [`paint_disc`]. Radien in Tellerradien, Breiten in Punkten.
+#[derive(Clone, Copy, PartialEq)]
+enum Disc {
+    /// Gefüllter Kreis.
+    Fill(f32, Color32),
+    /// Ring: Radius, Strichbreite.
+    Ring(f32, f32, Color32),
+    /// Rillen von innen nach außen im festen Abstand, jede dritte heller.
+    Grooves(f32, f32, f32),
+    /// Punkte rundum: Anzahl, Radius des Kreises, auf dem sie liegen, Punktradius in Punkten.
+    Dots(u32, f32, f32, Color32),
+}
+
+/// Teller-Bilder in diesen Pixelschritten: Beim Ziehen am Fenster entsteht nicht jedes Bild neu, das fertige Bild
+/// wird auf die genaue Größe gestreckt.
+const DISC_PX_STEP: f32 = 16.0;
+
+/// Zeichnet etwas Rundes aus vielen Ringen als ein einziges, fertiges Bild (um `angle` gedreht). Rillen, Matte und
+/// Stroboskop-Punkte waren als einzelne Formen ein Drittel aller Vertices der Oberfläche, die jedes Bild neu
+/// zerlegt und hochgeladen wurden. Das Bild entsteht nur bei neuer Größe oder Farbe und liegt im egui-Speicher.
+fn paint_disc(p: &egui::Painter, c: Pos2, r: f32, angle: f32, parts: &[Disc]) {
+    #[derive(Clone)]
+    struct Cached(Vec<(u32, Vec<Disc>, egui::TextureHandle)>);
+    let ctx = p.ctx();
+    let ppp = ctx.pixels_per_point();
+    // Halber Bildrand in Pixeln, auf den Schritt aufgerundet; ein Pixel Luft für die weiche Kante
+    let half = ((r * ppp + 1.0) / DISC_PX_STEP).ceil() as u32 * DISC_PX_STEP as u32;
+    let id = egui::Id::new("teller-bilder");
+    let mut cache = ctx.data(|d| d.get_temp::<Cached>(id)).unwrap_or(Cached(Vec::new()));
+    let tex = match cache.0.iter().find(|(h, ps, _)| *h == half && ps == parts) {
+        Some((_, _, t)) => t.id(),
+        None => {
+            // Die Größe, für die das Bild gerechnet wird: Tellerradius in Pixeln bei vollem Bildrand
+            let image = rasterize_disc(half, (half - 1) as f32, ppp, parts);
+            let t = ctx.load_texture("teller", image, egui::TextureOptions::LINEAR);
+            let tid = t.id();
+            // Zwei Player, je Teller und Platte (mit/ohne Cover): mehr braucht es nicht gleichzeitig
+            if cache.0.len() >= 6 {
+                drop(cache.0.remove(0));
+            }
+            cache.0.push((half, parts.to_vec(), t));
+            ctx.data_mut(|d| d.insert_temp(id, cache));
+            tid
+        }
+    };
+    // Das Bild hat den Tellerradius bei `half - 1` Pixeln; so groß, dass es genau `r` trifft
+    let ext = r * half as f32 / (half - 1) as f32;
+    let mut mesh = egui::Mesh::with_texture(tex);
+    mesh.add_rect_with_uv(Rect::from_center_size(c, vec2(2.0 * ext, 2.0 * ext)), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+    if angle != 0.0 {
+        mesh.rotate(egui::emath::Rot2::from_angle(angle), c);
+    }
+    p.add(mesh);
+}
+
+/// Rechnet ein rundes Bild (`2 · half` Pixel im Quadrat, Tellerradius `r_px`) mit weichen Kanten. Farben sind
+/// vormultipliziert wie in egui, die Teile liegen in ihrer Reihenfolge übereinander.
+fn rasterize_disc(half: u32, r_px: f32, ppp: f32, parts: &[Disc]) -> egui::ColorImage {
+    let n = 2 * half as usize;
+    let mut pixels = vec![Color32::TRANSPARENT; n * n];
+    // Deckung eines Strichs der Breite `w` (Pixel) im Abstand `dist` von seiner Mitte; Summe über den Querschnitt = w
+    let line = |dist: f32, w: f32| (w.max(1.0) / 2.0 + 0.5 - dist.abs()).clamp(0.0, 1.0) * w.min(1.0);
+    for y in 0..n {
+        for x in 0..n {
+            let v = vec2(x as f32 + 0.5 - half as f32, y as f32 + 0.5 - half as f32);
+            let d = v.length();
+            if d > half as f32 {
+                continue;
+            }
+            let mut out = [0.0f32; 4];
+            for part in parts {
+                let (color, a) = match *part {
+                    Disc::Fill(rad, color) => (color, (rad * r_px - d + 0.5).clamp(0.0, 1.0)),
+                    Disc::Ring(rad, w, color) => (color, line(d - rad * r_px, w * ppp)),
+                    Disc::Grooves(from, to, step) => {
+                        // Nächste Rille; sie liegen weit genug auseinander, dass nur sie zählt
+                        let k = ((d / r_px - from) / step).round().max(0.0);
+                        let rad = from + k * step;
+                        if rad >= to {
+                            continue;
+                        }
+                        let color = Color32::from_white_alpha(if (k as u32).is_multiple_of(3) { 12 } else { 6 });
+                        (color, line(d - rad * r_px, ppp))
+                    }
+                    Disc::Dots(count, rad, dot, color) => {
+                        let step = TAU / count as f32;
+                        let k = (v.y.atan2(v.x) / step).round();
+                        let center = vec2((k * step).cos(), (k * step).sin()) * rad * r_px;
+                        (color, (dot * ppp - (v - center).length() + 0.5).clamp(0.0, 1.0))
+                    }
+                };
+                if a <= 0.0 {
+                    continue;
+                }
+                let src = color.to_array().map(|ch| ch as f32 / 255.0 * a);
+                let keep = 1.0 - src[3];
+                for (o, s) in out.iter_mut().zip(src) {
+                    *o = s + *o * keep;
+                }
+            }
+            let [r, g, b, a] = out.map(|ch| (ch * 255.0).round().clamp(0.0, 255.0) as u8);
+            pixels[y * n + x] = Color32::from_rgba_premultiplied(r, g, b, a);
+        }
+    }
+    egui::ColorImage::new([n, n], pixels)
 }
 
 /// Pitch-Spalte (mit Filter) mittig zwischen Bedienfeld und Außenkante des Players setzen, statt an der Kante

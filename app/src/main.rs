@@ -88,6 +88,14 @@ fn main() -> eframe::Result {
     {
         log::error!("Grafik über wgpu nicht verfügbar ({e}), versuche OpenGL");
         settings.opengl = true;
+        // Auf dem Mac heißt das: kein Metal, also ein Rechner von vor etwa 2012 (auch mit OpenCore Legacy Patcher).
+        // Dort zeichnet sogar der WindowServer ohne Metal, die volle Optik ist zu schwer. Einmalig sparsam
+        // einstellen; danach startet die App gleich mit OpenGL und kommt hier nicht mehr vorbei
+        if cfg!(target_os = "macos") {
+            settings.lite = theme::Lite::ALL;
+            settings.platters = false;
+            diagnose::LEAN_FOR_OLD_GPU.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         if !isolated {
             settings.save();
         }

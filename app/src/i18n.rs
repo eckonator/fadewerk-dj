@@ -475,6 +475,7 @@ fn en(de: &str) -> Option<&'static str> {
         "Plattenspieler ausblenden" => "Hide turntables",
         "In der kompakten Ansicht gibt es keine Plattenteller." => "The compact view has no platters.",
         "Kompakte Ansicht" => "Compact view",
+        "Diese Grafikkarte kann kein Metal. FadeWerk DJ zeichnet deshalb sparsam (umstellbar unter Einstellungen → Leistung)." => "This graphics card does not support Metal. FadeWerk DJ therefore uses lean drawing (can be changed under Settings → Performance).",
         "Die Grafik zeichnete nur in Software. FadeWerk DJ nutzt jetzt OpenGL (abschaltbar unter Einstellungen → Leistung)." => "Graphics were only drawn in software. FadeWerk DJ now uses OpenGL (can be turned off under Settings → Performance).",
         "Für die Update-Prüfung fehlt das Programm curl (unter Debian/Ubuntu: sudo apt install curl)." => "The update check needs the program curl (on Debian/Ubuntu: sudo apt install curl).",
         "Die Audio-Ausgabe hing und wurde neu gestartet" => "The audio output got stuck and was restarted",
