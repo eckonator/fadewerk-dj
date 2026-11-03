@@ -27,6 +27,7 @@ mod i18n;
 mod keynav;
 mod meter;
 mod mixer_ui;
+mod plate;
 mod playlist;
 mod playlist_ui;
 mod quiet;

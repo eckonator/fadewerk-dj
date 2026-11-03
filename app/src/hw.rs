@@ -5,12 +5,13 @@
 //! Alles leitet sich aus den Farben des aktiven Skins ab.
 
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, FontId, Painter, Pos2, Rect, Response, Sense, Shadow, Stroke, StrokeKind,
+    self, Align2, Color32, FontId, Painter, Pos2, Rect, Response, Sense, Stroke, StrokeKind,
     epaint::{CornerRadiusF32, Mesh, tessellator::path::rounded_rectangle},
     pos2, vec2,
 };
 
 use crate::fonts;
+use crate::plate::{self, Layer};
 use crate::theme::{self, mix};
 
 pub fn lighten(c: Color32, t: f32) -> Color32 {
@@ -52,7 +53,7 @@ pub fn gradient_rrect(p: &Painter, rect: Rect, radius: f32, top: Color32, bottom
 }
 
 /// Kantenpunkte eines abgerundeten Rechtecks.
-fn rrect_points(rect: Rect, radius: f32) -> Vec<Pos2> {
+pub fn rrect_points(rect: Rect, radius: f32) -> Vec<Pos2> {
     let mut pts = Vec::with_capacity(64);
     rounded_rectangle(&mut pts, rect, CornerRadiusF32::same(radius));
     pts
@@ -242,24 +243,6 @@ pub fn grain_overlay(p: &Painter, rect: Rect, radius: f32, dark: bool) {
     p.add(mesh);
 }
 
-/// Gefaste Lichtkante (wie diamantgedrehte Kanten an Aluminiumgehäusen): eine feine helle Linie
-/// rundum, oben am hellsten, nach unten auslaufend. `top`/`bottom` = Deckkraft des Weiß.
-fn chamfer(p: &Painter, rect: Rect, radius: f32, top: u8, bottom: u8) {
-    let pts = rrect_points(rect, radius);
-    let n = pts.len();
-    if n < 2 {
-        return;
-    }
-    let h = rect.height().max(1.0);
-    for i in 0..n {
-        let (a, b) = (pts[i], pts[(i + 1) % n]);
-        let t = (((a.y + b.y) / 2.0 - rect.top()) / h).clamp(0.0, 1.0);
-        // Oben kräftig, schnell auf den unteren Wert
-        let alpha = bottom as f32 + (top as f32 - bottom as f32) * (1.0 - t).powi(3);
-        p.line_segment([a, b], Stroke::new(1.0, Color32::from_white_alpha(alpha as u8)));
-    }
-}
-
 /// Lichtreflex von gebürstetem Metall: Die Rillen laufen waagerecht, darum ziehen sich die Reflexe
 /// senkrecht über die Fläche (helle und dunkle Lichtsäulen). Lage leicht je Fläche versetzt.
 fn sheen(p: &Painter, rect: Rect, dark: bool) {
@@ -323,12 +306,31 @@ pub fn surface(p: &Painter, rect: Rect, radius: f32, top: Color32, bottom: Color
     }
 }
 
-fn shadow(p: &Painter, rect: Rect, radius: f32, dy: i8, blur: u8, alpha: u8) {
-    if theme::lite().flat {
-        return;
+/// Schatten als Schicht eines Flächenbilds (ohne Effekte keiner), wie egui `Shadow`.
+fn shadow_layer(radius: f32, dy: f32, blur: f32, alpha: u8) -> Option<Layer> {
+    (!theme::lite().flat).then_some(Layer::Shadow { radius: radius.floor(), dy, blur, color: Color32::from_black_alpha(alpha) })
+}
+
+/// Verlauf als Schicht eines Flächenbilds, ohne Effekte einfarbig (wie [`gradient_rrect`]).
+fn gradient_layer(inset: [f32; 3], radius: f32, top: Color32, bottom: Color32) -> Layer {
+    let (top, bottom) = if theme::lite().flat { (mix(top, bottom, 0.5), mix(top, bottom, 0.5)) } else { (top, bottom) };
+    Layer::Fill { inset, radius, top, bottom }
+}
+
+/// Liegt über einer Fläche eine Struktur (Stahl, gestrahltes Alu)? Dann kommen Rahmen und Lichtkante in ein zweites
+/// Bild darüber, damit die Struktur zwischen Fläche und Kante liegt wie bisher.
+fn texture_overlay(p: &Painter, rect: Rect, radius: f32) -> bool {
+    let dark = theme::skin().dark;
+    if theme::brushed() {
+        brushed_overlay(p, rect, radius, dark);
+        sheen(p, rect, dark);
+        true
+    } else if theme::alu() {
+        grain_overlay(p, rect, radius, dark);
+        true
+    } else {
+        false
     }
-    let s = Shadow { offset: [0, dy], blur, spread: 0, color: Color32::from_black_alpha(alpha) };
-    p.add(s.as_shape(rect, CornerRadius::same(radius as u8)));
 }
 
 /// Gehäuse-Panel: Schlagschatten, Licht von oben, Glanzkante.
@@ -339,19 +341,27 @@ pub fn panel(p: &Painter, rect: Rect) {
         return;
     }
     let r = 8.0;
-    shadow(p, rect, r, 5, 16, if s.dark { 150 } else { 60 });
-    if theme::brushed() {
+    let (top, bottom) = if theme::brushed() {
         // Stahl ist heller und glänzender als lackiertes Blech
         let face = steel_face(s.panel, s.dark);
-        surface(p, rect, r, lighten(face, 0.08), darken(face, 0.22));
+        (lighten(face, 0.08), darken(face, 0.22))
     } else {
-        gradient_rrect(p, rect, r, lighten(s.panel, if s.dark { 0.07 } else { 0.5 }), darken(s.panel, if s.dark { 0.22 } else { 0.06 }));
+        (lighten(s.panel, if s.dark { 0.07 } else { 0.5 }), darken(s.panel, if s.dark { 0.22 } else { 0.06 }))
+    };
+    let mut under: Vec<Layer> = shadow_layer(r, 5.0, 16.0, if s.dark { 150 } else { 60 }).into_iter().collect();
+    under.push(gradient_layer([0.0; 3], r, top, bottom));
+    let edge = [
+        Layer::Stroke { inset: 0.0, radius: r, width: 1.0, color: darken(s.line, 0.25), outside: false },
+        Layer::HLine { y: 1.5, from_bottom: false, x_inset: r, width: 1.0, color: Color32::from_white_alpha(if s.dark { 28 } else { 160 }) },
+    ];
+    if theme::brushed() {
+        plate::paint(p, rect, &under);
+        texture_overlay(p, rect, r);
+        plate::paint(p, rect, &edge);
+    } else {
+        under.extend(edge);
+        plate::paint(p, rect, &under);
     }
-    p.rect_stroke(rect, r, Stroke::new(1.0, darken(s.line, 0.25)), StrokeKind::Inside);
-    p.line_segment(
-        [pos2(rect.left() + r, rect.top() + 1.5), pos2(rect.right() - r, rect.top() + 1.5)],
-        Stroke::new(1.0, Color32::from_white_alpha(if s.dark { 28 } else { 160 })),
-    );
 }
 
 /// Gehäuse aus eloxiertem Aluminium: weicher, tiefer Schatten, kaum Verlauf, gestrahltes Korn,
@@ -359,12 +369,16 @@ pub fn panel(p: &Painter, rect: Rect) {
 fn alu_panel(p: &Painter, rect: Rect) {
     let s = theme::skin();
     let r = 10.0;
-    shadow(p, rect, r, 8, 26, if s.dark { 190 } else { 70 });
     let face = if theme::brushed() { steel_face(s.panel, s.dark) } else { s.panel };
     let (top, bottom) = if s.dark { (lighten(face, 0.05), darken(face, 0.12)) } else { (lighten(face, 0.30), darken(face, 0.05)) };
-    surface(p, rect, r, top, bottom);
-    p.rect_stroke(rect, r, Stroke::new(1.0, Color32::from_black_alpha(if s.dark { 220 } else { 80 })), StrokeKind::Inside);
-    chamfer(p, rect.shrink(1.0), r - 1.0, if s.dark { 46 } else { 235 }, if s.dark { 8 } else { 70 });
+    let mut under: Vec<Layer> = shadow_layer(r, 8.0, 26.0, if s.dark { 190 } else { 70 }).into_iter().collect();
+    under.push(gradient_layer([0.0; 3], r, top, bottom));
+    plate::paint(p, rect, &under);
+    texture_overlay(p, rect, r);
+    plate::paint(p, rect, &[
+        Layer::Stroke { inset: 0.0, radius: r, width: 1.0, color: Color32::from_black_alpha(if s.dark { 220 } else { 80 }), outside: false },
+        Layer::Chamfer { inset: 1.0, radius: r - 1.0, top: if s.dark { 46 } else { 235 }, bottom: if s.dark { 8 } else { 70 } },
+    ]);
 }
 
 /// Grundfarbe des Plattentellers (Metallrand).
@@ -394,23 +408,21 @@ pub fn well(p: &Painter, rect: Rect, radius: f32) {
     if theme::alu() {
         // Schwarzes Glas hinter einer gefrästen Öffnung: Lichtkante unten außen, oben ein schwacher Spiegelglanz
         let dark = theme::skin().dark;
-        p.rect_stroke(rect.expand(1.0), radius + 1.0, Stroke::new(1.0, Color32::from_black_alpha(if dark { 200 } else { 90 })), StrokeKind::Inside);
-        gradient_rrect(p, rect, radius, lighten(w, 0.06), w);
-        let gloss = Rect::from_min_max(rect.min + vec2(1.0, 1.0), pos2(rect.right() - 1.0, rect.top() + (rect.height() * 0.45).min(28.0)));
-        gradient_rrect(p, gloss, (radius - 1.0).max(0.0), Color32::from_white_alpha(14), Color32::from_white_alpha(0));
-        p.rect_stroke(rect, radius, Stroke::new(1.0, Color32::from_white_alpha(10)), StrokeKind::Inside);
-        p.line_segment(
-            [pos2(rect.left() + radius, rect.bottom() + 1.5), pos2(rect.right() - radius, rect.bottom() + 1.5)],
-            Stroke::new(1.0, Color32::from_white_alpha(if dark { 26 } else { 190 })),
-        );
+        let gloss_h = (rect.height() * 0.45).min(28.0);
+        plate::paint(p, rect, &[
+            Layer::Stroke { inset: -1.0, radius: radius + 1.0, width: 1.0, color: Color32::from_black_alpha(if dark { 200 } else { 90 }), outside: false },
+            gradient_layer([0.0; 3], radius, lighten(w, 0.06), w),
+            gradient_layer([1.0, 1.0, rect.height() - gloss_h], (radius - 1.0).max(0.0), Color32::from_white_alpha(14), Color32::from_white_alpha(0)),
+            Layer::Stroke { inset: 0.0, radius, width: 1.0, color: Color32::from_white_alpha(10), outside: false },
+            Layer::HLine { y: 1.5, from_bottom: true, x_inset: radius, width: 1.0, color: Color32::from_white_alpha(if dark { 26 } else { 190 }) },
+        ]);
         return;
     }
-    gradient_rrect(p, rect, radius, darken(w, 0.45), lighten(w, 0.03));
-    p.rect_stroke(rect, radius, Stroke::new(1.0, Color32::from_black_alpha(170)), StrokeKind::Inside);
-    p.line_segment(
-        [pos2(rect.left() + radius, rect.bottom() + 0.5), pos2(rect.right() - radius, rect.bottom() + 0.5)],
-        Stroke::new(1.0, Color32::from_white_alpha(if theme::skin().dark { 22 } else { 140 })),
-    );
+    plate::paint(p, rect, &[
+        gradient_layer([0.0; 3], radius, darken(w, 0.45), lighten(w, 0.03)),
+        Layer::Stroke { inset: 0.0, radius, width: 1.0, color: Color32::from_black_alpha(170), outside: false },
+        Layer::HLine { y: 0.5, from_bottom: true, x_inset: radius, width: 1.0, color: Color32::from_white_alpha(if theme::skin().dark { 22 } else { 140 }) },
+    ]);
 }
 
 /// Grundfarbe und Rolle einer Taste.
@@ -475,24 +487,25 @@ fn paint_button_face(p: &Painter, rect: Rect, look: Look, lit: bool, pressed: bo
         text = text.gamma_multiply(0.4);
     }
 
+    let mut layers: Vec<Layer> = Vec::with_capacity(8);
     if !pressed {
-        shadow(p, rect, r, 2, 5, if s.dark { 140 } else { 70 });
+        layers.extend(shadow_layer(r, 2.0, 5.0, if s.dark { 140 } else { 70 }));
     }
     if lit && !theme::lite().flat {
         // LED-Schein um die Taste
         for k in 1..=4 {
             let a = (70 / k) as u8;
-            p.rect_stroke(rect.expand(k as f32 * 1.6), r + k as f32, Stroke::new(1.6, base.gamma_multiply(a as f32 / 255.0)), StrokeKind::Outside);
+            let color = base.gamma_multiply(a as f32 / 255.0);
+            layers.push(Layer::Stroke { inset: -(k as f32) * 1.6, radius: r + k as f32, width: 1.6, color, outside: true });
         }
     }
-    gradient_rrect(p, rect, r, top, bottom);
-    p.rect_stroke(rect, r, Stroke::new(1.0, darken(mix(top, bottom, 0.5), 0.5)), StrokeKind::Inside);
+    layers.push(gradient_layer([0.0; 3], r, top, bottom));
+    layers.push(Layer::Stroke { inset: 0.0, radius: r, width: 1.0, color: darken(mix(top, bottom, 0.5), 0.5), outside: false });
     if !pressed {
-        p.line_segment(
-            [pos2(rect.left() + r, rect.top() + 1.5), pos2(rect.right() - r, rect.top() + 1.5)],
-            Stroke::new(1.0, Color32::from_white_alpha(if lit { 90 } else if s.dark { 34 } else { 170 })),
-        );
+        let color = Color32::from_white_alpha(if lit { 90 } else if s.dark { 34 } else { 170 });
+        layers.push(Layer::HLine { y: 1.5, from_bottom: false, x_inset: r, width: 1.0, color });
     }
+    plate::paint(p, rect, &layers);
     let c = rect.center() + if pressed { vec2(0.0, 1.0) } else { vec2(0.0, 0.0) };
     (c, text)
 }
@@ -529,45 +542,50 @@ fn paint_alu_face(p: &Painter, rect: Rect, look: Look, lit: bool, pressed: bool,
         text = text.gamma_multiply(0.4);
     }
 
+    let mut layers: Vec<Layer> = Vec::with_capacity(6);
     if !pressed {
-        shadow(p, rect, r, 2, 6, if s.dark { 170 } else { 60 });
+        layers.extend(shadow_layer(r, 2.0, 6.0, if s.dark { 170 } else { 60 }));
     }
-    gradient_rrect(p, rect, r, top, bottom);
-    p.rect_stroke(rect, r, Stroke::new(1.0, Color32::from_black_alpha(if s.dark { 210 } else { 75 })), StrokeKind::Inside);
+    layers.push(gradient_layer([0.0; 3], r, top, bottom));
+    layers.push(Layer::Stroke { inset: 0.0, radius: r, width: 1.0, color: Color32::from_black_alpha(if s.dark { 210 } else { 75 }), outside: false });
     if pressed {
-        p.line_segment(
-            [pos2(rect.left() + r, rect.top() + 1.5), pos2(rect.right() - r, rect.top() + 1.5)],
-            Stroke::new(1.0, Color32::from_black_alpha(if s.dark { 120 } else { 40 })),
-        );
+        layers.push(Layer::HLine { y: 1.5, from_bottom: false, x_inset: r, width: 1.0, color: Color32::from_black_alpha(if s.dark { 120 } else { 40 }) });
     } else {
-        chamfer(p, rect.shrink(1.0), r - 1.0, if s.dark { 52 } else { 255 }, if s.dark { 6 } else { 60 });
+        layers.push(Layer::Chamfer { inset: 1.0, radius: r - 1.0, top: if s.dark { 52 } else { 255 }, bottom: if s.dark { 6 } else { 60 } });
     }
 
     let window = matches!(look, Look::Color(_)) && rect.height() >= 24.0 && rect.width() >= 26.0;
     let mut c = rect.center() + if pressed { vec2(0.0, 0.5) } else { vec2(0.0, 0.0) };
+    if !window && lit {
+        layers.push(Layer::Stroke { inset: 1.0, radius: r - 1.0, width: 1.5, color: led.gamma_multiply(0.85), outside: false });
+        if !theme::lite().flat {
+            layers.push(Layer::Fill { inset: [2.0; 3], radius: r - 2.0, top: led.gamma_multiply(0.07), bottom: led.gamma_multiply(0.07) });
+        }
+    }
+    plate::paint(p, rect, &layers);
     if window {
-        // LED-Fenster: schwarzer Schlitz mit Lichtkante, darin der Leuchtstreifen
+        // LED-Fenster: schwarzer Schlitz mit Lichtkante, darin der Leuchtstreifen. Sitzt mitten auf der Taste und
+        // hat darum ein eigenes, schmales Bild
         let w = (rect.width() * 0.32).clamp(12.0, 30.0);
         let slot = Rect::from_center_size(pos2(c.x, rect.bottom() - 5.5), vec2(w, 3.0));
-        p.rect_filled(slot.expand(1.0), 2.0, Color32::from_black_alpha(if s.dark { 230 } else { 150 }));
-        p.line_segment([pos2(slot.left(), slot.bottom() + 1.5), pos2(slot.right(), slot.bottom() + 1.5)], Stroke::new(1.0, Color32::from_white_alpha(if s.dark { 22 } else { 160 })));
+        let mut led_layers = vec![
+            Layer::Fill { inset: [-1.0; 3], radius: 2.0, top: Color32::from_black_alpha(if s.dark { 230 } else { 150 }), bottom: Color32::from_black_alpha(if s.dark { 230 } else { 150 }) },
+            Layer::HLine { y: 1.5, from_bottom: true, x_inset: 0.0, width: 1.0, color: Color32::from_white_alpha(if s.dark { 22 } else { 160 }) },
+        ];
+        let solid = |inset: f32, radius: f32, color: Color32| Layer::Fill { inset: [inset; 3], radius, top: color, bottom: color };
         if lit {
             if !theme::lite().flat {
                 for k in 1..=4 {
-                    p.rect_filled(slot.expand(k as f32 * 1.4), 2.0 + k as f32, led.gamma_multiply(0.16 / k as f32));
+                    led_layers.push(solid(-(k as f32) * 1.4, 2.0 + k as f32, led.gamma_multiply(0.16 / k as f32)));
                 }
             }
-            p.rect_filled(slot, 1.5, lighten(led, 0.18));
-            p.line_segment([pos2(slot.left() + 1.0, slot.top() + 0.5), pos2(slot.right() - 1.0, slot.top() + 0.5)], Stroke::new(1.0, lighten(led, 0.6)));
+            led_layers.push(solid(0.0, 1.5, lighten(led, 0.18)));
+            led_layers.push(Layer::HLine { y: 0.5, from_bottom: false, x_inset: 1.0, width: 1.0, color: lighten(led, 0.6) });
         } else {
-            p.rect_filled(slot, 1.5, led.gamma_multiply(0.16));
+            led_layers.push(solid(0.0, 1.5, led.gamma_multiply(0.16)));
         }
+        plate::paint(p, slot, &led_layers);
         c.y -= 3.0;
-    } else if lit {
-        p.rect_stroke(rect.shrink(1.0), r - 1.0, Stroke::new(1.5, led.gamma_multiply(0.85)), StrokeKind::Inside);
-        if !theme::lite().flat {
-            p.rect_filled(rect.shrink(2.0), r - 2.0, led.gamma_multiply(0.07));
-        }
     }
     (c, text)
 }
@@ -644,20 +662,23 @@ fn fader_cap(p: &Painter, center: Pos2, size: egui::Vec2, vertical: bool) {
         alu_fader_cap(p, cap, vertical);
         return;
     }
-    shadow(p, cap, 3.0, 3, 5, 160);
-    gradient_rrect(p, cap, 3.0, Color32::from_rgb(0xf4, 0xf6, 0xfa), Color32::from_rgb(0x8c, 0x94, 0xa3));
-    p.rect_stroke(cap, 3.0, Stroke::new(1.0, Color32::from_rgb(0x4a, 0x50, 0x5c)), StrokeKind::Inside);
-    // Griffrillen
-    let line = Stroke::new(1.0, Color32::from_black_alpha(110));
-    let light = Stroke::new(1.0, Color32::from_white_alpha(170));
-    for k in -1..=1 {
-        let o = k as f32 * 3.0;
-        if vertical {
-            let y = center.y + o;
-            p.line_segment([pos2(cap.left() + 4.0, y), pos2(cap.right() - 4.0, y)], line);
-            p.line_segment([pos2(cap.left() + 4.0, y + 1.0), pos2(cap.right() - 4.0, y + 1.0)], light);
-        } else {
-            let x = center.x + o;
+    let mut layers: Vec<Layer> = shadow_layer(3.0, 3.0, 5.0, 160).into_iter().collect();
+    layers.push(gradient_layer([0.0; 3], 3.0, Color32::from_rgb(0xf4, 0xf6, 0xfa), Color32::from_rgb(0x8c, 0x94, 0xa3)));
+    layers.push(Layer::Stroke { inset: 0.0, radius: 3.0, width: 1.0, color: Color32::from_rgb(0x4a, 0x50, 0x5c), outside: false });
+    // Griffrillen; quer laufend gehören sie mit ins Bild
+    if vertical {
+        for k in -1..=1 {
+            let y = cap.height() / 2.0 + k as f32 * 3.0;
+            layers.push(Layer::HLine { y, from_bottom: false, x_inset: 4.0, width: 1.0, color: Color32::from_black_alpha(110) });
+            layers.push(Layer::HLine { y: y + 1.0, from_bottom: false, x_inset: 4.0, width: 1.0, color: Color32::from_white_alpha(170) });
+        }
+    }
+    plate::paint(p, cap, &layers);
+    if !vertical {
+        let line = Stroke::new(1.0, Color32::from_black_alpha(110));
+        let light = Stroke::new(1.0, Color32::from_white_alpha(170));
+        for k in -1..=1 {
+            let x = center.x + k as f32 * 3.0;
             p.line_segment([pos2(x, cap.top() + 4.0), pos2(x, cap.bottom() - 4.0)], line);
             p.line_segment([pos2(x + 1.0, cap.top() + 4.0), pos2(x + 1.0, cap.bottom() - 4.0)], light);
         }
@@ -669,28 +690,35 @@ fn fader_cap(p: &Painter, center: Pos2, size: egui::Vec2, vertical: bool) {
 fn alu_fader_cap(p: &Painter, cap: Rect, vertical: bool) {
     let dark = theme::skin().dark;
     let r = 2.5;
-    shadow(p, cap, r, 4, 8, if dark { 200 } else { 110 });
     let (top, bottom, mark) = if dark {
         (Color32::from_rgb(0x55, 0x58, 0x5e), Color32::from_rgb(0x2c, 0x2e, 0x32), Color32::from_rgb(0xf4, 0xf5, 0xf7))
     } else {
         (Color32::from_rgb(0xf7, 0xf8, 0xfa), Color32::from_rgb(0xb7, 0xbb, 0xc2), Color32::from_rgb(0x1d, 0x1d, 0x1f))
     };
-    gradient_rrect(p, cap, r, top, bottom);
+    let mut under: Vec<Layer> = shadow_layer(r, 4.0, 8.0, if dark { 200 } else { 110 }).into_iter().collect();
+    under.push(gradient_layer([0.0; 3], r, top, bottom));
+    plate::paint(p, cap, &under);
     grain_overlay(p, cap, r, dark);
-    p.rect_stroke(cap, r, Stroke::new(1.0, Color32::from_black_alpha(if dark { 230 } else { 120 })), StrokeKind::Inside);
-    chamfer(p, cap.shrink(1.0), r - 1.0, if dark { 70 } else { 255 }, if dark { 10 } else { 90 });
-    // Quer laufende Fase in der Mitte (Griffmulde) mit Markierungslinie
-    let c = cap.center();
+    let mut edge = vec![
+        Layer::Stroke { inset: 0.0, radius: r, width: 1.0, color: Color32::from_black_alpha(if dark { 230 } else { 120 }), outside: false },
+        Layer::Chamfer { inset: 1.0, radius: r - 1.0, top: if dark { 70 } else { 255 }, bottom: if dark { 10 } else { 90 } },
+    ];
+    // Quer laufende Fase in der Mitte (Griffmulde) mit Markierungslinie; beim senkrechten Fader gehört sie mit ins Bild
+    let groove = Color32::from_black_alpha(if dark { 120 } else { 45 });
+    let shine = Color32::from_white_alpha(if dark { 30 } else { 200 });
     if vertical {
-        let (l, rr) = (cap.left() + 2.0, cap.right() - 2.0);
-        p.line_segment([pos2(l, c.y - 1.5), pos2(rr, c.y - 1.5)], Stroke::new(1.0, Color32::from_black_alpha(if dark { 120 } else { 45 })));
-        p.line_segment([pos2(l, c.y), pos2(rr, c.y)], Stroke::new(1.5, mark));
-        p.line_segment([pos2(l, c.y + 1.5), pos2(rr, c.y + 1.5)], Stroke::new(1.0, Color32::from_white_alpha(if dark { 30 } else { 200 })));
-    } else {
+        let y = cap.height() / 2.0;
+        edge.push(Layer::HLine { y: y - 1.5, from_bottom: false, x_inset: 2.0, width: 1.0, color: groove });
+        edge.push(Layer::HLine { y, from_bottom: false, x_inset: 2.0, width: 1.5, color: mark });
+        edge.push(Layer::HLine { y: y + 1.5, from_bottom: false, x_inset: 2.0, width: 1.0, color: shine });
+    }
+    plate::paint(p, cap, &edge);
+    if !vertical {
+        let c = cap.center();
         let (t, b) = (cap.top() + 2.0, cap.bottom() - 2.0);
-        p.line_segment([pos2(c.x - 1.5, t), pos2(c.x - 1.5, b)], Stroke::new(1.0, Color32::from_black_alpha(if dark { 120 } else { 45 })));
+        p.line_segment([pos2(c.x - 1.5, t), pos2(c.x - 1.5, b)], Stroke::new(1.0, groove));
         p.line_segment([pos2(c.x, t), pos2(c.x, b)], Stroke::new(1.5, mark));
-        p.line_segment([pos2(c.x + 1.5, t), pos2(c.x + 1.5, b)], Stroke::new(1.0, Color32::from_white_alpha(if dark { 30 } else { 200 })));
+        p.line_segment([pos2(c.x + 1.5, t), pos2(c.x + 1.5, b)], Stroke::new(1.0, shine));
     }
 }
 

@@ -1520,6 +1520,8 @@ impl eframe::App for FadeWerkDjApp {
         crate::keynav::collect(&ctx);
         if theme::lite().shapes {
             theme::simplify_shapes(&ctx);
+        } else {
+            crate::plate::batch_by_texture(&ctx);
         }
         // Teller, Wellenform und Pegel laufen, solange etwas spielt (sparsam mit höchstens 30 Bildern/s);
         // im Stillstand nur bei Eingaben und gelegentlich zum Abholen des Engine-Zustands
