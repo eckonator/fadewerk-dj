@@ -52,8 +52,9 @@ fn open_log() -> Option<File> {
 /// Markierung für den Grafikstart nur, wenn auch ins Log geschrieben wird (nicht bei Entwicklerläufen).
 static MARK_STARTS: AtomicBool = AtomicBool::new(false);
 static GRAPHICS_OK: AtomicBool = AtomicBool::new(false);
-/// Dieser Start hat auf die sparsame Darstellung umgestellt, weil die Grafikkarte kein Metal kann (Hinweis in der App).
-pub static LEAN_FOR_OLD_GPU: AtomicBool = AtomicBool::new(false);
+/// Dieser Start ist auf dem Mac von wgpu auf OpenGL ausgewichen (kein Metal). Zeichnet dann auch OpenGL nur in Software,
+/// stellt die App einmalig auf sparsam (`FadeWerkDjApp::new`).
+pub static NO_METAL_START: AtomicBool = AtomicBool::new(false);
 
 fn start_marker() -> Option<PathBuf> {
     MARK_STARTS.load(Ordering::Relaxed).then(|| crate::settings::config_dir().map(|d| d.join("grafikstart")))?

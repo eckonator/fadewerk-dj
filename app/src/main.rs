@@ -9,6 +9,7 @@ mod audio;
 mod analysis_cache;
 mod caches;
 mod crossdrag;
+mod ctrl_click;
 mod browser;
 mod deck_ui;
 mod fade_preview;
@@ -80,7 +81,7 @@ fn main() -> eframe::Result {
         _ => eframe::Renderer::Wgpu,
     };
     let app_created = Rc::new(Cell::new(false));
-    let mut result = run(renderer, settings.clone(), start_dir.clone(), &app_created);
+    let mut result = run_with_fallback(renderer, &settings, &start_dir, &app_created);
     // Scheitert wgpu schon beim Einrichten (manche Treiber, virtuelle Maschinen, Remote Desktop),
     // mit OpenGL noch einmal versuchen und das für die nächsten Starts merken
     if let Err(e) = &result
@@ -90,17 +91,15 @@ fn main() -> eframe::Result {
         log::error!("Grafik über wgpu nicht verfügbar ({e}), versuche OpenGL");
         settings.opengl = true;
         // Auf dem Mac heißt das: kein Metal, also ein Rechner von vor etwa 2012 (auch mit OpenCore Legacy Patcher).
-        // Dort zeichnet sogar der WindowServer ohne Metal, die volle Optik ist zu schwer. Einmalig sparsam
-        // einstellen; danach startet die App gleich mit OpenGL und kommt hier nicht mehr vorbei
+        // Ob die volle Optik dann zu schwer ist, entscheidet der OpenGL-Renderer (`FadeWerkDjApp::new`); danach startet
+        // die App gleich mit OpenGL und kommt hier nicht mehr vorbei
         if cfg!(target_os = "macos") {
-            settings.lite = theme::Lite::ALL;
-            settings.platters = false;
-            diagnose::LEAN_FOR_OLD_GPU.store(true, std::sync::atomic::Ordering::Relaxed);
+            diagnose::NO_METAL_START.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         if !isolated {
             settings.save();
         }
-        result = run(eframe::Renderer::Glow, settings, start_dir, &app_created);
+        result = run_with_fallback(eframe::Renderer::Glow, &settings, &start_dir, &app_created);
     }
     if let Err(e) = &result {
         log::error!("Programm beendet mit Fehler: {e}");
@@ -111,7 +110,28 @@ fn main() -> eframe::Result {
     result
 }
 
-fn run(renderer: eframe::Renderer, settings: settings::Settings, start_dir: Option<PathBuf>, app_created: &Rc<Cell<bool>>) -> eframe::Result {
+/// OpenGL auf dem Mac: zuerst mit Grafikkarte verlangen. Sonst nimmt glutin das erste passende Profil, und OpenGL 4.1
+/// kann auf alten Macs nur Apples Software-Renderer (MacBook Pro 2008, GeForce 8600M GT: alles zeichnete der Prozessor,
+/// die Karte hätte OpenGL 3.3 beschleunigt gekonnt). Gibt es gar keine beschleunigte Grafik (virtuelle Maschine), wie bisher.
+fn run_with_fallback(renderer: eframe::Renderer, settings: &settings::Settings, start_dir: &Option<PathBuf>, app_created: &Rc<Cell<bool>>) -> eframe::Result {
+    use eframe::egui_glow::HardwareAcceleration;
+    if renderer == eframe::Renderer::Glow && cfg!(target_os = "macos") {
+        let result = run(renderer, settings.clone(), start_dir.clone(), app_created, HardwareAcceleration::Required);
+        match &result {
+            Err(e) if !app_created.get() => log::warn!("Keine beschleunigte OpenGL-Grafik ({e}), nehme jede"),
+            _ => return result,
+        }
+    }
+    run(renderer, settings.clone(), start_dir.clone(), app_created, HardwareAcceleration::Preferred)
+}
+
+fn run(
+    renderer: eframe::Renderer,
+    settings: settings::Settings,
+    start_dir: Option<PathBuf>,
+    app_created: &Rc<Cell<bool>>,
+    acceleration: eframe::egui_glow::HardwareAcceleration,
+) -> eframe::Result {
     log::info!("Grafik: {renderer}");
     diagnose::graphics_starting(&renderer.to_string());
     // Entwicklerhilfe (nur Debug): FW_SIZE=2400x1350 setzt die Fenstergröße
@@ -131,6 +151,7 @@ fn run(renderer: eframe::Renderer, settings: settings::Settings, start_dir: Opti
             .with_icon(eframe::icon_data::from_png_bytes(include_bytes!("../../assets/icon-256.png")).unwrap_or_default()),
         renderer,
         wgpu_options: wgpu_options(),
+        glow_options: eframe::egui_glow::GlowConfiguration { hardware_acceleration: acceleration, ..Default::default() },
         ..Default::default()
     };
     let created = Rc::clone(app_created);

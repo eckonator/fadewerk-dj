@@ -406,13 +406,14 @@ pub struct FadeWerkDjApp {
 }
 
 impl FadeWerkDjApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, settings: Settings, start_dir: Option<PathBuf>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, mut settings: Settings, start_dir: Option<PathBuf>) -> Self {
         i18n::set_lang(settings.language);
         theme::set_skin(settings.skin);
         theme::set_brushed(settings.brushed_steel);
         theme::set_lite(settings.lite);
         // Für die Fehlersuche: welche Grafikkarte und welcher Treiber tatsächlich zeichnen
         let mut software_wgpu = false;
+        let mut lean_for_software_gl = false;
         if let Some(rs) = &cc.wgpu_render_state {
             let a = rs.adapter.get_info();
             log::info!("wgpu: {} ({:?}, {:?}, Treiber {} {})", a.name, a.backend, a.device_type, a.driver, a.driver_info);
@@ -423,8 +424,18 @@ impl FadeWerkDjApp {
             // SAFETY: nur Abfragen, der Kontext ist während des Erzeugens der App aktiv
             let (renderer, version) = unsafe { (gl.get_parameter_string(eframe::glow::RENDERER), gl.get_parameter_string(eframe::glow::VERSION)) };
             log::info!("OpenGL: {renderer} ({version})");
+            // Mac ohne Metal, und auch OpenGL zeichnet nur der Prozessor (keine beschleunigte Grafik): Dort braucht
+            // ein Bild der vollen Optik über eine Sekunde (MacBook Pro 2008 im Software-Renderer), sparsam einstellen.
+            // Mit Grafikkarte (dort OpenGL 3.3) läuft die volle Optik flüssig und bleibt
+            if crate::diagnose::NO_METAL_START.load(std::sync::atomic::Ordering::Relaxed) && renderer.contains("Software") {
+                settings.lite = theme::Lite::ALL;
+                settings.platters = false;
+                theme::set_lite(settings.lite);
+                lean_for_software_gl = true;
+            }
         }
         crate::fonts::install(&cc.egui_ctx);
+        cc.egui_ctx.add_plugin(crate::ctrl_click::CtrlClick::default());
         theme::apply(&cc.egui_ctx);
         // Zoom selbst behandeln: begrenzt und gespeichert
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
@@ -567,8 +578,9 @@ impl FadeWerkDjApp {
         if std::env::args().any(|a| a == crate::self_update::AFTER_OPENGL_FLAG) {
             app.notice = Some((tr("Die Grafik zeichnete nur in Software. FadeWerk DJ nutzt jetzt OpenGL (abschaltbar unter Einstellungen → Leistung).").to_owned(), 0.0));
         }
-        if crate::diagnose::LEAN_FOR_OLD_GPU.load(std::sync::atomic::Ordering::Relaxed) {
-            app.notice = Some((tr("Diese Grafikkarte kann kein Metal. FadeWerk DJ zeichnet deshalb sparsam (umstellbar unter Einstellungen → Leistung).").to_owned(), 0.0));
+        if lean_for_software_gl {
+            app.save_settings();
+            app.notice = Some((tr("Auf diesem Mac zeichnet nur der Prozessor. FadeWerk DJ zeichnet deshalb sparsam (umstellbar unter Einstellungen → Leistung).").to_owned(), 0.0));
         }
         if std::env::args().any(|a| a == crate::self_update::AFTER_RESET_FLAG) {
             app.notice = Some((tr("FadeWerk DJ wurde zurückgesetzt.").to_owned(), 0.0));
