@@ -359,6 +359,12 @@ pub fn faint() -> Color32 {
 pub fn cue() -> Color32 { skin().cue }
 pub fn play() -> Color32 { skin().play }
 pub fn yellow() -> Color32 { skin().yellow }
+/// Orange zwischen Gelb und Rot des Skins (Warnstufe zwischen beiden, etwa beim Akku).
+pub fn orange() -> Color32 {
+    let (y, r) = (yellow(), cue());
+    let mix = |a: u8, b: u8| ((a as u16 + b as u16) / 2) as u8;
+    Color32::from_rgb(mix(y.r(), r.r()), mix(y.g(), r.g()), mix(y.b(), r.b()))
+}
 
 pub fn deck_color(deck: usize) -> Color32 {
     if deck == 0 { skin().deck_a } else { skin().deck_b }

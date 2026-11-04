@@ -52,6 +52,10 @@ impl FadeWerkDjApp {
             SettingsAction::OpenGl(on) => self.settings.opengl = on,
             SettingsAction::RecordHistory(on) => self.settings.record_history = on,
             SettingsAction::KeepAwake(on) => self.settings.keep_awake = on,
+            SettingsAction::StatusItem(i, on) => {
+                let s = &mut self.settings;
+                *[&mut s.status_clock, &mut s.status_battery, &mut s.status_cpu, &mut s.status_ram, &mut s.status_temp][i.min(4)] = on;
+            }
             SettingsAction::MicDevice(id) => {
                 self.settings.mic_device = id;
                 // Läuft das Mikrofon, gleich auf das neue Gerät wechseln

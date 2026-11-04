@@ -151,6 +151,12 @@ pub struct Settings {
     pub mic_device: Option<String>,
     /// Mikrofonpegel als Faktor (1 = unverändert).
     pub mic_gain: f32,
+    /// Statuszeile: Uhrzeit, Akku, CPU-Last (mit Audio-Aussetzern), Arbeitsspeicher, Temperatur.
+    pub status_clock: bool,
+    pub status_battery: bool,
+    pub status_cpu: bool,
+    pub status_ram: bool,
+    pub status_temp: bool,
     /// Talkover: Musik senken, solange ins Mikrofon gesprochen wird.
     pub talkover: bool,
     /// Absenkung beim Talkover in dB (negativ).
@@ -229,6 +235,11 @@ impl Default for Settings {
             mic_device: None,
             mic_gain: 1.0,
             talkover: true,
+            status_clock: true,
+            status_battery: true,
+            status_cpu: false,
+            status_ram: false,
+            status_temp: false,
             talkover_db: -12.0,
             mute_others: false,
             exclusive_output: false,

@@ -38,6 +38,8 @@ mod played;
 mod prefs;
 mod views;
 
+/// So lange steht „Aussetzer“ in der Statuszeile, nachdem die Audio-Ausgabe nicht nachkam.
+const DROPOUT_SHOW_SECS: f64 = 8.0;
 /// Höhe der Player-Zeile bei Vergrößerung 1,0.
 const DECK_ROW_HEIGHT: f32 = 420.0;
 /// Kleinste Höhe der Player-Zeile (auf kleinen Bildschirmen schrumpfen die Player bis hierhin).
@@ -343,6 +345,13 @@ pub struct FadeWerkDjApp {
     /// Ausgang der Aufnahme aus der Engine, solange keine Aufnahme läuft.
     record_rx: Option<crate::recorder::FrameRx>,
     recording: Option<crate::recorder::Recording>,
+    /// Systemwerte für die Statuszeile (Thread `fw-sysmon`).
+    sysmon: crate::sysmon::Monitor,
+    /// Auslastung des Audio-Threads (Spitze, fällt langsam ab) und bis wann „Aussetzer“ angezeigt wird.
+    audio_load: f32,
+    dropout_until: f64,
+    /// Zuletzt gesehene Zahl der Stream-Fehler (neue = Aussetzer).
+    status_errors: u64,
     /// Offenes Mikrofon (MIC an).
     mic: Option<audio::MicIn>,
     /// Angezeigter Mikrofonpegel (fällt langsam ab).
@@ -520,6 +529,13 @@ impl FadeWerkDjApp {
             record_rx: None,
             recording: None,
             mic: None,
+            sysmon: crate::sysmon::Monitor::start({
+                let ctx = cc.egui_ctx.clone();
+                move || ctx.request_repaint()
+            }),
+            audio_load: 0.0,
+            dropout_until: 0.0,
+            status_errors: 0,
             mic_level: 0.0,
             record_dropped_at_start: 0,
             audio_gen: 0,
@@ -686,6 +702,11 @@ impl FadeWerkDjApp {
         }
         // FW_CLEAR_ALL=1 (nur Debug): Rückfrage „Alles leeren“ gleich offen
         app.confirm_clear_all = cfg!(debug_assertions) && std::env::var_os("FW_CLEAR_ALL").is_some();
+        // FW_STATUS=alle (nur Debug): Uhr, Akku, CPU, RAM und Temperatur in der Statuszeile
+        if cfg!(debug_assertions) && std::env::var_os("FW_STATUS").is_some() {
+            let st = &mut app.settings;
+            (st.status_clock, st.status_battery, st.status_cpu, st.status_ram, st.status_temp) = (true, true, true, true, true);
+        }
         // FW_CHECK=a|b (nur Debug): „Playlist prüfen“ gleich offen
         if cfg!(debug_assertions)
             && let Some(v) = std::env::var_os("FW_CHECK")
@@ -1025,6 +1046,16 @@ impl eframe::App for FadeWerkDjApp {
         // Ohne Anzeige der Bänder rechnet der Audio-Thread sie auch nicht
         self.ctl.shared.set_spectrum(!theme::lite().no_bands);
         self.bands.update(self.ctl.shared.take_bands(), dt, now);
+        // Auslastung der Audio-Ausgabe für die Statuszeile: über 100 % oder neue Stream-Fehler = Aussetzer
+        if let Some(a) = &self.audio {
+            let load = a.take_load();
+            let errors = a.errors.load(std::sync::atomic::Ordering::Relaxed);
+            if load > 1.0 || errors > self.status_errors {
+                self.dropout_until = now + DROPOUT_SHOW_SECS;
+            }
+            self.status_errors = errors;
+            self.audio_load = load.max(self.audio_load * (-dt / 2.0).exp());
+        }
         // Mikrofonpegel für die MIC-Taste: springt hoch, fällt in etwa einer halben Sekunde ab
         let mic = self.ctl.shared.take_mic_level();
         self.mic_level = mic.max(self.mic_level * (-dt * 6.0).exp());
@@ -1493,12 +1524,15 @@ impl eframe::App for FadeWerkDjApp {
         if !self.settings_ui.open {
             self.caches.sizes = None;
         }
+        let sys_stats = self.sysmon.stats();
         let sctx = SettingsCtx {
             settings: &self.settings,
             active_device: self.audio.as_ref().map(|a| a.device.as_str()),
             active_device_id: self.audio.as_ref().map(|a| a.id.as_str()),
             active_head: self.head_audio.as_ref().map(|h| h.device.as_str()),
             active_mic: self.mic.as_ref().map(|m| m.device.as_str()),
+            temp_available: sys_stats.temp_available,
+            battery_available: sys_stats.battery_available,
             sample_rate: self.ctl.shared.sample_rate,
             channels: self.ctl.shared.channels,
             cache_sizes: self.caches.sizes,

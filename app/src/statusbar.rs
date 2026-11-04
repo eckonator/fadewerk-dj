@@ -24,7 +24,18 @@ pub struct OnAir {
     pub warn: bool,
 }
 
+/// Uhr und Systemwerte rechts in der Statuszeile; `None` = nicht gezeigt.
+pub struct SysLine {
+    pub clock: Option<String>,
+    pub battery: Option<crate::sysmon::Battery>,
+    /// CPU-Last in %, Auslastung des Audio-Threads (1 = voll) und ob gerade Aussetzer waren.
+    pub cpu: Option<(f32, f32, bool)>,
+    pub ram: Option<f32>,
+    pub temp: Option<f32>,
+}
+
 pub struct StatusModel {
+    pub sys: SysLine,
     pub on_air: Option<OnAir>,
     /// Kommt als Nächstes: Player, Titel und Sekunden bis zur Überblendung (`None` = blendet gerade über).
     pub next: Option<(usize, String, Option<f64>)>,
@@ -96,18 +107,126 @@ fn brand(ui: &mut egui::Ui, out: &mut Vec<StatusAction>) {
     half(-std::f32::consts::FRAC_PI_2, theme::deck_color(1));
     p.circle_filled(c, 2.5, theme::ground());
     ui.add_space(-4.0);
-    ui.label(egui::RichText::new("FADEWERK DJ").font(fonts::bold(13.0)).extra_letter_spacing(1.8).color(theme::dim()));
+    let name = egui::RichText::new("FADEWERK DJ").font(fonts::bold(13.0)).extra_letter_spacing(1.8).color(theme::dim());
+    let name = egui::WidgetText::from(name).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body);
+    let (name_rect, _) = ui.allocate_exact_size(name.size(), Sense::hover());
+    let name_base = name_rect.top() + baseline(&name);
+    ui.painter().galley(name_rect.min, name, theme::dim());
     ui.add_space(-6.0);
     let version = format!("v{}", env!("CARGO_PKG_VERSION"));
     let g = ui.painter().layout_no_wrap(version, fonts::list(10.5), theme::faint());
     let (rect, resp) = ui.allocate_exact_size(g.size() + vec2(4.0, 0.0), Sense::click());
     let resp = resp.on_hover_text(tr("Über FadeWerk DJ")).on_hover_cursor(egui::CursorIcon::PointingHand);
     let color = if resp.hovered() { theme::dim() } else { theme::faint() };
-    // Grundlinie wie die Marke: etwas tiefer als die Mitte
-    ui.painter().galley_with_override_text_color(pos2(rect.left() + 2.0, rect.top() + 2.0), g, color);
+    // Auf derselben Grundlinie wie „FADEWERK DJ“ (die Schriften sind verschieden groß)
+    let top = (name_base - baseline(&g)).round();
+    ui.painter().galley_with_override_text_color(pos2(rect.left() + 2.0, top), g, color);
     if resp.clicked() {
         out.push(StatusAction::About);
     }
+}
+
+/// Titel und „als Nächstes“ behalten im Display mindestens so viel Breite; sonst fallen Systemwerte weg (die Uhr zuletzt).
+const ON_AIR_MIN_W: f32 = 320.0;
+/// Akku: grün ab `BATTERY_ORANGE` %, darunter orange, unter `BATTERY_RED` rot, unter `BATTERY_BLINK` blinkend (ohne Netz).
+const BATTERY_ORANGE: f32 = 40.0;
+const BATTERY_RED: f32 = 20.0;
+const BATTERY_BLINK: f32 = 10.0;
+
+/// Uhr ganz rechts im Display, davor Akku, Temperatur, Arbeitsspeicher, CPU (von `right` nach links), höchstens
+/// `budget` breit. Liefert die genutzte Breite (0 = nichts gezeigt).
+fn sys_values(ui: &egui::Ui, p: &egui::Painter, right: f32, y: f32, budget: f32, s: &SysLine) -> f32 {
+    let ink = theme::well_ink();
+    let gap = 9.0;
+    let mut x = right;
+    let mut n = 0;
+    // Nächsten Platz links vom bisherigen holen, wenn er noch ins Budget passt; mit Tooltip
+    let mut place = |w: f32, tip: &str| -> Option<Rect> {
+        let left = x - w;
+        if right - left > budget {
+            return None;
+        }
+        let r = Rect::from_min_max(pos2(left, y - 10.0), pos2(x, y + 10.0));
+        ui.interact(r, ui.id().with(("sys", n)), Sense::hover()).on_hover_text(tip);
+        n += 1;
+        x = left - gap;
+        Some(r)
+    };
+    if let Some(clock) = &s.clock {
+        let g = p.layout_no_wrap(clock.clone(), fonts::bold(13.5), ink);
+        if let Some(r) = place(g.size().x, tr("Uhrzeit")) {
+            p.galley(pos2(r.left(), y - g.size().y / 2.0), g, ink);
+        }
+    }
+    if let Some(b) = s.battery {
+        // Farbe nach Ladestand; ganz leer und nicht am Netz blinkt es
+        let color = match b.percent {
+            p if p >= BATTERY_ORANGE => theme::play(),
+            p if p >= BATTERY_RED => theme::orange(),
+            _ => theme::cue(),
+        };
+        let blink = !b.plugged && b.percent < BATTERY_BLINK;
+        if blink {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        let shown = !blink || ui.input(|i| i.time) % 1.0 < 0.6;
+        let g = p.layout_no_wrap(format!("{:.0}%", b.percent), fonts::bold(11.0), color);
+        let icon = vec2(16.0, 8.0);
+        // Am Netz: kleiner Blitz vor dem Akku
+        let bolt_w = if b.plugged { 7.0 } else { 0.0 };
+        let pct = format!("{:.0}", b.percent);
+        let tip = if b.plugged { trf("Akku {} %, am Netz", &[&pct]) } else { trf("Akku {} %", &[&pct]) };
+        if let Some(r) = place(bolt_w + icon.x + 3.0 + g.size().x, &tip)
+            && shown
+        {
+            if b.plugged {
+                let (bx, s) = (r.left() + 2.5, 1.0);
+                let pts = [pos2(bx + 1.5 * s, y - 5.0), pos2(bx - 1.5 * s, y + 0.5), pos2(bx + 0.5, y + 0.5), pos2(bx - 1.0, y + 5.0), pos2(bx + 2.5, y - 1.0), pos2(bx + 0.3, y - 1.0)];
+                p.add(egui::Shape::line(pts.to_vec(), Stroke::new(1.0, color)));
+            }
+            // Akku selbst gezeichnet: Gehäuse, Pol, Füllung nach Ladestand
+            let body = Rect::from_min_size(pos2(r.left() + bolt_w, y - icon.y / 2.0), vec2(icon.x - 2.0, icon.y));
+            p.rect_stroke(body, 1.5, Stroke::new(1.0, color), egui::StrokeKind::Inside);
+            p.rect_filled(Rect::from_min_size(pos2(body.right(), y - 1.5), vec2(2.0, 3.0)), 0.5, color);
+            let inner = body.shrink(2.0);
+            p.rect_filled(Rect::from_min_size(inner.min, vec2(inner.width() * b.percent / 100.0, inner.height())), 1.0, color);
+            p.galley(pos2(body.right() + 5.0, y - g.size().y / 2.0), g, color);
+        }
+    }
+    // Kleine Beschriftung und Wert auf einer Grundlinie
+    let mut value = |label: &str, text: String, color: Color32, tip: &str| {
+        let lg = p.layout_no_wrap(label.to_owned(), fonts::bold(9.0), ink.gamma_multiply(0.45));
+        let vg = p.layout_no_wrap(text, fonts::bold(11.0), color);
+        if let Some(r) = place(lg.size().x + 3.0 + vg.size().x, tip) {
+            let base = y + vg.size().y / 2.0 - (vg.size().y - baseline(&vg));
+            p.galley(pos2(r.left(), base - baseline(&lg)), lg, ink);
+            p.galley(pos2(r.left() + r.width() - vg.size().x, base - baseline(&vg)), vg, color);
+        }
+    };
+    let normal = ink.gamma_multiply(0.75);
+    let level = |v: f32, warn: f32, alarm: f32| if v >= alarm { theme::cue() } else if v >= warn { theme::yellow() } else { normal };
+    if let Some(t) = s.temp {
+        value("TEMP", format!("{t:.0}°"), level(t, 80.0, 95.0), tr("Temperatur des Prozessors"));
+    }
+    if let Some(r) = s.ram {
+        value("RAM", format!("{r:.0}%"), level(r, 85.0, 95.0), tr("Belegter Arbeitsspeicher des Rechners"));
+    }
+    if let Some((cpu, audio, dropout)) = s.cpu {
+        let tip = trf("CPU-Last aller Kerne {} %. Audio-Ausgabe braucht {} % ihrer Zeit.", &[&format!("{cpu:.0}"), &format!("{:.0}", audio * 100.0)]);
+        if dropout {
+            value("CPU", tr("AUSSETZER").to_owned(), theme::cue(), &tip);
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+        } else {
+            let color = if audio >= 0.7 { theme::yellow() } else { level(cpu, 80.0, 95.0) };
+            value("CPU", format!("{cpu:.0}%"), color, &tip);
+        }
+    }
+    if n == 0 { 0.0 } else { right - (x + gap) }
+}
+
+/// Abstand der Grundlinie der ersten Zeile von der Oberkante eines Textes.
+fn baseline(g: &egui::Galley) -> f32 {
+    g.rows.first().map_or(0.0, |r| r.pos.y + r.row.glyphs.first().map_or(0.0, |gl| gl.pos.y))
 }
 
 /// Display mit dem Titel auf Sendung, rechts darin das Nächste oder ein Hinweis.
@@ -117,11 +236,19 @@ fn on_air(ui: &mut egui::Ui, w: f32, m: &StatusModel) {
     if let Some(text) = &m.notice {
         resp.on_hover_text(text);
     }
-    let p = ui.painter();
+    let p = ui.painter().clone();
+    let p = &p;
     hw::well(p, rect, 5.0);
     let ink = theme::well_ink();
-    let inner = rect.shrink2(vec2(10.0, 0.0));
+    let mut inner = rect.shrink2(vec2(10.0, 0.0));
     let y = rect.center().y;
+    // Ganz rechts Uhr und Systemwerte, durch eine feine Linie vom Rest getrennt
+    let sys_w = sys_values(ui, p, inner.right(), y, (inner.width() - ON_AIR_MIN_W).max(0.0), &m.sys);
+    if sys_w > 0.0 {
+        let line_x = inner.right() - sys_w - 8.0;
+        p.line_segment([pos2(line_x, rect.top() + 7.0), pos2(line_x, rect.bottom() - 7.0)], Stroke::new(1.0, ink.gamma_multiply(0.18)));
+        inner.max.x = line_x - 8.0;
+    }
     let now = ui.input(|i| i.time);
     // Rechts: Hinweis oder was als Nächstes kommt, höchstens gut die Hälfte des Displays
     let right_max = inner.width() * 0.52;

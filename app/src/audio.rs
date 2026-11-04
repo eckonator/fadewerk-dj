@@ -2,7 +2,7 @@
 //! Audio-Ausgabe über cpal: Geräte auflisten, Stream starten, Engine darin betreiben.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 
 use anyhow::{Context, bail};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -23,6 +23,15 @@ pub struct AudioOut {
     /// Fehler des Streams seit dem Start. Hängt er (etwa ALSA über PulseAudio nach einem Aussetzer: dann
     /// `snd_pcm_avail_delay`-Fehler zu Hunderten pro Sekunde), startet die App die Ausgabe neu (`check_audio_errors`).
     pub errors: Arc<AtomicU64>,
+    /// Höchste Auslastung des Audio-Threads seit dem letzten Abholen (`take_load`): Rechenzeit je Puffer
+    /// geteilt durch dessen Spielzeit, als f32-Bits. Über 1 kam die Ausgabe nicht nach (Aussetzer).
+    load: Arc<AtomicU32>,
+}
+
+impl AudioOut {
+    pub fn take_load(&self) -> f32 {
+        f32::from_bits(self.load.swap(0, Ordering::Relaxed))
+    }
 }
 
 /// Zweiter Stream für ein eigenes Kopfhörergerät.
@@ -104,12 +113,13 @@ fn try_start(device_id: Option<&str>, buffer_frames: Option<u32>) -> anyhow::Res
     // Nicht jedes Gerät nimmt jede Puffergröße an: dann mit dem Standard noch einmal versuchen
     let errors = Arc::new(AtomicU64::new(0));
     let audio_tid = Arc::new(AtomicI32::new(0));
-    let (stream, ctl) = match open(&device, config, format, &errors, &audio_tid) {
+    let load = Arc::new(AtomicU32::new(0));
+    let (stream, ctl) = match open(&device, config, format, &errors, &audio_tid, &load) {
         Ok(ok) => ok,
         Err(e) if buffer_frames.is_some() => {
             log::warn!("Puffergröße {buffer_frames:?} abgelehnt ({e:#}), nehme den Standard");
             config.buffer_size = cpal::BufferSize::Default;
-            open(&device, config, format, &errors, &audio_tid)?
+            open(&device, config, format, &errors, &audio_tid, &load)?
         }
         Err(e) => return Err(e),
     };
@@ -117,7 +127,7 @@ fn try_start(device_id: Option<&str>, buffer_frames: Option<u32>) -> anyhow::Res
     let channels = config.channels as usize;
     log::info!("Audio: {name}, {sample_rate} Hz, {channels} Kanäle, {format:?}, Puffer {:?}", config.buffer_size);
     raise_audio_priority(audio_tid);
-    Ok((AudioOut { _stream: stream, device: name, id, sample_rate, errors }, ctl))
+    Ok((AudioOut { _stream: stream, device: name, id, sample_rate, errors, load }, ctl))
 }
 
 /// Alle Eingabegeräte (Mikrofone) des Standard-Audiosystems.
@@ -238,27 +248,29 @@ where
     Ok(stream)
 }
 
-fn open(device: &cpal::Device, config: cpal::StreamConfig, format: SampleFormat, errors: &Arc<AtomicU64>, tid: &Arc<AtomicI32>) -> anyhow::Result<(cpal::Stream, Controller)> {
+fn open(device: &cpal::Device, config: cpal::StreamConfig, format: SampleFormat, errors: &Arc<AtomicU64>, tid: &Arc<AtomicI32>, load: &Arc<AtomicU32>) -> anyhow::Result<(cpal::Stream, Controller)> {
     let channels = config.channels as usize;
     let (engine, ctl) = Engine::new(config.sample_rate, channels);
     let stream = match format {
-        SampleFormat::F32 => build::<f32>(device, config, engine, channels, errors, tid)?,
-        SampleFormat::I16 => build::<i16>(device, config, engine, channels, errors, tid)?,
-        SampleFormat::I32 => build::<i32>(device, config, engine, channels, errors, tid)?,
-        SampleFormat::U16 => build::<u16>(device, config, engine, channels, errors, tid)?,
-        SampleFormat::F64 => build::<f64>(device, config, engine, channels, errors, tid)?,
+        SampleFormat::F32 => build::<f32>(device, config, engine, channels, errors, tid, load)?,
+        SampleFormat::I16 => build::<i16>(device, config, engine, channels, errors, tid, load)?,
+        SampleFormat::I32 => build::<i32>(device, config, engine, channels, errors, tid, load)?,
+        SampleFormat::U16 => build::<u16>(device, config, engine, channels, errors, tid, load)?,
+        SampleFormat::F64 => build::<f64>(device, config, engine, channels, errors, tid, load)?,
         other => bail!("Sampleformat {other:?} wird nicht unterstützt"),
     };
     stream.play().context("Audio-Stream startet nicht")?;
     Ok((stream, ctl))
 }
 
-fn build<T>(device: &cpal::Device, config: cpal::StreamConfig, mut engine: Engine, channels: usize, errors: &Arc<AtomicU64>, tid: &Arc<AtomicI32>) -> anyhow::Result<cpal::Stream>
+fn build<T>(device: &cpal::Device, config: cpal::StreamConfig, mut engine: Engine, channels: usize, errors: &Arc<AtomicU64>, tid: &Arc<AtomicI32>, load: &Arc<AtomicU32>) -> anyhow::Result<cpal::Stream>
 where
     T: SizedSample + FromSample<f32>,
 {
     let mut buf = vec![0.0f32; MAX_FRAMES * channels.max(1)];
     let tid = Arc::clone(tid);
+    let load = Arc::clone(load);
+    let rate = config.sample_rate.max(1) as f32;
     let mut tid_known = false;
     let stream = device.build_output_stream(
         config,
@@ -268,12 +280,19 @@ where
                 tid_known = true;
                 tid.store(current_tid(), Ordering::Relaxed);
             }
+            let started = std::time::Instant::now();
             for out in data.chunks_mut(buf.len()) {
                 let tmp = &mut buf[..out.len()];
                 engine.process(tmp, channels);
                 for (o, s) in out.iter_mut().zip(tmp.iter()) {
                     *o = T::from_sample(*s);
                 }
+            }
+            // Auslastung: Rechenzeit gegen die Spielzeit dieses Puffers (positive f32 sortieren wie ihre Bits)
+            let frames = data.len() / channels.max(1);
+            if frames > 0 {
+                let used = started.elapsed().as_secs_f32() * rate / frames as f32;
+                load.fetch_max(used.to_bits(), Ordering::Relaxed);
             }
         },
         {

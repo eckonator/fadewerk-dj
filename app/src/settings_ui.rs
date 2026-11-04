@@ -94,6 +94,8 @@ pub enum SettingsAction {
     RecordRevealDir,
     KeepAwake(bool),
     Limiter(bool),
+    /// Anzeige in der Statuszeile ein/aus: 0 Uhr, 1 Akku, 2 CPU, 3 RAM, 4 Temperatur.
+    StatusItem(usize, bool),
     MicDevice(Option<String>),
     MicGain(f32),
     Talkover(bool),
@@ -130,6 +132,9 @@ pub struct SettingsCtx<'a> {
     /// Kennung des tatsächlich geöffneten Master-Geräts (auch bei „Systemstandard“).
     pub active_device_id: Option<&'a str>,
     pub active_head: Option<&'a str>,
+    /// Liefert das System eine Temperatur bzw. einen Akku? `None` = noch nicht gefragt.
+    pub temp_available: Option<bool>,
+    pub battery_available: Option<bool>,
     /// Name des offenen Mikrofons (MIC an).
     pub active_mic: Option<&'a str>,
     pub sample_rate: u32,
@@ -1047,6 +1052,23 @@ fn look_page(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsActio
                 out.push(SettingsAction::Zoom(1.0));
             }
         });
+    });
+
+    card(ui, tr("Statuszeile"), |ui| {
+        let s = c.settings;
+        let none = |avail: Option<bool>, text: &'static str| if avail == Some(false) { tr(text) } else { "" };
+        let items = [
+            (tr("Uhrzeit"), s.status_clock, true, "", tr("Uhrzeit oben rechts in der Statuszeile.")),
+            (tr("Akkustand"), s.status_battery, c.battery_available != Some(false), none(c.battery_available, "Kein Akku gefunden"), tr("Ladestand des Laptop-Akkus: grün ab 40 %, orange darunter, rot unter 20 %, unter 10 % blinkt er (ohne Netz). Ein Blitz zeigt, dass er am Netz hängt.")),
+            (tr("CPU-Last"), s.status_cpu, true, tr("Meldet auch Aussetzer der Audio-Ausgabe"), tr("Auslastung aller Prozessorkerne. Kommt die Audio-Ausgabe nicht nach, steht dort für einige Sekunden rot AUSSETZER; gelb wird es, wenn der Audio-Thread über 70 % seiner Zeit braucht.")),
+            (tr("Arbeitsspeicher"), s.status_ram, true, "", tr("Belegter Arbeitsspeicher des ganzen Rechners.")),
+            (tr("Temperatur"), s.status_temp, c.temp_available != Some(false), none(c.temp_available, "Dieses System liefert keine Temperatur"), tr("Temperatur des Prozessors, soweit das System sie verrät (unter Windows meist nicht).")),
+        ];
+        for (i, (label, on, enabled, sub, info)) in items.into_iter().enumerate() {
+            if switch(ui, label, on && enabled, enabled, sub, info).clicked() && enabled {
+                out.push(SettingsAction::StatusItem(i, !on));
+            }
+        }
     });
 }
 

@@ -2,6 +2,7 @@
 //! Statuszeile und Befehlssuche: Arbeitsweise, Modell der Statuszeile, Einträge und Ausführung der Befehle.
 
 use super::*;
+use crate::statusbar::SysLine;
 
 impl FadeWerkDjApp {
     /// Befehlssuche zeigen, solange sie offen ist, und den gewählten Befehl ausführen.
@@ -40,7 +41,23 @@ impl FadeWerkDjApp {
             (None, Some(u)) => Some((to, t.next.clone(), Some(u))),
             _ => None,
         };
+        let st = &self.settings;
+        let mask = [(st.status_cpu, crate::sysmon::CPU), (st.status_ram, crate::sysmon::RAM), (st.status_temp, crate::sysmon::TEMP), (st.status_battery, crate::sysmon::BATTERY)]
+            .iter()
+            .filter(|(on, _)| *on)
+            .fold(0, |m, (_, bit)| m | bit);
+        self.sysmon.set_wanted(mask);
+        let stats = self.sysmon.stats();
+        let now = ctx.input(|i| i.time);
+        let sys = SysLine {
+            clock: st.status_clock.then(|| jiff::Zoned::now().strftime("%H:%M").to_string()),
+            battery: dev_battery().or(stats.battery).filter(|_| st.status_battery),
+            cpu: stats.cpu.filter(|_| st.status_cpu).map(|c| (c, self.audio_load, now < self.dropout_until)),
+            ram: stats.ram.filter(|_| st.status_ram),
+            temp: stats.temp.filter(|_| st.status_temp),
+        };
         StatusModel {
+            sys,
             on_air,
             next,
             notice: self.notice.as_ref().map(|(text, _)| text.clone()),
@@ -219,4 +236,15 @@ enum PaletteCmd {
     Lean,
     /// Volle Optik: alle Sparmaßnahmen aus und Plattenspieler an.
     FullLook,
+}
+
+/// `FW_BATTERY=<Prozent>[,netz]` (nur Debug): Akkustand vortäuschen, um die Farben zu prüfen.
+fn dev_battery() -> Option<crate::sysmon::Battery> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    let v = std::env::var("FW_BATTERY").ok()?;
+    let mut parts = v.split(',');
+    let percent = parts.next()?.trim().parse().ok()?;
+    Some(crate::sysmon::Battery { percent, plugged: parts.next().is_some_and(|p| p.trim() == "netz") })
 }

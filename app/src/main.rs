@@ -46,6 +46,7 @@ mod session;
 mod settings;
 mod settings_ui;
 mod statusbar;
+mod sysmon;
 mod theme;
 mod update;
 
