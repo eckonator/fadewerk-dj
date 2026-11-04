@@ -95,6 +95,8 @@ impl FadeWerkDjApp {
 
         let rec = if self.recording.is_some() { tr("Aufnahme beenden") } else { tr("Mix aufnehmen") };
         add(rec.into(), tr("Aufnahme"), "", PaletteCmd::Mixer(MixerAction::Record));
+        let mic = if self.mic.is_some() { tr("Mikrofon ausschalten") } else { tr("Mikrofon einschalten") };
+        add(mic.into(), tr("Mikrofon"), "", PaletteCmd::Mixer(MixerAction::Mic));
 
         let lists = tr("Playlists");
         for d in 0..2 {

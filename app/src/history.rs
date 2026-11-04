@@ -9,7 +9,7 @@
 //! ([`PlayTracker`]). Titel bis [`DAY_STARTS_AT_HOUR`] Uhr früh zählen zum Vortag, damit eine Feier über
 //! Mitternacht in einem Tag bleibt.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
 
@@ -479,25 +479,11 @@ pub fn read_import(file: &Path) -> Result<Imported, String> {
 /// Sucht fehlende Dateien in `roots` über Dateinamen (und Größe, falls bekannt), etwa nach dem Import von
 /// einem anderen Rechner. Liefert, wie viele gefunden wurden.
 pub fn relocate(entries: &mut [Entry], roots: &[PathBuf]) -> usize {
-    let missing: HashSet<std::ffi::OsString> = entries.iter().filter(|e| !e.path.is_file()).filter_map(|e| e.path.file_name().map(|n| n.to_owned())).collect();
-    if missing.is_empty() {
-        return 0;
-    }
-    let mut found: HashMap<std::ffi::OsString, Vec<PathBuf>> = HashMap::new();
-    for root in roots.iter().filter(|r| r.is_dir()) {
-        fw_library::walk_audio(root, || true, |tracks| {
-            for t in tracks {
-                if let Some(n) = t.file_name().filter(|n| missing.contains(*n)) {
-                    found.entry(n.to_owned()).or_default().push(t.clone());
-                }
-            }
-        });
-    }
+    let missing: Vec<(PathBuf, Option<u64>)> = entries.iter().filter(|e| !e.path.is_file()).map(|e| (e.path.clone(), e.size)).collect();
+    let moved = crate::relocate::find_moved(&missing, roots);
     let mut n = 0;
-    for e in entries.iter_mut().filter(|e| !e.path.is_file()) {
-        let Some(cands) = e.path.file_name().and_then(|n| found.get(n)) else { continue };
-        let size_ok = |p: &PathBuf| e.size.is_none_or(|s| std::fs::metadata(p).is_ok_and(|m| m.len() == s));
-        if let Some(p) = cands.iter().find(|p| size_ok(p)) {
+    for e in entries.iter_mut() {
+        if let Some(p) = moved.get(&e.path) {
             e.path = p.clone();
             n += 1;
         }

@@ -31,16 +31,16 @@ fn path() -> Option<PathBuf> {
     config_dir().map(|d| d.join("playlists.json"))
 }
 
-/// Lädt die gespeicherten Playlists. Dateien, die es nicht mehr gibt, fallen heraus;
-/// liefert außerdem, wie viele das waren.
-pub fn load() -> ([Playlist; 2], usize) {
-    let Some(p) = path() else { return (Default::default(), 0) };
-    let Ok(text) = std::fs::read_to_string(&p) else { return (Default::default(), 0) };
-    match restore(&text, |f| f.is_file()) {
-        Ok(r) => r,
+/// Lädt die gespeicherten Playlists. Fehlende Dateien bleiben zunächst drin: Die App sucht sie im
+/// Hintergrund (`relocate`), vielleicht wurden sie nur verschoben.
+pub fn load() -> [Playlist; 2] {
+    let Some(p) = path() else { return Default::default() };
+    let Ok(text) = std::fs::read_to_string(&p) else { return Default::default() };
+    match restore(&text, |_| true) {
+        Ok((lists, _)) => lists,
         Err(e) => {
             log::warn!("Playlists in {} unlesbar: {e}", p.display());
-            (Default::default(), 0)
+            Default::default()
         }
     }
 }
@@ -82,6 +82,62 @@ pub fn save(lists: &[Playlist; 2]) {
     }
 }
 
+/// Stelle eines geladenen Titels, damit die Player nach einem Absturz dort weitermachen.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct Place {
+    pub path: PathBuf,
+    pub secs: f64,
+    #[serde(default)]
+    pub pitch_pct: f32,
+}
+
+impl Place {
+    fn sanitized(self) -> Option<Self> {
+        (self.secs.is_finite() && self.secs >= 0.0 && self.pitch_pct.is_finite()).then(|| Place { pitch_pct: self.pitch_pct.clamp(-100.0, 100.0), ..self })
+    }
+}
+
+/// `player.json`: liegt nur da, solange die App läuft. Beim normalen Beenden wird die Datei gelöscht;
+/// findet der nächste Start sie, endete die App unerwartet.
+fn places_path() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("player.json"))
+}
+
+/// Stellen der Player vom letzten Lauf, wenn er unerwartet endete.
+pub fn load_places() -> [Option<Place>; 2] {
+    let Some(text) = places_path().and_then(|p| std::fs::read_to_string(p).ok()) else { return [None, None] };
+    parse_places(&text)
+}
+
+fn parse_places(text: &str) -> [Option<Place>; 2] {
+    match serde_json::from_str::<[Option<Place>; 2]>(text) {
+        Ok(places) => places.map(|p| p.and_then(Place::sanitized)),
+        Err(e) => {
+            log::warn!("player.json unlesbar: {e}");
+            [None, None]
+        }
+    }
+}
+
+pub fn save_places(places: &[Option<Place>; 2]) {
+    let Some(p) = places_path() else { return };
+    match serde_json::to_string(places) {
+        Ok(json) => {
+            if let Err(e) = write_atomic(&p, &json) {
+                log::warn!("Stellen der Player nicht gespeichert ({}): {e}", p.display());
+            }
+        }
+        Err(e) => log::warn!("Stellen der Player nicht gespeichert: {e}"),
+    }
+}
+
+/// Beim normalen Beenden: es gibt nichts wiederherzustellen.
+pub fn clear_places() {
+    if let Some(p) = places_path() {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
 /// Fingerabdruck der Playlists, um Änderungen billig zu erkennen.
 pub fn fingerprint(lists: &[Playlist; 2]) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -110,6 +166,17 @@ mod tests {
         assert_eq!((a.entries.len(), a.current), (2, None));
         assert_eq!((b.entries.len(), b.current), (1, Some(0)), "rückt mit dem entfernten Eintrag nach");
         assert_eq!(missing, 1);
+    }
+
+    #[test]
+    fn places_survive_broken_values() {
+        let text = r#"[{"path":"/a.mp3","secs":151.5,"pitch_pct":2.5},{"path":"/b.mp3","secs":-1}]"#;
+        let [a, b] = parse_places(text);
+        assert_eq!(a, Some(Place { path: "/a.mp3".into(), secs: 151.5, pitch_pct: 2.5 }));
+        assert_eq!(b, None);
+        for text in ["", "{", "[1,2]", "null"] {
+            assert_eq!(parse_places(text), [None, None], "{text:?}");
+        }
     }
 
     #[test]

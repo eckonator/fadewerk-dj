@@ -34,6 +34,8 @@ pub struct MixerModel<'a> {
     pub eq_kill: [[bool; 3]; 2],
     /// Laufende Aufnahme: Sekunden bisher, ob sie gerade abgeschlossen wird, geschriebene Bytes.
     pub recording: Option<(f64, bool, u64)>,
+    /// Mikrofon an, mit aktuellem Pegel (0 bis 1).
+    pub mic: Option<f32>,
     /// Beschriftung und Symbol der Effekt-Pads.
     pub fx_labels: &'a [String; fw_engine::FX_SLOTS],
     pub fx_icons: [crate::fx_icons::FxIcon; fw_engine::FX_SLOTS],
@@ -52,6 +54,7 @@ pub enum MixerAction {
     EqKill { deck: usize, band: usize, on: bool },
     /// Aufnahme starten bzw. beenden.
     Record,
+    Mic,
     /// Effekt-Pad auslösen: über Master oder nur auf dem Kopfhörer (vorhören).
     Fx { slot: usize, to_master: bool },
     FxVolume(f32),
@@ -67,7 +70,20 @@ fn scale(ui: &egui::Ui) -> f32 {
 }
 
 pub fn show_mixer(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerAction>) {
-    ui.vertical_centered(|ui| ui.label(RichText::new(tr("MIXER")).font(fonts::bold(15.0)).extra_letter_spacing(2.5)));
+    // Kopfzeile: MIC links in der Ecke, MIXER mittig, REC rechts in der Ecke
+    let head = ui.vertical_centered(|ui| ui.label(RichText::new(tr("MIXER")).font(fonts::bold(15.0)).extra_letter_spacing(2.5))).response.rect;
+    let (mic_w, rec_w, btn_h) = (62.0, 62.0, 20.0);
+    let y = head.center().y - btn_h / 2.0;
+    let mic_rect = Rect::from_min_size(pos2(head.left(), y), vec2(mic_w, btn_h));
+    let rec_rect = Rect::from_min_size(pos2(head.right() - rec_w, y), vec2(rec_w, btn_h));
+    if ui.put(mic_rect, |ui: &mut egui::Ui| mic_button(ui, mic_rect.size(), m.mic)).clicked() {
+        out.push(MixerAction::Mic);
+    }
+    if ui.put(rec_rect, |ui: &mut egui::Ui| record_button(ui, rec_rect.size(), m.recording)).clicked() {
+        out.push(MixerAction::Record);
+    }
+    // Luft zwischen Kopfzeile und EQ (in der kompakten Ansicht weniger)
+    ui.add_space(if m.compact { 3.0 } else { 8.0 });
     eq_strip(ui, m, out);
 
     // Pegelbrücke: LED A | Fader A | MAIN | Fader B | LED B
@@ -125,19 +141,40 @@ pub fn show_mixer(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerActi
     }
 }
 
-/// MASTER-Lautstärke mit der Aufnahmetaste daneben.
+/// MASTER-Lautstärke über die volle Breite (MIC und REC sitzen oben in der Kopfzeile).
 pub fn master_row(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerAction>) {
     ui.horizontal(|ui| {
         ui.label(small("MASTER"));
-        let rec_w = 62.0;
-        let (resp, new) = hw::mini_fader(ui, "master", m.master_volume, settings::DEFAULT_MASTER_VOLUME, 0.0, 1.0, ui.available_width() - rec_w - 10.0);
+        let (resp, new) = hw::mini_fader(ui, "master", m.master_volume, settings::DEFAULT_MASTER_VOLUME, 0.0, 1.0, ui.available_width());
         if let Some(v) = hw::nudge(ui, &resp, m.master_volume, VOLUME_STEP, 0.0, 1.0).or(new) {
             out.push(MixerAction::MasterVolume(v));
         }
-        if record_button(ui, vec2(rec_w, 20.0), m.recording).clicked() {
-            out.push(MixerAction::Record);
+    });
+}
+
+/// Mikrofon-Taste: leuchtet rot, solange das Mikrofon offen ist; ein Balken unten zeigt den Pegel.
+fn mic_button(ui: &mut egui::Ui, size: egui::Vec2, mic: Option<f32>) -> egui::Response {
+    let font = fonts::bold(11.0);
+    let b = hw::custom_button(ui, size, hw::Look::Color(theme::cue()), mic.is_some(), true, |p, r, color| {
+        // Mikrofon-Symbol vor dem Text, beides zusammen mittig (wie Punkt und Text bei REC)
+        let galley = p.layout_no_wrap("MIC".to_owned(), font.clone(), color);
+        let icon = 12.0;
+        let gap = 4.0;
+        let left = r.center().x - (icon + gap + galley.size().x) / 2.0;
+        crate::fx_icons::FxIcon::Mic.paint(p, Rect::from_center_size(pos2(left + icon / 2.0, r.center().y), vec2(icon, icon)), color);
+        p.galley(pos2(left + icon + gap, r.center().y - galley.size().y / 2.0), galley, color);
+        if let Some(level) = mic {
+            // Pegel in dB von −48 bis 0 über die Breite
+            let db = 20.0 * level.max(1e-6).log10();
+            let t = ((db + 48.0) / 48.0).clamp(0.0, 1.0);
+            let bar = Rect::from_min_size(pos2(r.left() + 4.0, r.bottom() - 4.0), vec2((r.width() - 8.0) * t, 2.0));
+            p.rect_filled(bar, 1.0, if level > 0.9 { theme::cue() } else { theme::play() });
         }
     });
+    if mic.is_some() {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(80));
+    }
+    b.on_hover_text(if mic.is_some() { tr("Mikrofon ausschalten") } else { tr("Mikrofon einschalten (Gerät und Talkover unter Einstellungen → Audio)") })
 }
 
 /// Aufnahme-Taste: roter Punkt und REC, während der Aufnahme leuchtend mit blinkendem Punkt und Laufzeit.
@@ -536,7 +573,10 @@ pub fn auto_controls(ui: &mut egui::Ui, f: &FadeModel<'_>, m: &MixerModel<'_>, f
     if put(cell(1, 1, 1), &mut |ui| hw::button(ui, cell(1, 1, 1).size(), "AUTO SYNC", small_font.clone(), hw::Look::Color(theme::yellow()), f.auto_sync, true)).on_hover_text(tip).clicked() {
         fade_out.push(FadeAction::AutoSync(!f.auto_sync));
     }
-    if put(cell(2, 0, 2), &mut |ui| record_button(ui, cell(2, 0, 2).size(), m.recording)).clicked() {
+    if put(cell(2, 0, 1), &mut |ui| mic_button(ui, cell(2, 0, 1).size(), m.mic)).clicked() {
+        mixer_out.push(MixerAction::Mic);
+    }
+    if put(cell(2, 1, 1), &mut |ui| record_button(ui, cell(2, 1, 1).size(), m.recording)).clicked() {
         mixer_out.push(MixerAction::Record);
     }
 }

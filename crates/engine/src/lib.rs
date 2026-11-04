@@ -13,6 +13,8 @@ pub mod engine;
 pub mod eq;
 pub mod filter;
 pub mod headlink;
+pub mod limiter;
+pub mod mic;
 pub mod mixer;
 pub mod motor;
 pub mod sampler;

@@ -93,6 +93,11 @@ pub enum SettingsAction {
     /// Ordner für Aufnahmen im Dateimanager zeigen.
     RecordRevealDir,
     KeepAwake(bool),
+    Limiter(bool),
+    MicDevice(Option<String>),
+    MicGain(f32),
+    Talkover(bool),
+    TalkoverDb(f32),
     /// Systemtöne und andere Programme stumm schalten.
     MuteOthers(bool),
     /// macOS: Ausgabegerät exklusiv belegen.
@@ -125,6 +130,8 @@ pub struct SettingsCtx<'a> {
     /// Kennung des tatsächlich geöffneten Master-Geräts (auch bei „Systemstandard“).
     pub active_device_id: Option<&'a str>,
     pub active_head: Option<&'a str>,
+    /// Name des offenen Mikrofons (MIC an).
+    pub active_mic: Option<&'a str>,
     pub sample_rate: u32,
     pub channels: usize,
     /// Gemessene Größe der Caches, `None` solange nicht gemessen.
@@ -144,6 +151,7 @@ pub struct SettingsUi {
     /// Unter „Darstellung“ die Leistung statt des Aussehens zeigen.
     performance: bool,
     devices: Option<Vec<DeviceInfo>>,
+    mic_devices: Option<Vec<DeviceInfo>>,
     /// Auf der Seite „Über“ aufgeklappter Lizenztext (Index in `LICENSE_TEXTS`).
     license_view: Option<usize>,
     /// Pad, für das gerade ein Symbol gewählt wird.
@@ -165,6 +173,8 @@ impl SettingsUi {
         self.open = true;
         self.place = true;
         self.performance = page == "leistung";
+        // Entwicklerschalter: Rückfrage zum Zurücksetzen offen und sichtbar
+        self.confirm_reset = page == "zuruecksetzen";
         self.page = match page {
             "aussehen" | "leistung" | "darstellung" => Page::Display,
             "aufnahme" | "audio" => Page::Audio,
@@ -430,10 +440,12 @@ impl SettingsUi {
         card_with(ui, tr("Zurücksetzen"), theme::cue(), |ui| {
             note(ui, tr("Löscht alle Einstellungen, Playlists, die Historie, eigene Effekt-Pads und alle Caches. Deine Musikdateien bleiben unberührt. Danach startet FadeWerk DJ neu wie beim ersten Mal."));
             ui.add_space(2.0);
-            ui.horizontal(|ui| {
-                let red = crate::hw::Look::Color(theme::cue());
-                if self.confirm_reset && !c.playing {
-                    ui.label(RichText::new(tr("Wirklich alles löschen? Das lässt sich nicht rückgängig machen.")).color(theme::cue()));
+            let red = crate::hw::Look::Color(theme::cue());
+            if self.confirm_reset && !c.playing {
+                // Frage in eigener Zeile (bricht um), Tasten darunter: sonst drückt die Zeile das Fenster breit
+                ui.add(egui::Label::new(RichText::new(tr("Wirklich alles löschen? Das lässt sich nicht rückgängig machen.")).color(theme::cue())).wrap());
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
                     if action_look(ui, tr("Ja, zurücksetzen"), red, true).clicked() {
                         out.push(SettingsAction::ResetAll);
                         self.confirm_reset = false;
@@ -441,14 +453,17 @@ impl SettingsUi {
                     if action(ui, tr("Abbrechen"), true).clicked() {
                         self.confirm_reset = false;
                     }
-                } else {
-                    self.confirm_reset = false;
-                    let b = action_look(ui, tr("FadeWerk DJ zurücksetzen …"), red, !c.playing).on_disabled_hover_text(tr("Gesperrt, solange ein Player spielt"));
-                    if b.clicked() {
-                        self.confirm_reset = true;
-                    }
+                });
+            } else {
+                self.confirm_reset = false;
+                let b = action_look(ui, tr("FadeWerk DJ zurücksetzen …"), red, !c.playing).on_disabled_hover_text(tr("Gesperrt, solange ein Player spielt"));
+                if b.clicked() {
+                    self.confirm_reset = true;
                 }
-            });
+            }
+            if self.confirm_reset {
+                ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
+            }
         });
     }
 
@@ -554,8 +569,64 @@ impl SettingsUi {
                     }
                 });
             });
+            ui.add_space(4.0);
+            let info = tr("Wird der Mix lauter als die Lautsprecher können, senkt der Limiter die Spitzen weich ab, statt sie hart abzuschneiden (verzerrt nicht). Gilt auch für die Aufnahme.");
+            if switch(ui, tr("Limiter"), s.limiter, true, tr("Schützt vor Übersteuern"), info).clicked() {
+                out.push(SettingsAction::Limiter(!s.limiter));
+            }
         });
         if refresh {
+            self.devices = None;
+        }
+
+        let mics = self.mic_devices.get_or_insert_with(audio::list_input_devices).clone();
+        card(ui, tr("Mikrofon"), |ui| {
+            let current = s
+                .mic_device
+                .as_ref()
+                .and_then(|id| mics.iter().find(|d| &d.id == id).map(|d| d.name.clone()))
+                .unwrap_or_else(|| tr("Systemstandard").to_owned());
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("mic-device").selected_text(current).width(300.0).show_ui(ui, |ui| {
+                    if ui.selectable_label(s.mic_device.is_none(), tr("Systemstandard")).clicked() {
+                        out.push(SettingsAction::MicDevice(None));
+                    }
+                    for d in &mics {
+                        if ui.selectable_label(s.mic_device.as_deref() == Some(d.id.as_str()), &d.name).clicked() {
+                            out.push(SettingsAction::MicDevice(Some(d.id.clone())));
+                        }
+                    }
+                });
+                if action(ui, tr("Liste aktualisieren"), true).clicked() {
+                    refresh = true;
+                }
+            });
+            let text = match c.active_mic {
+                Some(name) => trf("An: {}. Ausschalten mit der Taste MIC neben REC.", &[&name]),
+                None => tr("Einschalten mit der Taste MIC neben REC. Das Mikrofon geht über die Lautsprecher und in die Aufnahme.").to_owned(),
+            };
+            note(ui, &text);
+            ui.add_space(4.0);
+            field(ui, tr("Pegel"), "", |ui| {
+                let options = [(0.5, "−6 dB", true), (1.0, "0 dB", true), (2.0, "+6 dB", true), (4.0, "+12 dB", true)];
+                if let Some(g) = segmented(ui, s.mic_gain, &options) {
+                    out.push(SettingsAction::MicGain(g));
+                }
+            });
+            ui.add_space(4.0);
+            let info = tr("Sprichst du ins Mikrofon, wird die Musik leiser und kommt nach einer Sprechpause von selbst zurück. Gut für Ansagen.");
+            if switch(ui, tr("Talkover"), s.talkover, true, tr("Musik beim Sprechen leiser"), info).clicked() {
+                out.push(SettingsAction::Talkover(!s.talkover));
+            }
+            field(ui, tr("Absenkung"), "", |ui| {
+                let options = [(-6.0, "−6 dB", s.talkover), (-12.0, "−12 dB", s.talkover), (-18.0, "−18 dB", s.talkover), (-24.0, "−24 dB", s.talkover)];
+                if let Some(db) = segmented(ui, s.talkover_db, &options) {
+                    out.push(SettingsAction::TalkoverDb(db));
+                }
+            });
+        });
+        if refresh {
+            self.mic_devices = None;
             self.devices = None;
         }
 
@@ -866,7 +937,7 @@ fn general_page(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAc
 /// Mix aufnehmen (Format, Ordner) und die Historie der gespielten Titel.
 fn recording_cards(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction>) {
     card(ui, tr("Mix aufnehmen"), |ui| {
-        note(ui, tr("Die Taste REC neben MASTER nimmt den Mix auf, wie er über Master klingt (vor der Master-Lautstärke)."));
+        note(ui, tr("Die Taste REC im Mixer nimmt den Mix auf, wie er über Master klingt (vor der Master-Lautstärke)."));
         ui.add_space(2.0);
         field(ui, tr("Format"), "", |ui| {
             use crate::recorder::RecordFormat;

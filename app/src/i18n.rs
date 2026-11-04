@@ -500,6 +500,44 @@ fn en(de: &str) -> Option<&'static str> {
         "Löscht alle Einstellungen, Playlists, die Historie, eigene Effekt-Pads und alle Caches. Deine Musikdateien bleiben unberührt. Danach startet FadeWerk DJ neu wie beim ersten Mal." => "Deletes all settings, playlists, the history, custom effect pads and all caches. Your music files stay untouched. FadeWerk DJ then restarts as if for the first time.",
         "Wirklich alles löschen? Das lässt sich nicht rückgängig machen." => "Really delete everything? This cannot be undone.",
         "FadeWerk DJ zurücksetzen …" => "Reset FadeWerk DJ …",
+        "Playlist prüfen …" => "Check playlist …",
+        "Vor dem Auftritt: findet fehlende, verschobene, nicht abspielbare und noch nicht analysierte Titel." => "Before the gig: finds missing, moved, unplayable and not yet analyzed tracks.",
+        "Entfernen" => "Remove",
+        "An anderer Stelle in deinen Musikordnern gefunden (gleicher Dateiname). Klick übernimmt den neuen Ort." => "Found elsewhere in your music folders (same file name). Click to use the new location.",
+        "Analysiert …" => "Analyzing …",
+        "Jetzt analysieren" => "Analyze now",
+        "Erneut prüfen" => "Check again",
+        "{} verschobene Titel wiedergefunden" => "Found {} moved tracks again",
+        "{} verschobene Titel wiedergefunden, {} gibt es nicht mehr" => "Found {} moved tracks again, {} no longer exist",
+        "Playlist {} prüfen" => "Check playlist {}",
+        "Prüft {} Titel und sucht fehlende in deinen Musikordnern …" => "Checking {} tracks and looking for missing ones in your music folders …",
+        "Fehlende Dateien: {}" => "Missing files: {}",
+        "{} wiedergefunden" => "{} found again",
+        "Nicht abspielbar: {}" => "Unplayable: {}",
+        "Ohne BPM oder Tonart: {} (liest noch {} Tags …)" => "Without BPM or key: {} (still reading {} tags …)",
+        "Ohne BPM oder Tonart: {}" => "Without BPM or key: {}",
+        "Alles in Ordnung: alle {} Titel sind da und analysiert." => "All good: all {} tracks are there and analyzed.",
+        "{} Titel an ihren neuen Ort übernommen" => "{} tracks moved to their new location",
+        "{} fehlende Titel entfernt" => "Removed {} missing tracks",
+        "{} nicht abspielbare Titel entfernt" => "Removed {} unplayable tracks",
+        "{} fehlende Titel übersprungen (Playlist prüfen im ⋯-Menü)" => "Skipped {} missing tracks (Check playlist in the ⋯ menu)",
+        "Mikrofon ausschalten" => "Turn microphone off",
+        "Mikrofon einschalten (Gerät und Talkover unter Einstellungen → Audio)" => "Turn microphone on (device and talkover under Settings → Audio)",
+        "Einschalten mit der Taste MIC neben REC. Das Mikrofon geht über die Lautsprecher und in die Aufnahme." => "Turn on with the MIC button next to REC. The microphone goes to the speakers and into the recording.",
+        "Pegel" => "Level",
+        "Sprichst du ins Mikrofon, wird die Musik leiser und kommt nach einer Sprechpause von selbst zurück. Gut für Ansagen." => "When you speak into the microphone, the music gets quieter and comes back by itself after a pause. Good for announcements.",
+        "Talkover" => "Talkover",
+        "Musik beim Sprechen leiser" => "Lower the music while speaking",
+        "Absenkung" => "Reduction",
+        "An: {}. Ausschalten mit der Taste MIC neben REC." => "On: {}. Turn off with the MIC button next to REC.",
+        "Ohne Audio-Ausgabe geht das Mikrofon nicht" => "The microphone needs an audio output",
+        "Mikrofon an: {}" => "Microphone on: {}",
+        "Mikrofon lässt sich nicht öffnen: {}" => "Cannot open the microphone: {}",
+        "Mikrofon einschalten" => "Turn microphone on",
+        "Limiter" => "Limiter",
+        "Schützt vor Übersteuern" => "Protects against clipping",
+        "Wird der Mix lauter als die Lautsprecher können, senkt der Limiter die Spitzen weich ab, statt sie hart abzuschneiden (verzerrt nicht). Gilt auch für die Aufnahme." => "If the mix gets louder than the speakers can take, the limiter lowers the peaks smoothly instead of cutting them off (no distortion). Also applies to the recording.",
+        "FadeWerk DJ wurde unerwartet beendet. Die Player stehen wieder an der alten Stelle." => "FadeWerk DJ closed unexpectedly. The decks are back where they were.",
         "Gesperrt, solange ein Player spielt" => "Locked while a deck is playing",
         "FadeWerk DJ wurde zurückgesetzt." => "FadeWerk DJ has been reset.",
         "Caches geleert." => "Caches cleared.",
@@ -719,7 +757,7 @@ fn en(de: &str) -> Option<&'static str> {
         "Suche schließen" => "Close search",
         "In der Playlist suchen" => "Search the playlist",
         "Leistung" => "Performance",
-        "Die Taste REC neben MASTER nimmt den Mix auf, wie er über Master klingt (vor der Master-Lautstärke)." => "The REC button next to MASTER records the mix as it sounds on master (before the master volume).",
+        "Die Taste REC im Mixer nimmt den Mix auf, wie er über Master klingt (vor der Master-Lautstärke)." => "The REC button in the mixer records the mix as it sounds on master (before the master volume).",
         "WAV (verlustfrei, 24 Bit)" => "WAV (lossless, 24 bit)",
         "MP3 (320 kbit/s)" => "MP3 (320 kbit/s)",
         "Ordner wählen …" => "Choose folder …",
@@ -927,8 +965,16 @@ mod tests {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut missing = Vec::new();
         let mut found = 0;
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let path = entry.unwrap().path();
+        // Auch die Teildateien in Unterordnern (`app/`)
+        let mut files = Vec::new();
+        let mut dirs = vec![dir];
+        while let Some(d) = dirs.pop() {
+            for entry in std::fs::read_dir(&d).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() { dirs.push(path) } else { files.push(path) }
+            }
+        }
+        for path in files {
             if path.extension().is_none_or(|e| e != "rs") || path.ends_with("i18n.rs") {
                 continue;
             }

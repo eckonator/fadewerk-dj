@@ -33,6 +33,8 @@ pub enum PlaylistAction {
     ClearAll,
     /// Weitere Exemplare desselben Titels entfernen (der geladene bleibt).
     RemoveDuplicates,
+    /// Fenster „Playlist prüfen“ öffnen.
+    Check,
     Shuffle,
     /// Kommende Titel beider Playlists harmonisch ordnen (siehe `harmonic.rs`).
     Harmonic,
@@ -270,6 +272,12 @@ pub fn show(
                 .on_hover_text(tr("Lässt von mehreren Exemplaren desselben Titels (gleicher Interpret und Titel, fast gleiche Länge) nur eines stehen. Der geladene Titel bleibt."));
             if dups.clicked() {
                 out.push(PlaylistAction::RemoveDuplicates);
+            }
+            let check = ui
+                .add_enabled(!pl.entries.is_empty(), egui::Button::new(tr("Playlist prüfen …")))
+                .on_hover_text(tr("Vor dem Auftritt: findet fehlende, verschobene, nicht abspielbare und noch nicht analysierte Titel."));
+            if check.clicked() {
+                out.push(PlaylistAction::Check);
             }
             ui.separator();
             // Abgesetzt und rot: leert die Liste, ein laufender Titel bleibt

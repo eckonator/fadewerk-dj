@@ -2,6 +2,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
+use crate::headlink::HeadReceiver;
+use crate::mic::Talkover;
+use crate::limiter::Limiter;
 use crate::atomic::{AtomicF32, AtomicF64};
 use crate::deck::Deck;
 use crate::eq::Eq;
@@ -64,6 +67,14 @@ pub enum Command {
     SetHeadMix(f32),
     SetHeadVolume(f32),
     SetMasterVolume(f32),
+    /// Limiter auf dem Master an oder aus.
+    SetLimiter(bool),
+    /// Mikrofon anschließen (`None` = aus). Das Signal kommt aus dem Takt des Eingabegeräts.
+    SetMic(Option<HeadReceiver>),
+    /// Mikrofonpegel als Faktor.
+    SetMicGain(f32),
+    /// Talkover: Musik beim Sprechen auf `depth` (Faktor) absenken.
+    SetTalkover { on: bool, depth: f32 },
     SetMotor(Motor),
     /// Verbindung zum eigenen Kopfhörergerät setzen oder lösen.
     SetHeadSink(Option<HeadSink>),
@@ -96,7 +107,9 @@ impl Command {
             | SetHeadMix(x)
             | SetHeadVolume(x)
             | SetMasterVolume(x)
-            | SetFxVolume(x) => f(*x),
+            | SetFxVolume(x)
+            | SetMicGain(x) => f(*x),
+            SetTalkover { depth, .. } => f(*depth),
             SetCurve(Curve::Custom(pts)) => pts.iter().all(|&x| f(x)),
             SetMotor(m) => f(m.spin_up_secs) && f(m.spin_down_secs),
             _ => true,
@@ -150,11 +163,17 @@ pub struct Shared {
     recording: AtomicBool,
     /// Frames, die bei der Aufnahme verloren gingen, weil der Schreib-Thread nicht nachkam.
     record_dropped: AtomicU64,
+    /// Spitzenpegel des Mikrofons seit dem letzten Abholen.
+    mic_level: AtomicF32,
 }
 
 impl Shared {
     /// Holt die Spitzenpegel seit dem letzten Aufruf ab: `[A, B, Master]`, je `[L, R]`.
     /// Die Kanäle A und B werden nach dem Kanalfader und vor dem Crossfader gemessen.
+    pub fn take_mic_level(&self) -> f32 {
+        self.mic_level.take()
+    }
+
     pub fn take_levels(&self) -> [[f32; 2]; 3] {
         std::array::from_fn(|i| [self.levels[i][0].take(), self.levels[i][1].take()])
     }
@@ -250,6 +269,12 @@ pub struct Engine {
     spectrum: Spectrum,
     sampler: Sampler,
     test_tone: TestTone,
+    limiter: Limiter,
+    mic: Option<HeadReceiver>,
+    /// Mikrofon dieses Blocks, verschachtelt L/R.
+    mic_buf: Vec<f32>,
+    mic_gain: f32,
+    talkover: Talkover,
     /// Effekte dieses Blocks: über Master und nur auf dem Kopfhörer.
     fx_bufs: [Vec<[f32; 2]>; 2],
 }
@@ -272,6 +297,7 @@ impl Engine {
             fx_playing: AtomicU32::new(0),
             recording: AtomicBool::new(false),
             record_dropped: AtomicU64::new(0),
+            mic_level: AtomicF32::new(0.0),
         });
         let engine = Engine {
             rx,
@@ -299,6 +325,11 @@ impl Engine {
             head_sink: None,
             sampler: Sampler::default(),
             test_tone: TestTone::default(),
+            limiter: Limiter::new(sample_rate),
+            mic: None,
+            mic_buf: vec![0.0; 2 * CHUNK],
+            mic_gain: 1.0,
+            talkover: Talkover::new(sample_rate),
             fx_bufs: std::array::from_fn(|_| vec![[0.0; 2]; CHUNK]),
         };
         (engine, Controller { tx, garbage: grx, recording: Some(rec_rx), shared })
@@ -381,6 +412,13 @@ impl Engine {
             SetHeadMix(m) => self.head_mix = m.clamp(0.0, 1.0),
             SetHeadVolume(v) => self.head_volume = v.clamp(0.0, 1.0),
             SetMasterVolume(v) => self.master_volume = v.clamp(0.0, 1.0),
+            SetLimiter(on) => self.limiter.set_on(on),
+            SetMic(m) => {
+                self.mic = m;
+                self.mic_buf.fill(0.0);
+            }
+            SetMicGain(g) => self.mic_gain = g.clamp(0.0, 8.0),
+            SetTalkover { on, depth } => self.talkover.set(on, depth),
             SetMotor(m) => self.motor = m,
             SetHeadSink(s) => self.head_sink = s,
             LoadFx { slot, sound } => {
@@ -409,6 +447,7 @@ impl Engine {
         let rate = self.shared.sample_rate as f32;
         let mut peaks = [[0.0f32; 2]; 3];
         let mut dropped = 0u64;
+        let mut mic_peak = 0.0f32;
         let spectrum_on = self.shared.spectrum_on.load(Ordering::Relaxed);
 
         for block in out.chunks_mut(CHUNK * channels) {
@@ -429,6 +468,10 @@ impl Engine {
             fx_master[..n].fill([0.0; 2]);
             fx_cue[..n].fill([0.0; 2]);
             self.sampler.render_add(rate, &mut fx_master[..n], &mut fx_cue[..n]);
+            // Mikrofon im Takt des Masters (umgerechnet und nachgeregelt wie beim Kopfhörergerät)
+            if let Some(mic) = self.mic.as_mut() {
+                mic.render(&mut self.mic_buf[..2 * n], 2);
+            }
 
             // Crossfader gegen Knacksen glätten: höchstens ein voller Weg in 20 ms
             let max_step = 2.0 * n as f32 / (0.02 * rate);
@@ -452,9 +495,14 @@ impl Engine {
                 let mut master = [0.0f32; 2];
                 let mut cue = [p[0] + fxc[0], p[1] + fxc[1]];
                 let (tone_master, tone_head) = self.test_tone.next(rate);
-                let mut mix = [0.0f32; 2];
+                // Mikrofon über Master (auch in die Aufnahme), Talkover senkt dabei die Musik
+                let mic = if self.mic.is_some() { self.mic_buf[2 * i] * self.mic_gain } else { 0.0 };
+                mic_peak = mic_peak.max(mic.abs());
+                let duck = self.talkover.next(mic.abs());
+                let mix = [0, 1].map(|c| (ca[c] * ga + cb[c] * gb + fxm[c]) * duck + mic);
+                // Limiter vor Master-Lautstärke und Aufnahme
+                let mix = self.limiter.process(mix);
                 for c in 0..2 {
-                    mix[c] = ca[c] * ga + cb[c] * gb + fxm[c];
                     master[c] = mix[c] * self.master_volume + tone_master;
                     // Vorhören greift vor Kanalfader und Crossfader ab
                     if self.pfl[0] { cue[c] += a[c]; }
@@ -487,6 +535,7 @@ impl Engine {
         if dropped > 0 {
             self.shared.record_dropped.fetch_add(dropped, Ordering::Relaxed);
         }
+        self.shared.mic_level.fetch_max_positive(mic_peak);
         self.publish(peaks);
     }
 

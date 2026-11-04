@@ -145,6 +145,16 @@ pub struct Settings {
     pub record_history: bool,
     /// Bildschirm und Rechner nicht in den Ruhezustand gehen lassen, solange Musik spielt.
     pub keep_awake: bool,
+    /// Limiter auf dem Master: Spitzen werden abgesenkt statt abgeschnitten.
+    pub limiter: bool,
+    /// Mikrofon (cpal-Kennung); `None` = Standardeingang.
+    pub mic_device: Option<String>,
+    /// Mikrofonpegel als Faktor (1 = unverändert).
+    pub mic_gain: f32,
+    /// Talkover: Musik senken, solange ins Mikrofon gesprochen wird.
+    pub talkover: bool,
+    /// Absenkung beim Talkover in dB (negativ).
+    pub talkover_db: f32,
     /// Systemtöne und (Windows, Linux) andere Programme stumm, solange FadeWerk DJ läuft.
     pub mute_others: bool,
     /// macOS: Ausgabegerät exklusiv belegen, andere Programme bleiben darauf stumm.
@@ -215,6 +225,11 @@ impl Default for Settings {
             online_lookup: false,
             record_history: true,
             keep_awake: true,
+            limiter: true,
+            mic_device: None,
+            mic_gain: 1.0,
+            talkover: true,
+            talkover_db: -12.0,
             mute_others: false,
             exclusive_output: false,
             record_format: Default::default(),
@@ -356,6 +371,8 @@ impl Settings {
         self.column_widths.retain(|(_, w)| w.is_finite() && *w > 0.0 && *w < 5_000.0);
         self.fx_slots.truncate(fw_engine::FX_SLOTS);
         self.fx_volume = fit(self.fx_volume, 0.0, 1.0, d.fx_volume);
+        self.mic_gain = fit(self.mic_gain, 0.0, 4.0, d.mic_gain);
+        self.talkover_db = fit(self.talkover_db, -30.0, 0.0, d.talkover_db);
         self.spin_up_secs = fit(self.spin_up_secs, 0.1, 2.0, d.spin_up_secs);
         self.spin_down_secs = fit(self.spin_down_secs, 0.2, 4.0, d.spin_down_secs);
         self.fade_secs = fit(self.fade_secs, 1.0, 20.0, d.fade_secs);

@@ -3,6 +3,9 @@
 
 use super::*;
 
+/// Höchstens so viele fehlende Titel überspringt `load_next` am Stück.
+const MAX_SKIP_MISSING: usize = 50;
+
 impl FadeWerkDjApp {
     /// Gemerkte BPM und Tonart für einen Titel prüfen: geänderte Datei → verwerfen, umgezogene Datei → übernehmen.
     pub(super) fn resolve_bpm(&mut self, path: &Path, stamp: Option<fw_library::Stamp>) {
@@ -169,12 +172,36 @@ impl FadeWerkDjApp {
         true
     }
 
+    /// Stelle, an der Player `d` nach einem Absturz mit `path` weitermacht.
+    fn resume_secs(&self, d: usize, path: &Path) -> Option<f64> {
+        self.resume[d].as_ref().filter(|r| r.path == path).map(|r| r.secs)
+    }
+
     pub(super) fn load_next(&mut self, d: usize, autoplay: bool, keep_playing: bool) -> bool {
         let wrap = self.decks[d].repeat == Repeat::List;
-        match self.playlists[d].next_index(wrap) {
-            Some(i) => self.load_index(d, i, autoplay, keep_playing),
-            None => false,
+        let pl = &self.playlists[d];
+        let Some(first) = pl.next_index(wrap) else { return false };
+        // Fehlende Dateien überspringen (Laufwerk abgezogen, Datei verschoben); sie bleiben in der Liste
+        let n = pl.entries.len();
+        let mut i = first;
+        let mut skipped = 0;
+        while skipped < n.min(MAX_SKIP_MISSING) && !pl.entries[i].is_file() {
+            skipped += 1;
+            i += 1;
+            if i >= n {
+                if !wrap {
+                    return false;
+                }
+                i = 0;
+            }
         }
+        if skipped == n.min(MAX_SKIP_MISSING) {
+            i = first;
+        } else if skipped > 0 {
+            let now = self.last_logic;
+            self.notify(trf("{} fehlende Titel übersprungen (Playlist prüfen im ⋯-Menü)", &[&skipped]), now);
+        }
+        self.load_index(d, i, autoplay, keep_playing)
     }
 
     /// Player `d` wartet noch auf einen Titel. Spielt schon dessen Anfang (Laden in Stücken), ist er bereit.
@@ -254,10 +281,11 @@ impl FadeWerkDjApp {
                     // Der Anfang des Titels: Player spielt schon, der vollständige folgt mit derselben Kennung
                     let Some(p) = self.decks.get(d).and_then(|v| v.pending.as_ref()).filter(|p| p.token == token) else { continue };
                     // FadeWerk: Startstelle im Einblendbereich; liegt sie nicht sicher im Anfang, auf den ganzen warten
-                    let start = p.index.and_then(|i| self.playlists[d].fade(i).fade_in).map_or(0.0, |r| r.start as f64);
+                    let start = self.resume_secs(d, &path).unwrap_or_else(|| p.index.and_then(|i| self.playlists[d].fade(i).fade_in).map_or(0.0, |r| r.start as f64));
                     if start > audio.len_frames() as f64 / audio.sample_rate as f64 - 10.0 {
                         continue;
                     }
+                    self.resume[d] = None;
                     let (autoplay, keep_playing, index) = (p.autoplay, p.keep_playing, p.index);
                     if let Some(p) = self.decks[d].pending.as_mut() {
                         p.started = true;
@@ -296,6 +324,7 @@ impl FadeWerkDjApp {
                         self.caches.key.insert(&l.path, crate::analysis_cache::Key::new(l.key));
                     }
                     self.keys.insert(l.path.clone(), l.key);
+                    self.unreadable.remove(&l.path);
                     if l.deck == PREVIEW {
                         if self.preview.as_ref().is_some_and(|p| p.token == l.token) {
                             let start = l.audio.duration_secs() * 0.3;
@@ -318,7 +347,9 @@ impl FadeWerkDjApp {
                         continue;
                     }
                     // FadeWerk: der Titel beginnt am Anfang seines Einblendbereichs
-                    let start = p.index.and_then(|i| self.playlists[d].fade(i).fade_in).map_or(0.0, |r| r.start as f64);
+                    let fade_start = p.index.and_then(|i| self.playlists[d].fade(i).fade_in).map_or(0.0, |r| r.start as f64);
+                    let start = self.resume_secs(d, &l.path).map_or(fade_start, |s| s.min((l.audio.duration_secs() - 1.0).max(0.0)));
+                    self.resume[d] = None;
                     self.ctl.send(Command::Load { deck: d, id: l.token, track: l.audio, keep_playing: p.keep_playing, start_secs: start });
                     if p.autoplay {
                         self.ctl.send(Command::Play { deck: d });
@@ -347,6 +378,7 @@ impl FadeWerkDjApp {
                 }
                 Response::Failed { path, deck, error } => {
                     log::warn!("Laden fehlgeschlagen: {error}");
+                    self.unreadable.insert(path.clone());
                     if let Some(d) = deck.filter(|d| *d < 2) {
                         self.decks[d].pending = None;
                     }

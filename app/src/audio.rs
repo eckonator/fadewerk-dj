@@ -31,6 +31,12 @@ pub struct HeadOut {
     pub device: String,
 }
 
+/// Eingabestream des Mikrofons (läuft, solange das Mikrofon an ist).
+pub struct MicIn {
+    _stream: cpal::Stream,
+    pub device: String,
+}
+
 /// Ein Ausgabegerät für die Auswahl in den Einstellungen.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeviceInfo {
@@ -112,6 +118,69 @@ fn try_start(device_id: Option<&str>, buffer_frames: Option<u32>) -> anyhow::Res
     log::info!("Audio: {name}, {sample_rate} Hz, {channels} Kanäle, {format:?}, Puffer {:?}", config.buffer_size);
     raise_audio_priority(audio_tid);
     Ok((AudioOut { _stream: stream, device: name, id, sample_rate, errors }, ctl))
+}
+
+/// Alle Eingabegeräte (Mikrofone) des Standard-Audiosystems.
+pub fn list_input_devices() -> Vec<DeviceInfo> {
+    let host = cpal::default_host();
+    let Ok(devices) = host.input_devices() else { return Vec::new() };
+    devices
+        .filter_map(|d| {
+            let id = d.id().ok()?.to_string();
+            let max_channels = d.supported_input_configs().ok()?.map(|c| c.channels()).max().unwrap_or(1);
+            Some(DeviceInfo { id, name: device_name(&d), max_channels })
+        })
+        .collect()
+}
+
+/// Öffnet das Mikrofon (`None` = Standardeingang). Es schreibt mono in den Ringpuffer, die Engine liest
+/// über den gelieferten [`HeadReceiver`] im Takt des Masters.
+pub fn start_mic(device_id: Option<&str>, master_rate: u32) -> anyhow::Result<(MicIn, HeadReceiver)> {
+    let host = cpal::default_host();
+    let device = match device_id {
+        Some(id) => id.parse::<cpal::DeviceId>().ok().and_then(|id| host.device_by_id(&id)).context("Mikrofon nicht gefunden")?,
+        None => host.default_input_device().context("Kein Mikrofon gefunden")?,
+    };
+    let supported = device.default_input_config().context("Eingabeformat nicht lesbar")?;
+    let format = supported.sample_format();
+    let config: cpal::StreamConfig = supported.into();
+    // Vorrat von etwa 20 ms in Frames des Mikrofons
+    let latency = (config.sample_rate as f32 * 0.02) as usize;
+    let (sink, rx) = head_link(config.sample_rate, master_rate, latency);
+    let channels = config.channels as usize;
+    let stream = match format {
+        SampleFormat::F32 => build_mic::<f32>(&device, config, sink, channels)?,
+        SampleFormat::I16 => build_mic::<i16>(&device, config, sink, channels)?,
+        SampleFormat::I32 => build_mic::<i32>(&device, config, sink, channels)?,
+        SampleFormat::U16 => build_mic::<u16>(&device, config, sink, channels)?,
+        SampleFormat::F64 => build_mic::<f64>(&device, config, sink, channels)?,
+        other => bail!("Sampleformat {other:?} wird nicht unterstützt"),
+    };
+    stream.play().context("Mikrofon-Stream startet nicht")?;
+    let name = device_name(&device);
+    log::info!("Mikrofon: {name}, {} Hz, {channels} Kanäle", config.sample_rate);
+    Ok((MicIn { _stream: stream, device: name }, rx))
+}
+
+fn build_mic<T>(device: &cpal::Device, config: cpal::StreamConfig, mut sink: HeadSink, channels: usize) -> anyhow::Result<cpal::Stream>
+where
+    T: SizedSample,
+    f32: FromSample<T>,
+{
+    let channels = channels.max(1);
+    let stream = device.build_input_stream(
+        config,
+        move |data: &[T], _: &cpal::InputCallbackInfo| {
+            // Alle Kanäle zu mono; ist der Puffer voll (Engine steht), gehen Frames verloren
+            for frame in data.chunks(channels) {
+                let m = frame.iter().map(|s| <f32 as FromSample<T>>::from_sample_(*s)).sum::<f32>() / channels as f32;
+                let _ = sink.push([m, m]);
+            }
+        },
+        |e| log::warn!("Mikrofon-Stream: {e}"),
+        None,
+    )?;
+    Ok(stream)
 }
 
 /// Öffnet ein eigenes Kopfhörergerät. Die Engine schreibt in den gelieferten [`HeadSink`],

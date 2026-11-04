@@ -228,6 +228,7 @@ impl FadeWerkDjApp {
             MixerAction::Eq { deck, band, db } => self.eq_db[deck][band] = db,
             MixerAction::EqKill { deck, band, on } => self.eq_kill[deck][band] = on,
             MixerAction::Record => self.toggle_recording(now),
+            MixerAction::Mic => self.toggle_mic(now),
             MixerAction::Fx { slot, to_master } => self.trigger_fx(slot, to_master, now),
             MixerAction::FxVolume(v) => {
                 self.fx_volume = v;
@@ -332,6 +333,7 @@ impl FadeWerkDjApp {
                 self.sort_undo = Some((before, crate::session::fingerprint(&self.playlists), now));
             }
             PlaylistAction::ClearAll => self.confirm_clear_all = true,
+            PlaylistAction::Check => self.open_check(d),
             PlaylistAction::RemoveDuplicates => {
                 let pl = &self.playlists[d];
                 // Der geladene Titel gilt als erstes Exemplar und bleibt, sonst das früheste in der Liste

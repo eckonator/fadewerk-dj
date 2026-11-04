@@ -21,6 +21,8 @@ impl FadeWerkDjApp {
         self.ctl.send(Command::SetHeadVolume(self.head_volume));
         self.ctl.send(Command::SetHeadMix(self.head_mix));
         self.ctl.send(Command::SetHeadMode(self.head_mode));
+        self.ctl.send(Command::SetLimiter(self.settings.limiter));
+        self.push_mic_settings();
         for d in 0..2 {
             let v = &self.decks[d];
             self.ctl.send(Command::SetChannelVolume { deck: d, volume: v.volume });
@@ -33,6 +35,39 @@ impl FadeWerkDjApp {
         self.push_eq();
         for d in 0..2 {
             self.ctl.send(Command::SetFilter { deck: d, value: self.filter[d] });
+        }
+    }
+
+    pub(super) fn push_mic_settings(&mut self) {
+        self.ctl.send(Command::SetMicGain(self.settings.mic_gain));
+        self.ctl.send(Command::SetTalkover { on: self.settings.talkover, depth: fw_engine::db_to_gain(self.settings.talkover_db) });
+    }
+
+    /// MIC-Taste. Geöffnet wird das Mikrofon erst hier, damit das System nicht ohne Grund nach der
+    /// Mikrofon-Freigabe fragt.
+    pub(super) fn toggle_mic(&mut self, now: f64) {
+        if self.mic.take().is_some() {
+            self.ctl.send(Command::SetMic(None));
+            return;
+        }
+        self.start_mic(now);
+    }
+
+    pub(super) fn start_mic(&mut self, now: f64) {
+        let Some(master) = &self.audio else {
+            self.notify(tr("Ohne Audio-Ausgabe geht das Mikrofon nicht"), now);
+            return;
+        };
+        match audio::start_mic(self.settings.mic_device.as_deref(), master.sample_rate) {
+            Ok((mic, rx)) => {
+                self.ctl.send(Command::SetMic(Some(rx)));
+                self.notify(trf("Mikrofon an: {}", &[&mic.device]), now);
+                self.mic = Some(mic);
+            }
+            Err(e) => {
+                log::warn!("Mikrofon: {e:#}");
+                self.notify(trf("Mikrofon lässt sich nicht öffnen: {}", &[&e]), now);
+            }
         }
     }
 
@@ -248,6 +283,7 @@ impl FadeWerkDjApp {
         let st: Vec<(f64, bool)> = (0..2).map(|d| (self.ctl.shared.decks[d].position_secs(), self.ctl.shared.decks[d].is_playing())).collect();
         // Kopfhörergerät nur wieder öffnen, wenn es lief (siehe `start_head_audio`)
         let head_was_on = self.head_audio.is_some();
+        let mic_was_on = self.mic.take().is_some();
         // Eine laufende Aufnahme gehört zur alten Ausgabe: sauber abschließen
         if let Some(rec) = &self.recording
             && !rec.is_stopping()
@@ -267,6 +303,9 @@ impl FadeWerkDjApp {
         self.audio_error = err.clone();
         self.push_mixer_state();
         self.start_head_audio(now, head_was_on);
+        if mic_was_on {
+            self.start_mic(now);
+        }
         for (d, &(pos, playing)) in st.iter().enumerate() {
             self.decks[d].ended_seen = 0;
             self.decks[d].reverse_ended_seen = 0;

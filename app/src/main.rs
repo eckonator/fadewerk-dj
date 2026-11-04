@@ -33,6 +33,7 @@ mod playlist;
 mod playlist_ui;
 mod quiet;
 mod recorder;
+mod relocate;
 mod search;
 mod selection;
 mod self_update;

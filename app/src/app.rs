@@ -29,6 +29,7 @@ use crate::playlist_ui::{self, PlaylistAction};
 use crate::theme;
 
 mod actions;
+mod check;
 mod commands;
 mod fade;
 mod library;
@@ -342,6 +343,10 @@ pub struct FadeWerkDjApp {
     /// Ausgang der Aufnahme aus der Engine, solange keine Aufnahme läuft.
     record_rx: Option<crate::recorder::FrameRx>,
     recording: Option<crate::recorder::Recording>,
+    /// Offenes Mikrofon (MIC an).
+    mic: Option<audio::MicIn>,
+    /// Angezeigter Mikrofonpegel (fällt langsam ab).
+    mic_level: f32,
     /// Verlorene Frames beim Start der Aufnahme (Zähler der Engine), für den Hinweis am Ende.
     record_dropped_at_start: u64,
     /// Zählt hoch, wenn die Audio-Ausgabe neu startet (dann gehört ein alter Aufnahme-Puffer zur alten Engine).
@@ -383,6 +388,15 @@ pub struct FadeWerkDjApp {
     quiet: Option<crate::quiet::Quiet>,
     session_saved: u64,
     session_checked: f64,
+    /// Laufende Prüfung der Playlist-Dateien (`check.rs`).
+    check_rx: Vec<(check::CheckFor, std::sync::mpsc::Receiver<crate::relocate::Checked>)>,
+    check_dialog: Option<check::CheckDialog>,
+    /// Titel, die sich nicht abspielen ließen (für „Playlist prüfen“).
+    unreadable: HashSet<PathBuf>,
+    /// Stellen der Player nach einem Absturz, bis ihr Titel geladen ist (`session::Place`).
+    resume: [Option<crate::session::Place>; 2],
+    /// Zuletzt in `player.json` geschriebene Stellen.
+    places_saved: [Option<crate::session::Place>; 2],
     /// Ordnerbrowser im letzten Bild (ändert sich nur der Browser, hat der Nutzer ihn gezogen): (rechts, Fensterhöhe bzw. -breite, Höhe bzw. Breite des Browsers).
     last_sizes: (bool, f32, f32),
     /// Titel, die gerade aus dem ausgeklinkten Ordnerfenster gezogen werden.
@@ -505,6 +519,8 @@ impl FadeWerkDjApp {
             filter: [0.0; 2],
             record_rx: None,
             recording: None,
+            mic: None,
+            mic_level: 0.0,
             record_dropped_at_start: 0,
             audio_gen: 0,
             audio_errors_seen: (0, 0.0),
@@ -537,6 +553,11 @@ impl FadeWerkDjApp {
             persist: true,
             quiet: None,
             session_saved: 0,
+            resume: [None, None],
+            check_rx: Vec::new(),
+            check_dialog: None,
+            unreadable: HashSet::new(),
+            places_saved: [None, None],
             session_checked: 0.0,
             last_sizes: (false, 0.0, 0.0),
             cross: Default::default(),
@@ -617,20 +638,34 @@ impl FadeWerkDjApp {
         }
         if app.persist {
             // Playlists vom letzten Mal wiederherstellen und die geladenen Titel wieder in die Player legen
-            let (lists, missing) = crate::session::load();
+            let lists = crate::session::load();
             app.playlists = lists;
             app.session_saved = crate::session::fingerprint(&app.playlists);
+            // Endete der letzte Lauf unerwartet, stehen die Player wieder an derselben Stelle (pausiert)
+            let places = crate::session::load_places();
+            for (d, place) in places.into_iter().enumerate() {
+                let current = app.playlists[d].current.and_then(|i| app.playlists[d].entries.get(i));
+                if let Some(place) = place.filter(|p| current == Some(&p.path)) {
+                    app.decks[d].pitch_pct = place.pitch_pct;
+                    app.resume[d] = Some(place);
+                }
+            }
+            app.places_saved = app.resume.clone();
+            if app.resume.iter().any(Option::is_some) {
+                app.notify(tr("FadeWerk DJ wurde unerwartet beendet. Die Player stehen wieder an der alten Stelle."), 0.0);
+            }
             for d in 0..2 {
                 // Zuletzt geladenen Titel wieder bereitlegen, sonst den ersten der Playlist
+                // Fehlt die Datei, kommt der Titel nach der Prüfung (vielleicht wurde er nur verschoben)
                 let start = app.playlists[d].current.or((!app.playlists[d].entries.is_empty()).then_some(0));
-                if let Some(i) = start {
+                if let Some(i) = start.filter(|&i| app.playlists[d].entries[i].is_file()) {
                     app.load_index(d, i, false, false);
                 }
             }
-            if missing > 0 {
-                // Bereinigte Liste gleich zurückschreiben
-                app.session_saved = 0;
-                app.notify(trf("{} Titel aus den Playlists gibt es nicht mehr", &[&missing]), 0.0);
+            // Fehlende Dateien im Hintergrund suchen (Netzlaufwerke sind langsam), verschobene wiederfinden
+            let paths: Vec<PathBuf> = app.playlists.iter().flat_map(|pl| pl.entries.iter().cloned()).collect();
+            if !paths.is_empty() {
+                app.start_check(paths, check::CheckFor::Startup);
             }
         }
         app.push_mixer_state();
@@ -651,6 +686,12 @@ impl FadeWerkDjApp {
         }
         // FW_CLEAR_ALL=1 (nur Debug): Rückfrage „Alles leeren“ gleich offen
         app.confirm_clear_all = cfg!(debug_assertions) && std::env::var_os("FW_CLEAR_ALL").is_some();
+        // FW_CHECK=a|b (nur Debug): „Playlist prüfen“ gleich offen
+        if cfg!(debug_assertions)
+            && let Some(v) = std::env::var_os("FW_CHECK")
+        {
+            app.open_check(usize::from(v == "b"));
+        }
         if let Some(q) = app.dev.palette.clone() {
             app.palette.open_with(&q);
         }
@@ -911,6 +952,7 @@ impl eframe::App for FadeWerkDjApp {
         self.poll_fx(now);
         self.poll_fade_preview(now);
         self.poll_import(now);
+        self.poll_check(now);
         self.poll_recording(now);
         self.record_plays();
         self.keep_awake(now);
@@ -927,6 +969,7 @@ impl eframe::App for FadeWerkDjApp {
         if now - self.session_checked > 2.0 {
             self.session_checked = now;
             self.save_session_if_changed();
+            self.save_places_if_changed();
             if self.persist {
                 self.caches.bpm.save_if_dirty();
                 self.caches.key.save_if_dirty();
@@ -982,6 +1025,9 @@ impl eframe::App for FadeWerkDjApp {
         // Ohne Anzeige der Bänder rechnet der Audio-Thread sie auch nicht
         self.ctl.shared.set_spectrum(!theme::lite().no_bands);
         self.bands.update(self.ctl.shared.take_bands(), dt, now);
+        // Mikrofonpegel für die MIC-Taste: springt hoch, fällt in etwa einer halben Sekunde ab
+        let mic = self.ctl.shared.take_mic_level();
+        self.mic_level = mic.max(self.mic_level * (-dt * 6.0).exp());
 
         // Aktionen aus Playern, Mixer und Playlists (Hauptbereich, siehe `views`)
         let mut vout = views::ViewOut::default();
@@ -1288,6 +1334,7 @@ impl eframe::App for FadeWerkDjApp {
             eq_db: self.eq_db,
             eq_kill: self.eq_kill,
             recording: self.recording.as_ref().map(|r| (r.secs(), r.is_stopping(), r.bytes())),
+            mic: self.mic.is_some().then_some(self.mic_level),
             fx_labels: &fx_labels,
             fx_icons: std::array::from_fn(|i| self.settings.fx_slot(i).icon(i)),
             fx_playing: self.ctl.shared.fx_playing(),
@@ -1394,6 +1441,7 @@ impl eframe::App for FadeWerkDjApp {
         }
         self.show_palette(&ctx, now);
         self.clear_all_dialog(&ctx, now);
+        self.check_dialog(&ctx, now);
 
         // Vollbild: F11 überall, auf macOS zusätzlich ⌃⌘F (wie die grüne Fenstertaste)
         let fs_key = ctx.input_mut(|i| {
@@ -1450,6 +1498,7 @@ impl eframe::App for FadeWerkDjApp {
             active_device: self.audio.as_ref().map(|a| a.device.as_str()),
             active_device_id: self.audio.as_ref().map(|a| a.id.as_str()),
             active_head: self.head_audio.as_ref().map(|h| h.device.as_str()),
+            active_mic: self.mic.as_ref().map(|m| m.device.as_str()),
             sample_rate: self.ctl.shared.sample_rate,
             channels: self.ctl.shared.channels,
             cache_sizes: self.caches.sizes,
@@ -1623,6 +1672,8 @@ impl Drop for FadeWerkDjApp {
         self.save_settings();
         self.save_session_if_changed();
         if self.persist {
+            // Normal beendet: beim nächsten Start nichts wiederherzustellen
+            crate::session::clear_places();
             self.caches.bpm.save_if_dirty();
             self.caches.key.save_if_dirty();
             self.caches.tag.save_if_dirty(true);

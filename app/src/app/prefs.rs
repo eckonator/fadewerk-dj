@@ -52,6 +52,30 @@ impl FadeWerkDjApp {
             SettingsAction::OpenGl(on) => self.settings.opengl = on,
             SettingsAction::RecordHistory(on) => self.settings.record_history = on,
             SettingsAction::KeepAwake(on) => self.settings.keep_awake = on,
+            SettingsAction::MicDevice(id) => {
+                self.settings.mic_device = id;
+                // Läuft das Mikrofon, gleich auf das neue Gerät wechseln
+                if self.mic.take().is_some() {
+                    self.ctl.send(Command::SetMic(None));
+                    self.start_mic(now);
+                }
+            }
+            SettingsAction::MicGain(g) => {
+                self.settings.mic_gain = g;
+                self.push_mic_settings();
+            }
+            SettingsAction::Talkover(on) => {
+                self.settings.talkover = on;
+                self.push_mic_settings();
+            }
+            SettingsAction::TalkoverDb(db) => {
+                self.settings.talkover_db = db;
+                self.push_mic_settings();
+            }
+            SettingsAction::Limiter(on) => {
+                self.settings.limiter = on;
+                self.ctl.send(Command::SetLimiter(on));
+            }
             SettingsAction::RecordFormat(f) => self.settings.record_format = f,
             SettingsAction::RecordPickDir => {
                 let start = self.settings.record_dir.clone().unwrap_or_else(crate::recorder::default_dir);
@@ -437,6 +461,27 @@ impl FadeWerkDjApp {
         if fp != self.session_saved {
             crate::session::save(&self.playlists);
             self.session_saved = fp;
+        }
+    }
+
+    /// Merkt die Stellen der geladenen Titel in `player.json` (auf ganze Sekunden), für einen Neustart nach Absturz.
+    pub(super) fn save_places_if_changed(&mut self) {
+        if !self.persist {
+            return;
+        }
+        let places: [Option<crate::session::Place>; 2] = std::array::from_fn(|d| {
+            // Noch nicht angewandte Wiederherstellung bleibt stehen (der Titel lädt noch)
+            if let Some(r) = &self.resume[d] {
+                return Some(r.clone());
+            }
+            let v = &self.decks[d];
+            let path = v.path.clone()?;
+            let secs = self.ctl.shared.decks[d].position_secs().floor();
+            Some(crate::session::Place { path, secs, pitch_pct: v.pitch_pct })
+        });
+        if places != self.places_saved {
+            crate::session::save_places(&places);
+            self.places_saved = places;
         }
     }
 }
