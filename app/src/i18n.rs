@@ -428,6 +428,7 @@ fn en(de: &str) -> Option<&'static str> {
         "Auswahl ({} Titel) in Playlist {}" => "Selection ({} tracks) to playlist {}",
         "· {} ausgewählt" => "· {} selected",
         "{} Ordner" => "{} folders",
+        "{} auf {}" => "{} on {}",
         "{} Ordner ausgewählt" => "{} folders selected",
         "{} Titel ausgewählt" => "{} tracks selected",
         "An Playlist {} anhängen" => "Append to playlist {}",

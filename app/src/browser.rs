@@ -319,7 +319,7 @@ impl Root {
     fn name(&self) -> String {
         match self.label {
             Some(l) => tr(l).to_owned(),
-            None => self.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| self.path.display().to_string()),
+            None => dir_name(&self.path),
         }
     }
 }
@@ -429,7 +429,10 @@ impl Browser {
             roots.push(fixed("Laufwerke", PathBuf::from("/media")));
         }
         for p in user_roots.iter().filter(|p| p.is_dir()) {
-            roots.push(Root { label: None, path: p.clone(), user: true });
+            // Doppelt gespeichert (ältere Versionen, siehe `BrowserAction::AddRoot`): nur einmal zeigen
+            if !roots.iter().any(|r| r.user && r.path == *p) {
+                roots.push(Root { label: None, path: p.clone(), user: true });
+            }
         }
         let mut b = Self {
             roots,
@@ -1198,7 +1201,7 @@ impl Browser {
             })
             .body(|ui| {
                 for child in self.children(path) {
-                    let n = child.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let n = dir_name(&child);
                     self.tree_node(ui, &n, &child, depth + 1, false, out);
                 }
             });
@@ -1281,7 +1284,7 @@ impl Browser {
                     }
                     last = folder_column(ui, ("col", dir), w, h, |ui| {
                         for child in children {
-                            let n = child.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                            let n = dir_name(&child);
                             let selected = self.is_selected(&child);
                             let open = chain.get(k + 1) == Some(&child);
                             let resp = column_item(ui, &format!("📁 {n}"), selected, open, true);
@@ -2579,7 +2582,102 @@ pub fn reveal_label() -> &'static str {
 }
 
 fn dir_name(p: &Path) -> String {
+    if let Some(mount) = Gvfs::parse(p) {
+        return mount.name();
+    }
     p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.display().to_string())
+}
+
+/// Netzwerkfreigabe, die GVFS (Linux, Dateimanager) unter `/run/user/<uid>/gvfs/` einhängt. Der Ordner heißt dort
+/// z. B. `smb-share:server=diskstation.local,share=music`; gezeigt wird „music auf diskstation“ bzw. `smb://…`.
+struct Gvfs {
+    /// Art: `smb-share`, `sftp`, `ftp`, `dav`, `afp-volume`, `nfs` …
+    kind: String,
+    /// Schlüssel und Werte, `%xx` schon entschlüsselt.
+    keys: Vec<(String, String)>,
+}
+
+impl Gvfs {
+    /// Erkennt den Einhängeordner selbst (nicht seine Unterordner).
+    fn parse(p: &Path) -> Option<Gvfs> {
+        if p.parent()?.file_name()? != "gvfs" {
+            return None;
+        }
+        let (kind, rest) = p.file_name()?.to_str()?.split_once(':')?;
+        let keys = rest
+            .split(',')
+            .map(|kv| kv.split_once('=').map(|(k, v)| (k.to_owned(), unescape(v))))
+            .collect::<Option<Vec<_>>>()?;
+        Some(Gvfs { kind: kind.to_owned(), keys })
+    }
+
+    fn get(&self, key: &str) -> Option<&str> {
+        self.keys.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+    }
+
+    /// Rechnername ohne lokale Endung („diskstation.local“ → „diskstation“), IP-Adressen bleiben ganz.
+    fn host(&self) -> Option<&str> {
+        let h = self.get("server").or_else(|| self.get("host"))?;
+        if h.parse::<std::net::IpAddr>().is_ok() {
+            return Some(h);
+        }
+        Some(h.split('.').next().unwrap_or(h))
+    }
+
+    /// Kurzer Name für Baum und Titel: Freigabe auf Rechner.
+    fn name(&self) -> String {
+        let share = self.get("share").or_else(|| self.get("volume")).map(str::to_owned).or_else(|| {
+            self.get("prefix").and_then(|p| p.trim_matches('/').rsplit('/').next().filter(|s| !s.is_empty()).map(str::to_owned))
+        });
+        match (share, self.host()) {
+            (Some(share), Some(host)) => trf("{} auf {}", &[&share, &host]),
+            (None, Some(host)) => host.to_owned(),
+            (_, None) => self.kind.clone(),
+        }
+    }
+
+    /// Adresse wie im Dateimanager, z. B. `smb://diskstation.local/music`.
+    fn url(&self) -> String {
+        let scheme = match self.kind.as_str() {
+            "smb-share" | "smb-server" => "smb",
+            "afp-volume" | "afp-server" => "afp",
+            "dav" if self.get("ssl") == Some("true") => "davs",
+            other => other,
+        };
+        let host = self.get("server").or_else(|| self.get("host")).unwrap_or_default();
+        let user = self.get("user").map(|u| format!("{u}@")).unwrap_or_default();
+        let path = self.get("share").or_else(|| self.get("volume")).or_else(|| self.get("prefix")).unwrap_or_default();
+        format!("{scheme}://{user}{host}/{}", path.trim_start_matches('/'))
+    }
+}
+
+/// `%xx` in GVFS-Namen zurückverwandeln (Leerzeichen, Komma, Sonderzeichen in Freigabenamen).
+fn unescape(v: &str) -> String {
+    let b = v.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = b.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok());
+        if let (b'%', Some(x)) = (b[i], hex) {
+            out.push(x);
+            i += 3;
+            continue;
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Pfad für die Kopfzeile: im Home-Ordner als „~/…“, auf einer GVFS-Freigabe als `smb://…/Unterordner`.
+fn shown_path(p: &Path) -> String {
+    if let Some((mount, rest)) = p.ancestors().find_map(|a| Gvfs::parse(a).map(|m| (m, p.strip_prefix(a).unwrap_or(Path::new(""))))) {
+        let url = mount.url();
+        return if rest.as_os_str().is_empty() { url } else { format!("{}/{}", url.trim_end_matches('/'), rest.display()) };
+    }
+    dirs::home_dir()
+        .and_then(|h| p.strip_prefix(h).ok().map(|r| format!("~/{}", r.display())))
+        .unwrap_or_else(|| p.display().to_string())
 }
 
 /// Unterordner eines Titels relativ zum ausgewählten Ordner, in dem er liegt. Bei mehreren
@@ -2756,9 +2854,7 @@ impl Browser {
         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
             // Pfade im Home-Ordner kurz als „~/…“; mehrere Ordner nur mit Namen
             let shown = match self.selected.as_slice() {
-                [one] => dirs::home_dir()
-                    .and_then(|h| one.strip_prefix(h).ok().map(|r| format!("~/{}", r.display())))
-                    .unwrap_or_else(|| one.display().to_string()),
+                [one] => shown_path(one),
                 many => many.iter().map(|p| dir_name(p)).collect::<Vec<_>>().join(" · "),
             };
             ui.add(egui::Label::new(RichText::new(shown).monospace().size(12.0).color(theme::dim())).truncate());
@@ -2891,6 +2987,36 @@ fn fmt_rest(secs: f32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn folders_saved_twice_show_once() {
+        let dir = std::env::temp_dir().join(format!("fw-doppelt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let b = Browser::new(None, &[dir.clone(), dir.clone()], 200.0, &[]);
+        assert_eq!(b.roots.iter().filter(|r| r.user && r.path == dir).count(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn network_shares_get_short_names() {
+        let smb = Path::new("/run/user/1000/gvfs/smb-share:server=diskstation.local,share=music");
+        assert_eq!(dir_name(smb), "music auf diskstation");
+        assert_eq!(shown_path(smb), "smb://diskstation.local/music");
+        assert_eq!(shown_path(&smb.join("Alben/ABBA")), "smb://diskstation.local/music/Alben/ABBA");
+        // Unterordner behalten ihren Namen, nur der Einhängeordner wird umbenannt
+        assert_eq!(dir_name(&smb.join("Alben")), "Alben");
+        // Mit Benutzer, IP-Adresse und verschlüsseltem Leerzeichen
+        let ip = Path::new("/run/user/1000/gvfs/smb-share:server=192.168.178.90,share=dj%20musik,user=markus");
+        assert_eq!(dir_name(ip), "dj musik auf 192.168.178.90");
+        assert_eq!(shown_path(ip), "smb://markus@192.168.178.90/dj musik");
+        let sftp = Path::new("/run/user/1000/gvfs/sftp:host=nas.fritz.box,user=dj");
+        assert_eq!(dir_name(sftp), "nas");
+        assert_eq!(shown_path(sftp), "sftp://dj@nas.fritz.box/");
+        // Kaputte Escapes und Doppelpunkte in gewöhnlichen Ordnern bleiben unangetastet
+        assert_eq!(unescape("a%2"), "a%2");
+        assert_eq!(unescape("%C3%A4%zz"), "ä%zz");
+        assert_eq!(dir_name(Path::new("/home/dj/Mix: 2024")), "Mix: 2024");
+    }
 
     #[test]
     fn duplicates_keep_the_first_copy_only() {

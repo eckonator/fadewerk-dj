@@ -615,6 +615,8 @@ impl FadeWerkDjApp {
             BrowserAction::AddRoot => {
                 if let Some(dir) = rfd::FileDialog::new().set_title(tr("Musikordner hinzufügen")).pick_folder()
                     && self.browser.add_root(dir.clone())
+                    // Eine Netzwerkfreigabe, die beim Start noch nicht eingehängt war, fehlte im Baum, steht aber schon hier
+                    && !self.settings.folders.contains(&dir)
                 {
                     self.settings.folders.push(dir);
                     self.save_settings();
