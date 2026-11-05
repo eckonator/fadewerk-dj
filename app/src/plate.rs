@@ -136,6 +136,13 @@ pub fn paint(p: &Painter, rect: Rect, layers: &[Layer]) {
     // Breit genug: Endkappen + eine Mittelspalte; sonst das ganze Bild in voller Breite
     let wide = full > 2 * cap + 1;
     let cols = if wide { 2 * cap + 1 } else { full };
+    // Höher als jeder Bildschirm (Hintergrund einer langen Liste) oder größer als die Grafikkarte erlaubt (GeForce
+    // 8600M: 8192 px, egui bricht dann ab): als Formen zeichnen
+    let max_side = p.ctx().input(|i| i.max_texture_side).min(MAX_IMAGE_SIDE);
+    if rows > max_side || cols > max_side {
+        paint_shapes(p, rect, layers);
+        return;
+    }
 
     let mut h = std::collections::hash_map::DefaultHasher::new();
     layers.iter().for_each(|l| l.feed(&mut h));
@@ -181,6 +188,9 @@ pub fn paint(p: &Painter, rect: Rect, layers: &[Layer]) {
     }
     p.add(mesh);
 }
+
+/// Größere Flächen (Pixel je Seite) liegen weit außerhalb des Bildschirms; ein Bild lohnt dort nicht.
+const MAX_IMAGE_SIDE: usize = 4096;
 
 /// Dieselben Schichten als einzelne egui-Formen, wie sie vor den Bildern gezeichnet wurden.
 fn paint_shapes(p: &Painter, rect: Rect, layers: &[Layer]) {
