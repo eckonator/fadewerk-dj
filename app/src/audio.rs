@@ -98,8 +98,24 @@ fn find_device(host: &cpal::Host, device_id: Option<&str>) -> Option<cpal::Devic
     host.default_output_device()
 }
 
+/// Puffer für PulseAudio/PipeWire, wenn in den Einstellungen „Standard“ gewählt ist (Frames je Abruf).
+#[cfg(target_os = "linux")]
+const PULSE_DEFAULT_FRAMES: u32 = 2048;
+
+/// Puffer, wenn keiner eingestellt ist. Ohne Vorgabe nimmt der PulseAudio-Server (auch PipeWire) seinen eigenen
+/// Standard mit bis zu 2 s Vorlauf: Ton und Oberfläche lagen dann 1–2 s auseinander (MacBook mit Debian 13).
+fn default_buffer(host: &cpal::Host) -> Option<u32> {
+    #[cfg(target_os = "linux")]
+    if host.id() == cpal::HostId::PulseAudio {
+        return Some(PULSE_DEFAULT_FRAMES);
+    }
+    let _ = host;
+    None
+}
+
 fn try_start(device_id: Option<&str>, buffer_frames: Option<u32>) -> anyhow::Result<(AudioOut, Controller)> {
     let host = cpal::default_host();
+    let buffer_frames = buffer_frames.or_else(|| default_buffer(&host));
     let device = find_device(&host, device_id).context("kein Audio-Ausgabegerät gefunden")?;
     let supported = device.default_output_config().context("Ausgabeformat nicht lesbar")?;
     let format = supported.sample_format();
@@ -202,6 +218,7 @@ pub fn start_head(device_id: &str, master_rate: u32, buffer_frames: Option<u32>)
         .ok()
         .and_then(|id| host.device_by_id(&id))
         .context("Kopfhörergerät nicht gefunden")?;
+    let buffer_frames = buffer_frames.or_else(|| default_buffer(&host));
     let supported = device.default_output_config().context("Ausgabeformat nicht lesbar")?;
     let format = supported.sample_format();
     let mut config: cpal::StreamConfig = supported.into();
