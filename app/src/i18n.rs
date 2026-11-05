@@ -429,6 +429,7 @@ fn en(de: &str) -> Option<&'static str> {
         "· {} ausgewählt" => "· {} selected",
         "{} Ordner" => "{} folders",
         "{} auf {}" => "{} on {}",
+        "Gerade nicht erreichbar. Erscheint von selbst, sobald die Freigabe eingehängt bzw. das Laufwerk angeschlossen ist." => "Not reachable right now. Comes back by itself as soon as the share is mounted or the drive is connected.",
         "{} Ordner ausgewählt" => "{} folders selected",
         "{} Titel ausgewählt" => "{} tracks selected",
         "An Playlist {} anhängen" => "Append to playlist {}",

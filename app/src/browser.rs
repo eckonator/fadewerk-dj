@@ -313,6 +313,9 @@ struct Root {
     path: PathBuf,
     /// Vom Nutzer hinzugefügt: wird gespeichert und lässt sich wieder entfernen.
     user: bool,
+    /// Gerade nicht erreichbar (Netzwerkfreigabe noch nicht eingehängt, Platte abgezogen): bleibt ausgegraut im
+    /// Baum und erscheint wieder, sobald sie da ist (siehe [`RootWatch`]).
+    offline: bool,
 }
 
 impl Root {
@@ -326,6 +329,8 @@ impl Root {
 
 pub struct Browser {
     roots: Vec<Root>,
+    /// Prüft im Hintergrund, ob die eigenen Ordner erreichbar sind.
+    watch: RootWatch,
     /// Ausgewählte Ordner (⌘/Strg-Klick wählt mehrere); ihre Titel stehen zusammen in der Liste.
     selected: Vec<PathBuf>,
     /// Alle Titel in den Ordnern und ihren Unterordnern, kommen nach und nach aus der Hintergrundsuche.
@@ -416,7 +421,7 @@ impl Browser {
     /// Breite des Ordnerbaums (0 = Standard).
     pub fn new(start_dir: Option<PathBuf>, user_roots: &[PathBuf], tree_width: f32, recursion: &[(PathBuf, bool)]) -> Self {
         let mut roots = Vec::new();
-        let fixed = |label, path| Root { label: Some(label), path, user: false };
+        let fixed = |label, path| Root { label: Some(label), path, user: false, offline: false };
         if let Some(m) = dirs::audio_dir() {
             roots.push(fixed("Musik", m));
         }
@@ -428,14 +433,16 @@ impl Browser {
         } else if cfg!(target_os = "linux") {
             roots.push(fixed("Laufwerke", PathBuf::from("/media")));
         }
-        for p in user_roots.iter().filter(|p| p.is_dir()) {
+        for p in user_roots {
             // Doppelt gespeichert (ältere Versionen, siehe `BrowserAction::AddRoot`): nur einmal zeigen
             if !roots.iter().any(|r| r.user && r.path == *p) {
-                roots.push(Root { label: None, path: p.clone(), user: true });
+                roots.push(Root { label: None, path: p.clone(), user: true, offline: !p.is_dir() });
             }
         }
+        let watch = RootWatch::start(roots.iter().filter(|r| r.user).map(|r| r.path.clone()).collect());
         let mut b = Self {
             roots,
+            watch,
             selected: Vec::new(),
             tracks: Vec::new(),
             prefilled: false,
@@ -489,7 +496,7 @@ impl Browser {
                 b.add_root(dir);
             }
             None => {
-                if let Some(first) = b.roots.iter().find(|r| r.user).or(b.roots.first()).map(|r| r.path.clone()) {
+                if let Some(first) = b.roots.iter().find(|r| r.user && !r.offline).or(b.roots.first()).map(|r| r.path.clone()) {
                     b.open(first);
                 }
             }
@@ -696,14 +703,48 @@ impl Browser {
     pub fn add_root(&mut self, path: PathBuf) -> bool {
         let new = !self.roots.iter().any(|r| r.path == path);
         if new {
-            self.roots.push(Root { label: None, path: path.clone(), user: true });
+            self.roots.push(Root { label: None, path: path.clone(), user: true, offline: false });
+        } else if let Some(r) = self.roots.iter_mut().find(|r| r.path == path && r.offline) {
+            // Gerade ausgewählt, also erreichbar, auch wenn die Prüfung es noch nicht gemerkt hat
+            r.offline = false;
+            self.forget_dirs(&path);
         }
+        self.watch.set_paths(self.roots.iter().filter(|r| r.user).map(|r| r.path.clone()).collect());
         self.open(path);
         new
     }
 
     pub fn remove_root(&mut self, path: &Path) {
         self.roots.retain(|r| !(r.user && r.path == path));
+        self.watch.set_paths(self.roots.iter().filter(|r| r.user).map(|r| r.path.clone()).collect());
+    }
+
+    /// Übernimmt das Ergebnis der Hintergrundprüfung. Wird ein Ordner wieder erreichbar, liest der Baum ihn neu und
+    /// eine schon gewählte Titelliste füllt sich.
+    fn update_offline(&mut self) {
+        let Some(up) = self.watch.take() else { return };
+        let mut back = Vec::new();
+        for r in self.roots.iter_mut().filter(|r| r.user) {
+            let Some(&ok) = up.get(&r.path) else { continue };
+            if r.offline == ok {
+                r.offline = !ok;
+                log::info!("Ordner {}: {}", r.path.display(), if ok { "wieder erreichbar" } else { "nicht erreichbar" });
+                back.extend(ok.then(|| r.path.clone()));
+            }
+        }
+        for path in back {
+            self.forget_dirs(&path);
+            if self.hist.is_none() && self.selected.iter().any(|s| s.starts_with(&path)) {
+                let keep = std::mem::take(&mut self.picked);
+                self.rescan();
+                self.picked = keep;
+            }
+        }
+    }
+
+    /// Vergisst die gemerkten Unterordner unter `path` (waren leer, solange er fehlte).
+    fn forget_dirs(&mut self, path: &Path) {
+        self.subdirs.retain(|p, _| !p.starts_with(path));
     }
 
     /// Öffnet einen Ordner (und nur diesen). Die Titel samt Unterordnern sucht die Bibliothek im
@@ -936,6 +977,7 @@ impl Browser {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, ctx: &BrowserCtx<'_>, out: &mut Vec<BrowserAction>) {
+        self.update_offline();
         // Nicht innerhalb von `ui.input` abfragen: egui hielte sonst dieselbe Sperre zweimal
         let typing = ui.ctx().egui_wants_keyboard_input();
         let (refocused, refresh_key, search_key) = ui.input(|i| {
@@ -1104,7 +1146,14 @@ impl Browser {
     fn tree(&mut self, ui: &mut egui::Ui, ctx: &BrowserCtx<'_>, out: &mut Vec<BrowserAction>) {
         egui::ScrollArea::vertical().id_salt("tree").auto_shrink([false, false]).min_scrolled_height(0.0).show(ui, |ui| {
             for root in self.roots.clone() {
-                self.tree_node(ui, &root.name(), &root.path, 0, root.user, out);
+                if root.offline {
+                    ui.scope(|ui| {
+                        ui.multiply_opacity(OFFLINE_OPACITY);
+                        self.tree_node(ui, &root.name(), &root.path, 0, root.user, out);
+                    });
+                } else {
+                    self.tree_node(ui, &root.name(), &root.path, 0, root.user, out);
+                }
             }
             // Virtueller Ordner unter den echten
             self.history_tree(ui, ctx, out);
@@ -1196,7 +1245,10 @@ impl Browser {
         state
             .show_header(ui, |ui| {
                 let icon = if depth == 0 { "🗀" } else { "📁" };
-                let resp = tree_button(ui, &format!("{icon} {name}"), selected);
+                let mut resp = tree_button(ui, &format!("{icon} {name}"), selected);
+                if depth == 0 && self.roots.iter().any(|r| r.path == path && r.offline) {
+                    resp = resp.on_hover_text(tr(OFFLINE_HINT));
+                }
                 input = folder_input(ui, resp, selected, count, removable);
             })
             .body(|ui| {
@@ -1261,7 +1313,15 @@ impl Browser {
                     for root in self.roots.clone() {
                         let selected = self.is_selected(&root.path);
                         let open = chain.first() == Some(&root.path);
-                        let resp = column_item(ui, &format!("🗀 {}", root.name()), selected, open, true);
+                        let resp = ui
+                            .scope(|ui| {
+                                if root.offline {
+                                    ui.multiply_opacity(OFFLINE_OPACITY);
+                                }
+                                column_item(ui, &format!("🗀 {}", root.name()), selected, open, true)
+                            })
+                            .inner;
+                        let resp = if root.offline { resp.on_hover_text(tr(OFFLINE_HINT)) } else { resp };
                         if follow && focus.as_ref() == Some(&root.path) {
                             resp.scroll_to_me(None);
                         }
@@ -2581,6 +2641,64 @@ pub fn reveal_label() -> &'static str {
     }
 }
 
+/// Deckkraft eines nicht erreichbaren Ordners im Baum.
+const OFFLINE_OPACITY: f32 = 0.45;
+/// Tooltip an einem nicht erreichbaren Ordner.
+const OFFLINE_HINT: &str = "Gerade nicht erreichbar. Erscheint von selbst, sobald die Freigabe eingehängt bzw. das Laufwerk angeschlossen ist.";
+/// So oft prüft [`RootWatch`], ob die eigenen Ordner erreichbar sind.
+const ROOT_CHECK_SECS: u64 = 3;
+
+/// Prüft in einem eigenen Thread, ob die eigenen Ordner da sind. Nicht im Bild-Takt: Ein Zugriff auf eine hängende
+/// Netzwerkfreigabe kann Sekunden dauern.
+struct RootWatch {
+    shared: std::sync::Arc<std::sync::Mutex<WatchState>>,
+}
+
+#[derive(Default)]
+struct WatchState {
+    paths: Vec<PathBuf>,
+    /// Neues Ergebnis seit dem letzten [`RootWatch::take`].
+    result: Option<HashMap<PathBuf, bool>>,
+}
+
+impl RootWatch {
+    fn start(paths: Vec<PathBuf>) -> Self {
+        let shared = std::sync::Arc::new(std::sync::Mutex::new(WatchState { paths, result: None }));
+        let weak = std::sync::Arc::downgrade(&shared);
+        let spawned = std::thread::Builder::new().name("fw-roots".into()).spawn(move || {
+            // Endet, sobald der Browser weg ist
+            while let Some(shared) = weak.upgrade() {
+                let paths = shared.lock().map(|s| s.paths.clone()).unwrap_or_default();
+                drop(shared);
+                let up: HashMap<PathBuf, bool> = paths.into_iter().map(|p| {
+                    let ok = p.is_dir();
+                    (p, ok)
+                }).collect();
+                if let Some(shared) = weak.upgrade()
+                    && let Ok(mut s) = shared.lock()
+                {
+                    s.result = Some(up);
+                }
+                std::thread::sleep(std::time::Duration::from_secs(ROOT_CHECK_SECS));
+            }
+        });
+        if let Err(e) = spawned {
+            log::warn!("Ordnerprüfung nicht gestartet: {e}");
+        }
+        RootWatch { shared }
+    }
+
+    fn set_paths(&self, paths: Vec<PathBuf>) {
+        if let Ok(mut s) = self.shared.lock() {
+            s.paths = paths;
+        }
+    }
+
+    fn take(&self) -> Option<HashMap<PathBuf, bool>> {
+        self.shared.lock().ok()?.result.take()
+    }
+}
+
 fn dir_name(p: &Path) -> String {
     if let Some(mount) = Gvfs::parse(p) {
         return mount.name();
@@ -2994,6 +3112,24 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let b = Browser::new(None, &[dir.clone(), dir.clone()], 200.0, &[]);
         assert_eq!(b.roots.iter().filter(|r| r.user && r.path == dir).count(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn missing_folder_stays_greyed_and_comes_back() {
+        let dir = std::env::temp_dir().join(format!("fw-freigabe-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let mut b = Browser::new(None, std::slice::from_ref(&dir), 200.0, &[]);
+        let root = |b: &Browser| b.roots.iter().find(|r| r.path == dir).map(|r| r.offline);
+        assert_eq!(root(&b), Some(true), "fehlender Ordner bleibt im Baum, ausgegraut");
+        std::fs::create_dir_all(dir.join("Alben")).unwrap();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(ROOT_CHECK_SECS * 3);
+        while root(&b) == Some(true) && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            b.update_offline();
+        }
+        assert_eq!(root(&b), Some(false), "erscheint, sobald er da ist");
+        assert_eq!(b.children(&dir), vec![dir.join("Alben")]);
         std::fs::remove_dir_all(&dir).ok();
     }
 
