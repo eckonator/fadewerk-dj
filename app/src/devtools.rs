@@ -14,6 +14,7 @@
 //! - `FW_POPULARITY=1` fragt in der Demo die Beliebtheit der Titel ab (echte Abfrage, mit `FW_SHOT_SECS` warten).
 //! - `FW_MIDI_LEARN=1` startet den Lernmodus für Controller in der Oberfläche (Bedienelement anklicken, dann MIDI senden).
 //! - `FW_FADE_AT=<s>` drückt nach so vielen Sekunden FADE (Übergang im Takt testen, mit `FW_AUTOSYNC=1`).
+//! - `FW_SUGGEST=1` schlägt für alle Demo-Titel FadeWerk-Bereiche vor (mit `FW_FADEWERK=edit` im offenen Editor zu sehen).
 //! - `FW_HISTORY=1` legt in der Demo zwei Beispieltage der Historie an (einer mit fehlender Datei) und öffnet den neueren.
 //! - `FW_BPM=1` ermittelt in der Demo die fehlenden BPM des Startordners (Ergebnis in `bpm.json`, mit `FW_PERSIST=1`).
 //! - `FW_SEARCH="genre=Rock,year=1980-1989"` öffnet die erweiterte Suche mit diesen Feldern.

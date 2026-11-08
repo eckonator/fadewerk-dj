@@ -358,6 +358,20 @@ impl FadeWerkDjApp {
                 }
             }
             PlaylistAction::FadeWerk(on) => self.fadewerk = on,
+            PlaylistAction::SuggestFade(i) => {
+                if let Some(p) = self.playlists[d].entries.get(i).cloned() {
+                    self.queue_fade_suggestion(d, p, Some(i), now);
+                }
+            }
+            PlaylistAction::SuggestFades => {
+                let open: Vec<PathBuf> = (0..self.playlists[d].entries.len())
+                    .filter(|&i| self.playlists[d].fade(i).is_empty())
+                    .map(|i| self.playlists[d].entries[i].clone())
+                    .collect();
+                for p in open {
+                    self.queue_fade_suggestion(d, p, None, now);
+                }
+            }
             PlaylistAction::SetFade(i, fade) => {
                 let start = |f: crate::fadewerk::TrackFade| f.fade_in.map_or(0.0, |r| r.start as f64);
                 let old = start(self.playlists[d].fade(i));
@@ -597,10 +611,11 @@ impl FadeWerkDjApp {
                     if !force {
                         self.resolve_bpm(&p, fw_library::file_stamp(&p));
                     }
-                    // Ohne `force` nur Titel, denen BPM oder Tonart fehlt
-                    if (force || self.needs_analysis(&p)) && self.bpm_pending.insert(p.clone()) {
+                    // Ohne `force` nur Titel, denen BPM, Tonart oder Beatraster fehlt
+                    let grid = !self.grids.contains_key(&p);
+                    if (force || grid || self.needs_analysis(&p)) && self.bpm_pending.insert(p.clone()) {
                         self.bpm_total += 1;
-                        self.lib.analyze(p, force);
+                        self.lib.analyze(p, force, grid);
                     }
                 }
             }

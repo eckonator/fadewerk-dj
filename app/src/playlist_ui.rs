@@ -33,6 +33,9 @@ pub enum PlaylistAction {
     ClearAll,
     /// Weitere Exemplare desselben Titels entfernen (der geladene bleibt).
     RemoveDuplicates,
+    /// FadeWerk-Bereiche vorschlagen: für einen Eintrag (überschreibt) bzw. für alle ohne eigene Bereiche.
+    SuggestFade(usize),
+    SuggestFades,
     /// Fenster „Playlist prüfen“ öffnen.
     Check,
     Shuffle,
@@ -114,6 +117,8 @@ pub struct TrackInfo<'a> {
     pub bpms: &'a HashMap<PathBuf, f32>,
     pub keys: &'a HashMap<PathBuf, Option<Camelot>>,
     pub ratings: &'a crate::ratings::Ratings,
+    /// Beatraster (für den Fade-Editor: Beat-Linien, Einrasten).
+    pub grids: &'a HashMap<PathBuf, Option<fw_library::BeatGrid>>,
     pub reference: Option<(Camelot, &'a Path)>,
     /// Zustand des Auswahlfelds „Sortieren“ (gilt für beide Playlists).
     pub harmonic: Harmonic,
@@ -275,6 +280,12 @@ pub fn show(
                 .on_hover_text(tr("Lässt von mehreren Exemplaren desselben Titels (gleicher Interpret und Titel, fast gleiche Länge) nur eines stehen. Der geladene Titel bleibt."));
             if dups.clicked() {
                 out.push(PlaylistAction::RemoveDuplicates);
+            }
+            let suggest = ui
+                .add_enabled(pl.entries.iter().enumerate().any(|(i, _)| pl.fade(i).is_empty()), egui::Button::new(tr("Fades vorschlagen")))
+                .on_hover_text(tr("Setzt für alle Titel ohne eigene Bereiche Ein- und Ausblendbereiche nach Beatraster und Lautstärke: Einstieg auf dem ersten Takt nach der Stille, Ausblenden vor dem Ausklang, so lang wie die Überblendzeit."));
+            if suggest.clicked() {
+                out.push(PlaylistAction::SuggestFades);
             }
             let check = ui
                 .add_enabled(!pl.entries.is_empty(), egui::Button::new(tr("Playlist prüfen …")))
@@ -717,7 +728,8 @@ pub fn show(
                 let (erect, eresp) = ui.allocate_exact_size(vec2(width, EDIT_H), Sense::click());
                 // Zeile und Editor gehören sichtbar zusammen
                 ui.painter().rect_stroke(rect.union(erect).expand(1.0), 5.0, Stroke::new(1.5, theme::yellow().gamma_multiply(0.8)), egui::StrokeKind::Inside);
-                if fade_editor(ui, (list, i), erect, sk, duration, pl.fade(i), color, editor_audio, out) || eresp.secondary_clicked() {
+                let grid = key_info.grids.get(path).copied().flatten();
+                if fade_editor(ui, (list, i), erect, sk, grid, duration, pl.fade(i), color, editor_audio, out) || eresp.secondary_clicked() {
                     close_editor = true;
                 }
                 // Unten in der Liste aufgeklappt: nur so weit scrollen, bis auch die Fußzeile im Bild ist
@@ -801,6 +813,7 @@ fn fade_editor(
     key: (usize, usize),
     rect: Rect,
     sk: Option<&WaveSketch>,
+    grid: Option<fw_library::BeatGrid>,
     duration: f32,
     fade: TrackFade,
     color: egui::Color32,
@@ -825,11 +838,12 @@ fn fade_editor(
             let id = egui::Id::new(("fw_fade_well", key));
             // Abspielstrich beim Vorhören im passenden Ausschnitt
             let head = |is_head: bool| audio.playing.and_then(|(k, t)| t.filter(|_| k.is_head() == is_head));
-            if let Some(r) = edge_well(ui, id.with("in"), left, (0.0, span), &sk.head, 0.0, fade.fade_in, true, color, head(true)) {
+            let (seg_in, seg_out) = (grid.and_then(|g| g.at(0.0, duration as f64)), grid.and_then(|g| g.at(duration as f64, duration as f64)));
+            if let Some(r) = edge_well(ui, id.with("in"), left, (0.0, span), &sk.head, 0.0, fade.fade_in, true, color, head(true), seg_in) {
                 changed.fade_in = r;
             }
             let tail_t0 = duration - sk.tail.len() as f32 / EDGE_RATE;
-            if let Some(r) = edge_well(ui, id.with("out"), right, (duration - span, duration), &sk.tail, tail_t0, fade.fade_out, false, color, head(false)) {
+            if let Some(r) = edge_well(ui, id.with("out"), right, (duration - span, duration), &sk.tail, tail_t0, fade.fade_out, false, color, head(false), seg_out) {
                 changed.fade_out = r;
             }
         }
@@ -871,8 +885,13 @@ fn fade_editor(
     let foot_y = inner.bottom() - 10.0;
     let done = Rect::from_center_size(pos2(inner.right() - 34.0, foot_y), vec2(68.0, 20.0));
     let reset = Rect::from_center_size(pos2(done.left() - 8.0 - 56.0, foot_y), vec2(112.0, 20.0));
-    let hint = tr("Ziehen = Bereich · Klick = harter Schnitt · Rechtsklick = löschen");
-    p.with_clip_rect(Rect::from_min_max(pos2(inner.left(), foot_y - 10.0), pos2(reset.left() - 8.0, foot_y + 10.0)))
+    let suggest = Rect::from_center_size(pos2(reset.left() - 8.0 - 48.0, foot_y), vec2(96.0, 20.0));
+    let hint = if grid.is_some() { tr("Ziehen = Bereich (rastet auf Schläge, ⌥/Alt frei) · Klick = harter Schnitt · Rechtsklick = löschen") } else { tr("Ziehen = Bereich · Klick = harter Schnitt · Rechtsklick = löschen") };
+    let tip = tr("Ein- und Ausblendbereich nach Beatraster und Lautstärke vorschlagen: Einstieg auf dem ersten Takt nach der Stille, Ausblenden vor dem Ausklang, so lang wie die Überblendzeit");
+    if ui.place(suggest, |ui: &mut egui::Ui| hw::button(ui, suggest.size(), tr("VORSCHLAG"), fonts::bold(10.0), hw::Look::Plain, false, sk.is_some())).on_hover_text(tip).clicked() {
+        out.push(PlaylistAction::SuggestFade(key.1));
+    }
+    p.with_clip_rect(Rect::from_min_max(pos2(inner.left(), foot_y - 10.0), pos2(suggest.left() - 8.0, foot_y + 10.0)))
         .text(pos2(inner.left(), foot_y), Align2::LEFT_CENTER, hint, FontId::proportional(11.0), theme::faint());
     let reset_resp = ui.place(reset, |ui: &mut egui::Ui| hw::button(ui, reset.size(), tr("ZURÜCKSETZEN"), fonts::bold(10.0), hw::Look::Plain, false, !changed.is_empty()));
     if reset_resp.clicked() {
@@ -943,6 +962,8 @@ fn edge_well(
     color: egui::Color32,
     // Stelle des Vorhörens im Titel (Sekunden)
     playhead: Option<f32>,
+    // Beatraster an dieser Stelle: Beat-Linien, Kanten rasten auf Schläge (mit ⌥/Alt frei)
+    beats: Option<fw_library::Segment>,
 ) -> Option<Option<Region>> {
     let (t0, t1) = window;
     let span = (t1 - t0).max(0.01);
@@ -981,6 +1002,16 @@ fn edge_well(
     }
     p.add(egui::Shape::mesh(mesh));
 
+    // Beat-Linien über der Wellenform, Taktbeginn kräftiger
+    if let Some(seg) = beats {
+        let (first, last) = (seg.beats_at(t0 as f64).ceil() as i64, seg.beats_at(t1 as f64).floor() as i64);
+        for b in first..=last {
+            let x = to_x((seg.downbeat + b as f64 * seg.beat_secs()) as f32);
+            let bar = b.rem_euclid(4) == 0;
+            p.line_segment([pos2(x, rect.top()), pos2(x, rect.bottom())], Stroke::new(if bar { 1.2 } else { 0.6 }, egui::Color32::from_black_alpha(if bar { 130 } else { 70 })));
+        }
+    }
+
     // Bereich: abgeschnittener Teil abgedunkelt, Rampe als Linie
     let accent = theme::yellow();
     if let Some(r) = region {
@@ -1018,14 +1049,19 @@ fn edge_well(
         p.text(pos2(tx, rect.top() + 2.0), align, fmt_point(to_t(x)), FontId::monospace(10.0), theme::well_ink());
     }
 
-    // Nahe am Rand rastet die Zeit am Rand ein (Titelanfang bzw. -ende)
+    // Nahe am Rand rastet die Zeit am Rand ein (Titelanfang bzw. -ende), sonst mit Beatraster auf den nächsten Schlag
+    // (mit ⌥/Alt frei)
+    let free = ui.input(|i| i.modifiers.alt);
     let snap = |x: f32| {
         if x <= rect.left() + EDGE_PX {
             t0
         } else if x >= rect.right() - EDGE_PX {
             t1
         } else {
-            to_t(x)
+            match beats.filter(|_| !free) {
+                Some(seg) => crate::fade_suggest::snap_to_beat(to_t(x), seg).clamp(t0, t1),
+                None => to_t(x),
+            }
         }
     };
     let grab_id = id.with("grab");

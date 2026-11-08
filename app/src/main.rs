@@ -13,6 +13,7 @@ mod ctrl_click;
 mod browser;
 mod deck_ui;
 mod fade_preview;
+mod fade_suggest;
 mod fadewerk;
 mod fonts;
 mod folder_cache;

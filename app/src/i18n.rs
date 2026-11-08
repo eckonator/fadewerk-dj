@@ -444,6 +444,15 @@ fn en(de: &str) -> Option<&'static str> {
         "Die Beliebtheit dieser Titel ist schon bekannt (wird nach 30 Tagen neu abgefragt)." => "The popularity of these tracks is already known (looked up again after 30 days).",
         "Beliebtheit abgefragt. Daten: ListenBrainz (CC0)." => "Popularity looked up. Data: ListenBrainz (CC0).",
         "im Takt" => "on the beat",
+        "Fades vorschlagen" => "Suggest fades",
+        "Setzt für alle Titel ohne eigene Bereiche Ein- und Ausblendbereiche nach Beatraster und Lautstärke: Einstieg auf dem ersten Takt nach der Stille, Ausblenden vor dem Ausklang, so lang wie die Überblendzeit."
+            => "Sets fade-in and fade-out ranges for all tracks without their own, from the beat grid and loudness: in on the first bar after the silence, out before the track winds down, as long as the fade time.",
+        "Ziehen = Bereich (rastet auf Schläge, ⌥/Alt frei) · Klick = harter Schnitt · Rechtsklick = löschen" => "Drag = range (snaps to beats, ⌥/Alt free) · click = hard cut · right-click = delete",
+        "Ein- und Ausblendbereich nach Beatraster und Lautstärke vorschlagen: Einstieg auf dem ersten Takt nach der Stille, Ausblenden vor dem Ausklang, so lang wie die Überblendzeit"
+            => "Suggest fade-in and fade-out ranges from the beat grid and loudness: in on the first bar after the silence, out before the track winds down, as long as the fade time",
+        "VORSCHLAG" => "SUGGEST",
+        "Fades werden vorgeschlagen, sobald Wellenform und Beatraster da sind …" => "Fades will be suggested as soon as waveform and beat grid are ready …",
+        "Fades für {} Titel vorgeschlagen" => "Fades suggested for {} tracks",
         // DJ-Controller (MIDI)
         "Höhen" => "highs",
         "Mitten" => "mids",

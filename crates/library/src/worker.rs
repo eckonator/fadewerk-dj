@@ -111,6 +111,8 @@ struct BpmJob {
     path: PathBuf,
     /// Auch analysieren, wenn der Tag schon eine BPM-Angabe hat.
     force: bool,
+    /// Beatraster gebraucht: dann auch dekodieren, wenn BPM und Tonart im Tag stehen.
+    grid: bool,
 }
 
 struct LoadJob {
@@ -436,10 +438,11 @@ impl Library {
     }
 
     /// Ermittelt BPM und Tonart im Hintergrund, Ergebnis als [`Response::Analysis`]. Ohne `force` gelten
-    /// Angaben im Tag, und es wird nur analysiert, was dort fehlt.
-    pub fn analyze(&self, path: PathBuf, force: bool) {
+    /// Angaben im Tag, und es wird nur analysiert, was dort fehlt; mit `grid` entsteht auf jeden Fall auch das
+    /// Beatraster.
+    pub fn analyze(&self, path: PathBuf, force: bool, grid: bool) {
         let generation = self.bpm_generation.load(Ordering::Relaxed);
-        let _ = self.bpm_tx.send(BpmJob { generation, path, force });
+        let _ = self.bpm_tx.send(BpmJob { generation, path, force, grid });
     }
 
     /// Verwirft alle wartenden Analyse-Aufträge. Gerade laufende Analysen liefern noch ihr Ergebnis.
@@ -566,7 +569,7 @@ struct Analysis {
 fn analyze(job: &BpmJob) -> Analysis {
     let meta = if job.force { None } else { read_meta(&job.path).ok() };
     let (tag_bpm, tag_key) = meta.map_or((None, None), |m| (m.bpm, m.key));
-    if let (Some(bpm), Some(key)) = (tag_bpm, tag_key) {
+    if let (Some(bpm), Some(key), false) = (tag_bpm, tag_key, job.grid) {
         return Analysis { bpm: Some(bpm), bpm_analyzed: false, key: Some(key), key_analyzed: false, readable: true, grid: None };
     }
     match decode_file(&job.path) {

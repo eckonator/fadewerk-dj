@@ -51,7 +51,9 @@ view; otherwise in the live view. The choice is remembered.
 - **FadeWerk mode**: the FADEWERK button in the playlist headers shows the waveform behind every track.
   Click a track to mark where it fades in (first 30 s) and out (last 30 s), or set a hard cut. The track
   then starts at its fade-in range and ends at the end of its fade-out range, so intros and outros can be
-  skipped. Auto-fade runs in two phases: the new track fades in while the old one stays at full level,
+  skipped. **Suggest** (in the editor, or for all tracks in the ⋯ menu) sets both ranges from the beat
+  grid and loudness: in on the first bar after the silence, out before the track winds down, as long as the
+  fade time in whole bars. Range edges snap to beats (hold ⌥/Alt to drag freely). Auto-fade runs in two phases: the new track fades in while the old one stays at full level,
   then the old one fades out – the transition bar shows both phases. A side without a range uses half the
   fade time. The ranges belong to the playlist entry, move with it and are saved with the playlists; two
   small triangles mark tracks with custom fades. In the editor, each range can be previewed on the

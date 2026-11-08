@@ -415,3 +415,71 @@ pub(super) enum FadePlan {
     Planned { to: usize, rem: f64, plan: crate::fadewerk::Transition },
 }
 
+impl FadeWerkDjApp {
+    /// FadeWerk-Bereiche für einen Titel vorschlagen, sobald Skizze und Beatraster da sind (fehlt eines, wird es
+    /// angefordert). `index` = einzelner Eintrag (überschreibt), sonst alle Einträge des Titels ohne eigene Bereiche.
+    pub(super) fn queue_fade_suggestion(&mut self, list: usize, path: PathBuf, index: Option<usize>, now: f64) {
+        if self.fade_suggest.is_empty() {
+            self.fade_suggested = 0;
+        }
+        if !self.sketch.map.contains_key(&path) && self.sketch.requested.insert(path.clone()) {
+            self.sketch.batch[list].push(path.clone());
+        }
+        if !self.grids.contains_key(&path) && self.bpm_pending.insert(path.clone()) {
+            self.bpm_total += 1;
+            self.lib.analyze(path.clone(), false, true);
+        }
+        self.fade_suggest.push((list, path, index));
+        self.step_fade_suggestions(now);
+        if !self.fade_suggest.is_empty() && index.is_none() && self.fade_suggest.len() == 1 {
+            self.notify(tr("Fades werden vorgeschlagen, sobald Wellenform und Beatraster da sind …"), now);
+        }
+    }
+
+    /// Wartende Vorschläge setzen, deren Skizze und Beatraster inzwischen da sind. Unlesbare Titel fallen weg; ohne
+    /// sicheres Raster geht der Vorschlag nur nach der Lautstärke.
+    pub(super) fn step_fade_suggestions(&mut self, now: f64) {
+        if self.fade_suggest.is_empty() {
+            return;
+        }
+        let fade_secs = self.autofade.fade_secs;
+        let mut done = Vec::new();
+        for (k, (list, path, index)) in self.fade_suggest.iter().enumerate() {
+            let sketch = match self.sketch.map.get(path) {
+                None => continue,
+                Some(None) => {
+                    done.push((k, None));
+                    continue;
+                }
+                Some(Some(sk)) => sk.clone(),
+            };
+            // Raster abwarten, solange die Analyse noch läuft
+            if !self.grids.contains_key(path) && self.bpm_pending.contains(path) {
+                continue;
+            }
+            let fade = crate::fade_suggest::suggest(&sketch, self.grids.get(path).copied().flatten(), fade_secs);
+            done.push((k, Some((*list, path.clone(), *index, fade))));
+        }
+        for (k, item) in done.into_iter().rev() {
+            self.fade_suggest.remove(k);
+            let Some((list, path, index, fade)) = item else { continue };
+            if fade.is_empty() {
+                continue;
+            }
+            let pl = &self.playlists[list];
+            let targets: Vec<usize> = match index {
+                Some(i) if pl.entries.get(i) == Some(&path) => vec![i],
+                Some(_) => pl.entries.iter().position(|p| *p == path).into_iter().collect(),
+                None => (0..pl.entries.len()).filter(|&i| pl.entries[i] == path && pl.fade(i).is_empty()).collect(),
+            };
+            for i in targets {
+                self.playlist_action(list, PlaylistAction::SetFade(i, fade), now);
+                self.fade_suggested += 1;
+            }
+        }
+        if self.fade_suggest.is_empty() && self.fade_suggested > 1 {
+            self.notify(trf("Fades für {} Titel vorgeschlagen", &[&self.fade_suggested]), now);
+            self.fade_suggested = 0;
+        }
+    }
+}

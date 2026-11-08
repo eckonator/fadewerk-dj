@@ -425,6 +425,11 @@ pub struct FadeWerkDjApp {
     plays: (HashMap<PathBuf, u32>, u64),
     /// Eigene Bewertungen (`bewertung.json`).
     ratings: crate::ratings::Ratings,
+    /// Wartende FadeWerk-Vorschläge (Playlist, Titel, Eintrag bei einem einzelnen Vorschlag): warten auf Skizze
+    /// und Beatraster.
+    fade_suggest: Vec<(usize, PathBuf, Option<usize>)>,
+    /// Zahl der Vorschläge des laufenden Durchgangs (für den Hinweis am Ende).
+    fade_suggested: usize,
     /// Player, dessen Schläge nach einem Übergang im Takt auf denen des anderen gehalten werden.
     beat_lock: Option<usize>,
     /// DJ-Controller (MIDI) und laufendes Lernen.
@@ -602,6 +607,8 @@ impl FadeWerkDjApp {
             plays: (HashMap::new(), u64::MAX),
             ratings: Default::default(),
             beat_lock: None,
+            fade_suggest: Vec::new(),
+            fade_suggested: 0,
             midi: Default::default(),
             midi_learn: None,
             popularity: Default::default(),
@@ -860,6 +867,14 @@ impl FadeWerkDjApp {
                     app.ratings.set(t, [5, 3, 0, 4, 2, 0, 5, 1][i % 8], None);
                 }
             }
+            // FW_SUGGEST=1: FadeWerk-Bereiche für alle Demo-Titel vorschlagen (überschreibt Beispielbereiche)
+            if std::env::var_os("FW_SUGGEST").is_some() {
+                for d in 0..2 {
+                    for i in 0..app.playlists[d].entries.len() {
+                        app.playlist_action(d, PlaylistAction::SuggestFade(i), 0.0);
+                    }
+                }
+            }
             // FW_MIDI_LEARN=1: Lernmodus für Controller in der Oberfläche
             if std::env::var_os("FW_MIDI_LEARN").is_some() {
                 app.start_learn(None, 0.0);
@@ -1020,6 +1035,7 @@ impl eframe::App for FadeWerkDjApp {
         }
         self.step_midi(ctx, now);
         self.poll_library(ctx, now);
+        self.step_fade_suggestions(now);
         self.poll_fx(now);
         self.poll_fade_preview(now);
         self.poll_import(now);
@@ -1453,7 +1469,7 @@ impl eframe::App for FadeWerkDjApp {
             fade: &fade_model,
             transition: &transition,
             playlists: &self.playlists,
-            info: playlist_ui::TrackInfo { metas: &self.metas, bpms: &self.bpms, keys: &self.keys, ratings: &self.ratings, reference: key_ref_track, harmonic, compact },
+            info: playlist_ui::TrackInfo { metas: &self.metas, bpms: &self.bpms, keys: &self.keys, ratings: &self.ratings, grids: &self.grids, reference: key_ref_track, harmonic, compact },
             has: [self.decks[0].loaded_id != 0, self.decks[1].loaded_id != 0],
             playing: [self.ctl.shared.decks[0].is_playing(), self.ctl.shared.decks[1].is_playing()],
             preview: self.preview.as_ref().filter(|p| p.clip.is_none()).map(|p| p.path.as_path()),
