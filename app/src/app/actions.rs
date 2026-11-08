@@ -320,7 +320,8 @@ impl FadeWerkDjApp {
             PlaylistAction::MoveManyToOther(indices) => {
                 self.playlist_action(1 - d, PlaylistAction::Drop { item: DragItem::Rows { list: d, indices }, before: usize::MAX }, now)
             }
-            PlaylistAction::Harmonic => self.harmonic_start(now),
+            PlaylistAction::Harmonic => self.harmonic_start(crate::harmonic::Mode::Harmonic, now),
+            PlaylistAction::BeatSort => self.harmonic_start(crate::harmonic::Mode::Beat, now),
             PlaylistAction::SortUndo => {
                 if let Some((before, _, _)) = self.sort_undo.take() {
                     self.playlists = before;

@@ -321,7 +321,7 @@ pub struct FadeWerkDjApp {
     bpm_check: Option<std::sync::mpsc::Receiver<Vec<(PathBuf, bool)>>>,
     key_check: Option<std::sync::mpsc::Receiver<Vec<(PathBuf, bool)>>>,
     /// „Harmonisch“ wartet auf die Analyse fehlender Tonarten.
-    harmonic_pending: bool,
+    harmonic_pending: Option<crate::harmonic::Mode>,
     /// Playlists vor dem letzten Sortieren (harmonisch oder zufällig), Fingerabdruck danach und Zeitpunkt (für „Rückgängig“).
     sort_undo: Option<([Playlist; 2], u64, f64)>,
     /// FadeWerk-Modus: Playlists zeigen Wellenformen und Fade-Bereiche.
@@ -534,7 +534,7 @@ impl FadeWerkDjApp {
             bpm_total: 0,
             bpm_check: None,
             key_check: None,
-            harmonic_pending: false,
+            harmonic_pending: None,
             sort_undo: None,
             fade_track: None,
             split_sent: None,
@@ -1080,9 +1080,10 @@ impl eframe::App for FadeWerkDjApp {
         self.keep_awake(now);
         self.handle_track_ends();
         // „Harmonisch“ wartet, bis die Analyse durch ist (oder abgebrochen wurde)
-        if self.harmonic_pending && self.bpm_pending.is_empty() {
-            self.harmonic_pending = false;
-            self.harmonic_sort(now);
+        if self.bpm_pending.is_empty()
+            && let Some(mode) = self.harmonic_pending.take()
+        {
+            self.harmonic_sort(mode, now);
         }
         self.step_autofade(dt);
         self.step_auto_sync(dt, now);

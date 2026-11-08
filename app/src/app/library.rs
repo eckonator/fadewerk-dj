@@ -62,43 +62,70 @@ impl FadeWerkDjApp {
         Some((d, deck_keys[d].0?))
     }
 
-    /// „Harmonisch“: erst fehlende Tonarten (und BPM) der kommenden Titel ermitteln, dann sortieren.
-    pub(super) fn harmonic_start(&mut self, now: f64) {
-        let missing: Vec<PathBuf> =
-            self.playlists.iter().flat_map(|pl| pl.upcoming_entries()).filter(|p| self.needs_analysis(p)).cloned().collect();
+    /// „Harmonisch“ bzw. „im Takt“: erst fehlende Tonarten und BPM (im Takt auch Beatraster) der kommenden Titel
+    /// ermitteln, dann sortieren.
+    pub(super) fn harmonic_start(&mut self, mode: crate::harmonic::Mode, now: f64) {
+        let beat = mode == crate::harmonic::Mode::Beat;
+        let missing: Vec<PathBuf> = self
+            .playlists
+            .iter()
+            .flat_map(|pl| pl.upcoming_entries())
+            .filter(|p| self.needs_analysis(p) || (beat && !self.grids.contains_key(*p)))
+            .cloned()
+            .collect();
         if missing.is_empty() {
-            self.harmonic_sort(now);
+            self.harmonic_sort(mode, now);
             return;
         }
-        self.harmonic_pending = true;
-        self.notify(trf("Ermittle {} fehlende Tonarten, danach wird sortiert …", &[&missing.len()]), now);
+        self.harmonic_pending = Some(mode);
+        let text = if beat { trf("Ermittle {} fehlende Beatraster und Tonarten, danach wird sortiert …", &[&missing.len()]) } else { trf("Ermittle {} fehlende Tonarten, danach wird sortiert …", &[&missing.len()]) };
+        self.notify(text, now);
         self.browser_action(BrowserAction::Analyze { paths: missing, force: false }, now);
     }
 
     /// Ordnet die kommenden Titel beider Playlists nach `harmonic::plan`, ausgehend vom Titel auf Sendung.
-    pub(super) fn harmonic_sort(&mut self, now: f64) {
+    pub(super) fn harmonic_sort(&mut self, mode: crate::harmonic::Mode, now: f64) {
+        use crate::harmonic::{Mode, Track};
+        let track = |p: &PathBuf| {
+            let grid = self.grids.get(p).copied().flatten();
+            Track {
+                key: self.key_of(p),
+                bpm: self.bpms.get(p).copied().or_else(|| self.metas.get(p).and_then(|m| m.bpm)),
+                grid_in: grid.and_then(|g| g.start).map(|s| s.bpm as f32),
+                grid_out: grid.and_then(|g| g.end).map(|s| s.bpm as f32),
+            }
+        };
+        // Titel im Player: Tonart klingend (mit Pitch verschoben), Tempo mit Pitch
         let deck_keys = [self.deck_key(0), self.deck_key(1)];
-        let deck_bpm = |d: usize| self.decks[d].bpm.map(|b| b * (1.0 + self.decks[d].pitch_pct / 100.0));
+        let deck_track = |d: usize, key: Option<Camelot>| {
+            let rate = 1.0 + self.decks[d].pitch_pct / 100.0;
+            let base = self.decks[d].path.as_ref().map(track).unwrap_or_default();
+            Track {
+                key,
+                bpm: self.decks[d].bpm.map(|b| b * rate),
+                grid_in: base.grid_in.map(|b| b * rate),
+                grid_out: base.grid_out.map(|b| b * rate),
+            }
+        };
         // Auf Sendung ist der Ausgangspunkt, als Nächstes spielt der andere Player; spielt nichts,
         // gilt der geladene Titel von A, sonst beginnt A
         let (start, first) = match self.key_reference(&deck_keys) {
-            Some((d, key)) => (Some(crate::harmonic::Track { key: Some(key), bpm: deck_bpm(d) }), 1 - d),
-            None if self.has_track(0) => (Some(crate::harmonic::Track { key: deck_keys[0].0, bpm: deck_bpm(0) }), 1),
+            Some((d, key)) => (Some(deck_track(d, Some(key))), 1 - d),
+            None if self.has_track(0) => (Some(deck_track(0, deck_keys[0].0)), 1),
             None => (None, 0),
         };
-        let track = |p: &PathBuf| crate::harmonic::Track {
-            key: self.key_of(p),
-            bpm: self.bpms.get(p).copied().or_else(|| self.metas.get(p).and_then(|m| m.bpm)),
-        };
-        let lists: [Vec<crate::harmonic::Track>; 2] = std::array::from_fn(|d| self.playlists[d].upcoming_entries().iter().map(track).collect());
-        let order = crate::harmonic::plan(start, first, [&lists[0], &lists[1]]);
+        let lists: [Vec<Track>; 2] = std::array::from_fn(|d| self.playlists[d].upcoming_entries().iter().map(track).collect());
+        let order = crate::harmonic::plan(start, first, [&lists[0], &lists[1]], mode);
         let before = self.playlists.clone();
         for (pl, o) in self.playlists.iter_mut().zip(&order) {
             pl.reorder_upcoming(o);
         }
         self.sort_undo = Some((before, crate::session::fingerprint(&self.playlists), now));
         let unknown = lists.iter().flatten().filter(|t| t.key.is_none()).count();
-        if unknown > 0 {
+        if mode == Mode::Beat {
+            let (ok, all) = crate::harmonic::beat_matches(start, first, [&lists[0], &lists[1]], &order);
+            self.notify(trf("Für Übergänge im Takt sortiert: {} von {} Übergängen können im Takt laufen.", &[&ok, &all]), now);
+        } else if unknown > 0 {
             self.notify(trf("Harmonisch sortiert; {} Titel ohne Tonart stehen am Ende", &[&unknown]), now);
         } else {
             self.notify(tr("Kommende Titel harmonisch sortiert"), now);
@@ -108,7 +135,7 @@ impl FadeWerkDjApp {
     /// Zustand des Auswahlfelds „Sortieren“. „Rückgängig“ gilt eine Minute und nur, solange niemand die Playlists
     /// verändert hat (sonst würde es Änderungen danach verwerfen).
     pub(super) fn harmonic_state(&mut self, now: f64) -> playlist_ui::Harmonic {
-        if self.harmonic_pending {
+        if self.harmonic_pending.is_some() {
             return playlist_ui::Harmonic::Analyzing;
         }
         let valid = self.sort_undo.as_ref().is_some_and(|(_, fp, t)| now - t < SORT_UNDO_SECS && *fp == crate::session::fingerprint(&self.playlists));

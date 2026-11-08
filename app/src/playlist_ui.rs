@@ -43,6 +43,8 @@ pub enum PlaylistAction {
     Shuffle,
     /// Kommende Titel beider Playlists harmonisch ordnen (siehe `harmonic.rs`).
     Harmonic,
+    /// Kommende Titel beider Playlists so ordnen, dass möglichst viele Übergänge im Takt laufen können.
+    BeatSort,
     /// Die letzte Sortierung (harmonisch oder zufällig) zurücknehmen.
     SortUndo,
     Drop { item: DragItem, before: usize },
@@ -262,6 +264,12 @@ pub fn show(
                 .on_hover_text(tr("Ordnet die kommenden Titel beider Playlists so, dass jeder Übergang im Wechsel A – B – A passt: zuerst nach Tonart, dann nach Tempo. Fehlende Tonarten werden vorher ermittelt."));
             if harmonic.clicked() {
                 out.push(PlaylistAction::Harmonic);
+            }
+            let beat = ui
+                .add_enabled(!analyzing && pl.upcoming() > 0, egui::Button::new(tr("Für Übergänge im Takt sortieren (Tempo)")))
+                .on_hover_text(tr("Ordnet die kommenden Titel beider Playlists im Wechsel A – B – A so, dass möglichst viele Übergänge im Takt laufen können: Beatraster am Ende und am Anfang, Tempo höchstens 6 % auseinander, der kleinste Sprung zuerst. Die Tonart zählt nur bei Gleichstand. Fehlende Beatraster werden vorher ermittelt."));
+            if beat.clicked() {
+                out.push(PlaylistAction::BeatSort);
             }
             let shuffle = ui
                 .add_enabled(!analyzing && pl.upcoming() > 1, egui::Button::new(tr("Zufällige Reihenfolge")))

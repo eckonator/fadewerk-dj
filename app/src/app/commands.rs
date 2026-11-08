@@ -121,6 +121,7 @@ impl FadeWerkDjApp {
         for d in 0..2 {
             let l = theme::deck_letter(d);
             add(trf("Playlist {} harmonisch sortieren", &[&l]), lists, "", PaletteCmd::Playlist(d, PlaylistAction::Harmonic));
+            add(trf("Playlist {} für Übergänge im Takt sortieren", &[&l]), lists, "", PaletteCmd::Playlist(d, PlaylistAction::BeatSort));
             add(trf("Playlist {} zufällig mischen", &[&l]), lists, "", PaletteCmd::Playlist(d, PlaylistAction::Shuffle));
             add(trf("Playlist {} leeren", &[&l]), lists, "", PaletteCmd::Playlist(d, PlaylistAction::Clear));
         }
