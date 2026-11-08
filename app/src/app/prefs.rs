@@ -223,7 +223,8 @@ impl FadeWerkDjApp {
         s.spin_up_secs = self.motor.spin_up_secs;
         s.spin_down_secs = self.motor.spin_down_secs;
         s.fade_secs = self.autofade.fade_secs;
-        s.auto_fade = self.autofade.enabled;
+        // Nur für die Sperre eingeschaltet: nicht merken (wird nach hartem Beenden sonst dauerhaft an)
+        s.auto_fade = self.autofade.enabled && !self.auto_for_lock;
         s.curve = match self.curve {
             Curve::Soft => 0,
             Curve::Linear => 1,

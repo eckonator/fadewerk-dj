@@ -601,6 +601,8 @@ fn en(de: &str) -> Option<&'static str> {
         "PIN eingeben" => "Enter PIN",
         "Zu viele Versuche. Noch {} s warten." => "Too many attempts. Wait {} s.",
         "Oberfläche entsperrt." => "Interface unlocked.",
+        "Oberfläche entsperrt. Auto-Fade ist wieder aus." => "Interface unlocked. Auto-fade is off again.",
+        "Oberfläche gesperrt. Auto-Fade ist an, bis du entsperrst." => "Interface locked. Auto-fade is on until you unlock.",
         "Oberfläche gesperrt. Die Musik läuft weiter." => "Interface locked. The music keeps playing.",
         "PIN gespeichert. Entsperren jetzt nur noch mit diesem PIN." => "PIN saved. Unlocking now requires this PIN.",
         "PIN entfernt. Entsperren durch 2 Sekunden Drücken auf das Schloss." => "PIN removed. Unlock by pressing the lock for 2 seconds.",

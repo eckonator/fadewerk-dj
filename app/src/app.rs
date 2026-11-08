@@ -391,6 +391,8 @@ pub struct FadeWerkDjApp {
     palette: crate::palette::Palette,
     /// Oberfläche gesperrt (DJ kurz weg); Musik läuft weiter.
     lock: crate::lock::Lock,
+    /// Auto-Fade war beim Sperren aus und wurde für die Zeit der Sperre eingeschaltet.
+    auto_for_lock: bool,
     /// Rückfrage zu „Alles leeren“ ist offen.
     confirm_clear_all: bool,
     tag_editor: Option<TagEditor>,
@@ -588,6 +590,7 @@ impl FadeWerkDjApp {
             settings_ui: SettingsUi::default(),
             palette: Default::default(),
             lock: crate::lock::Lock::install(&cc.egui_ctx),
+            auto_for_lock: false,
             confirm_clear_all: false,
             tag_editor: None,
             tag_batch: None,
@@ -752,7 +755,7 @@ impl FadeWerkDjApp {
             if v == "pin" {
                 app.settings.lock_pin = Some(crate::lock::pin_hash("1234"));
             }
-            app.lock.set_locked(true);
+            app.lock_ui(0.0);
         }
         // FW_STATUS=alle (nur Debug): Uhr, Akku, CPU, RAM und Temperatur in der Statuszeile
         if cfg!(debug_assertions) && std::env::var_os("FW_STATUS").is_some() {
@@ -1734,7 +1737,13 @@ impl eframe::App for FadeWerkDjApp {
 
         // Gesperrt: über allem abgedunkelt, in der Mitte die Plakette zum Entsperren
         if self.lock.locked() && self.lock.show(&ctx, self.settings.lock_pin.as_deref(), now) {
-            self.notify(tr("Oberfläche entsperrt."), now);
+            // Auto-Fade wieder aus, wenn es nur für die Sperre an war (eine laufende Überblendung läuft zu Ende)
+            if std::mem::take(&mut self.auto_for_lock) {
+                self.fade_action(FadeAction::Auto(false), now);
+                self.notify(tr("Oberfläche entsperrt. Auto-Fade ist wieder aus."), now);
+            } else {
+                self.notify(tr("Oberfläche entsperrt."), now);
+            }
         }
 
         self.send_sketch_requests();

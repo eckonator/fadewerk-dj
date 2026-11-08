@@ -222,7 +222,14 @@ impl FadeWerkDjApp {
         self.palette.open = false;
         self.midi_learn = None;
         self.lock.set_locked(true);
-        self.notify(tr("Oberfläche gesperrt. Die Musik läuft weiter."), now);
+        // Ohne Auto-Fade bliebe die Musik nach dem Titel stehen, solange niemand bedienen kann
+        if self.autofade.enabled {
+            self.notify(tr("Oberfläche gesperrt. Die Musik läuft weiter."), now);
+        } else {
+            self.fade_action(FadeAction::Auto(true), now);
+            self.auto_for_lock = true;
+            self.notify(tr("Oberfläche gesperrt. Auto-Fade ist an, bis du entsperrst."), now);
+        }
     }
 }
 
