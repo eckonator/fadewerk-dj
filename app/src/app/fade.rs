@@ -372,6 +372,7 @@ impl FadeWerkDjApp {
             curve: self.curve,
             bass_swap: self.bass_swap,
             on_beat: false,
+            beat_miss: None,
         };
         if let Some(f) = self.autofade.fade() {
             v.on_beat = self.beat_lock == Some(f.to);
@@ -381,7 +382,10 @@ impl FadeWerkDjApp {
             v.lead = if progress < 0.97 { (rest / (1.0 - progress)).max(0.5) } else { self.autofade.fade_secs };
         } else if let FadePlan::Planned { rem, plan, .. } = self.fade_plan() {
             let rate = 1.0 + self.decks[self.autofade.active].pitch_pct as f64 / 100.0;
-            v.on_beat = plan.split.is_none() && self.beat_plan(plan.end - plan.lead as f64 * rate).is_some();
+            let check = if plan.split.is_some() { Err(beatmatch::BeatMiss::Split) } else { self.beat_check(plan.end - plan.lead as f64 * rate) };
+            v.on_beat = check.is_ok();
+            // Grund nur, wenn AUTO SYNC an ist (sonst ist „ohne Takt“ ohnehin gewollt)
+            v.beat_miss = check.err().filter(|_| self.auto_sync).and_then(|m| m.texts());
             v.until = Some(rem);
             v.lead = plan.lead;
             v.split_in = plan.split.map(|s| s.in_secs);

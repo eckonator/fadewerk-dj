@@ -86,12 +86,19 @@ pub struct Grid {
     pub end: Option<(f64, f64)>,
     #[serde(rename = "g", default)]
     pub steady: bool,
+    /// Stand der Erkennung (`GRID_REV`); ältere Einträge werden beim Laden verworfen und neu berechnet.
+    #[serde(rename = "v", default)]
+    pub rev: u8,
 }
+
+/// Stand der Beatraster-Erkennung. 1 (2026-11-08): niedrigere Schwelle für Abschnitte, Abschnitt nah am Rand.
+pub const GRID_REV: u8 = 1;
 
 impl Grid {
     pub fn new(g: Option<fw_library::BeatGrid>) -> Self {
         let seg = |s: Option<fw_library::Segment>| s.map(|s| (s.bpm, s.downbeat));
-        g.map_or(Self { start: None, end: None, steady: false }, |g| Self { start: seg(g.start), end: seg(g.end), steady: g.steady })
+        let rev = GRID_REV;
+        g.map_or(Self { start: None, end: None, steady: false, rev }, |g| Self { start: seg(g.start), end: seg(g.end), steady: g.steady, rev })
     }
 
     pub fn grid(self) -> Option<fw_library::BeatGrid> {
@@ -105,7 +112,7 @@ impl CacheValue for Grid {
     const NAME: &'static str = "Beatraster-Cache";
     fn plausible(&self) -> bool {
         let ok = |s: Option<(f64, f64)>| s.is_none_or(|(bpm, at)| bpm.is_finite() && (40.0..=250.0).contains(&bpm) && at.is_finite() && at > -10.0);
-        ok(self.start) && ok(self.end)
+        self.rev >= GRID_REV && ok(self.start) && ok(self.end)
     }
 }
 

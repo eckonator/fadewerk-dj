@@ -31,7 +31,8 @@
 //! - `FW_SETTINGS=allgemein|audio|musik|effekte|aussehen|leistung|ueber|zuruecksetzen` öffnet das Einstellungsfenster auf dieser Seite.
 //! - `FW_POINTER=x,y` bewegt die Maus (in Punkten) nach Bild 100 dorthin, etwa um Tooltips zu sehen;
 //!   `FW_POINTER=x,y,2` klickt dort rechts (Kontextmenü), `FW_POINTER=x,y,1` links;
-//!   `FW_POINTER=x1,y1,x2,y2` zieht mit gedrückter Taste von x1,y1 nach x2,y2 und bleibt dort stehen.
+//!   `FW_POINTER=x1,y1,x2,y2` zieht mit gedrückter Taste von x1,y1 nach x2,y2 und bleibt dort stehen;
+//!   `x1,y1,x2,y2,n` lässt erst nach n Bildern los (Gedrückthalten testen).
 //! - `FW_KEYS=ArrowDown,Enter` drückt ab Bild 120 nacheinander diese Tasten (Namen wie `egui::Key::from_name`),
 //!   `text:abc` tippt Text.
 //! - `FW_MINIMIZE=1` minimiert das Fenster kurz nach dem Start (Abspiel-Logik ohne sichtbares Fenster prüfen).
@@ -200,14 +201,15 @@ impl DevTools {
             }
             return;
         }
-        // Drücken, in 30 Bildern hinüberziehen, loslassen, stehen bleiben
+        // Drücken, in 30 Bildern hinüberziehen, loslassen (oder erst nach dem 5. Wert in Bildern), stehen bleiben
+        let release = p.get(4).map_or(31, |n| (*n as u64).max(31));
         match f {
             f if f == start => raw.events.extend([Event::PointerMoved(pos(p[0], p[1])), button(true)]),
             f if f > start && f <= start + 30 => {
                 let k = (f - start) as f32 / 30.0;
                 raw.events.push(Event::PointerMoved(pos(p[0] + (p[2] - p[0]) * k, p[1] + (p[3] - p[1]) * k)));
             }
-            f if f == start + 31 => raw.events.push(button(false)),
+            f if f == start + release => raw.events.push(button(false)),
             _ => {}
         }
     }

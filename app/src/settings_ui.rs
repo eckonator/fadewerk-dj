@@ -640,7 +640,7 @@ impl SettingsUi {
             } else {
                 let has_pin = c.settings.lock_pin.is_some();
                 field(ui, tr("PIN"), "", |ui| {
-                    let text = if has_pin { tr("festgelegt") } else { tr("keiner – entsperren durch 2 Sekunden Drücken auf das Schloss") };
+                    let text = if has_pin { tr("festgelegt") } else { tr("keiner – beim Sperren wählst du eines von vier Feldern, entsperrt wird durch 3 Sekunden Gedrückthalten darin") };
                     ui.add(egui::Label::new(RichText::new(text).size(12.5).color(theme::ink())).wrap());
                 });
                 ui.horizontal(|ui| {
@@ -655,11 +655,11 @@ impl SettingsUi {
             }
             ui.add_space(2.0);
             let forgot = if cfg!(target_os = "macos") {
-                tr("PIN vergessen? FadeWerk DJ über „Sofort beenden“ (Wahltaste+⌘+Esc) beenden und neu starten. Die Sperre gilt nicht über einen Neustart hinaus; danach hier einen neuen PIN festlegen.")
+                tr("PIN oder Feld vergessen? FadeWerk DJ über „Sofort beenden“ (Wahltaste+⌘+Esc) beenden und neu starten. Die Sperre gilt nicht über einen Neustart hinaus; danach hier einen neuen PIN festlegen.")
             } else if cfg!(windows) {
-                tr("PIN vergessen? FadeWerk DJ im Task-Manager (Strg+Umschalt+Esc) beenden und neu starten. Die Sperre gilt nicht über einen Neustart hinaus; danach hier einen neuen PIN festlegen.")
+                tr("PIN oder Feld vergessen? FadeWerk DJ im Task-Manager (Strg+Umschalt+Esc) beenden und neu starten. Die Sperre gilt nicht über einen Neustart hinaus; danach hier einen neuen PIN festlegen.")
             } else {
-                tr("PIN vergessen? FadeWerk DJ über die Systemüberwachung oder „pkill fadewerk-dj“ beenden und neu starten. Die Sperre gilt nicht über einen Neustart hinaus; danach hier einen neuen PIN festlegen.")
+                tr("PIN oder Feld vergessen? FadeWerk DJ über die Systemüberwachung oder „pkill fadewerk-dj“ beenden und neu starten. Die Sperre gilt nicht über einen Neustart hinaus; danach hier einen neuen PIN festlegen.")
             };
             note(ui, forgot);
         });

@@ -29,6 +29,41 @@ pub(super) struct BeatPlan {
     pct: f32,
 }
 
+/// Warum ein Übergang nicht im Takt läuft.
+pub(super) enum BeatMiss {
+    /// AUTO SYNC aus oder kein zweiter Titel: nichts zu erklären.
+    Off,
+    /// Kein sicheres Raster am Ende des alten (`end`) bzw. am Anfang des neuen Titels; `pending` = wird noch ermittelt.
+    NoGrid { end: bool, title: String, pending: bool },
+    /// Tempi liegen so viele Prozent auseinander (auch halb/doppelt gerechnet).
+    Tempo(f32),
+    /// FadeWerk-Bereiche: der Übergang folgt ihnen statt dem Takt.
+    Split,
+}
+
+impl BeatMiss {
+    /// Kurz für die Übergangsleiste und ausführlich als Tooltip; `None` = nichts zeigen.
+    pub(super) fn texts(&self) -> Option<(String, String)> {
+        Some(match self {
+            BeatMiss::Off => return None,
+            BeatMiss::NoGrid { pending: true, .. } => (tr("Takt wird ermittelt").to_owned(), tr("Das Beatraster wird gerade berechnet.").to_owned()),
+            BeatMiss::NoGrid { end: true, title, .. } => (
+                tr("ohne Takt (Ende)").to_owned(),
+                trf("Nicht im Takt: Für das Ende von „{}“ gibt es kein sicheres Beatraster (etwa wegen wanderndem Tempo).", &[title]),
+            ),
+            BeatMiss::NoGrid { title, .. } => (
+                tr("ohne Takt (Anfang)").to_owned(),
+                trf("Nicht im Takt: Für den Anfang von „{}“ gibt es kein sicheres Beatraster (etwa wegen wanderndem Tempo).", &[title]),
+            ),
+            BeatMiss::Tempo(p) => {
+                let p = format!("{p:.1}");
+                (tr("ohne Takt (Tempo)").to_owned(), trf("Nicht im Takt: Die Tempi liegen {} % auseinander, erlaubt sind höchstens 6 %.", &[&p]))
+            }
+            BeatMiss::Split => (tr("ohne Takt (FadeWerk)").to_owned(), tr("Nicht im Takt: Der Übergang folgt den FadeWerk-Bereichen.").to_owned()),
+        })
+    }
+}
+
 impl FadeWerkDjApp {
     /// Raster des Titels in Player `d` an der Stelle `secs` (Anfang bzw. Ende, siehe `BeatGrid::at`).
     pub(super) fn segment_at(&self, d: usize, secs: f64) -> Option<Segment> {
@@ -45,20 +80,33 @@ impl FadeWerkDjApp {
 
     /// Lässt sich der nächste Übergang im Takt fahren? `old_at` = Stelle im alten Titel, an der er beginnen soll.
     pub(super) fn beat_plan(&self, old_at: f64) -> Option<BeatPlan> {
+        self.beat_check(old_at).ok()
+    }
+
+    /// Wie `beat_plan`, ohne Takt aber mit dem Grund (für die Übergangsleiste).
+    pub(super) fn beat_check(&self, old_at: f64) -> Result<BeatPlan, BeatMiss> {
         if !self.auto_sync {
-            return None;
+            return Err(BeatMiss::Off);
         }
         let (from, to) = (self.autofade.active, self.autofade.other());
         if !self.has_track(from) || !self.has_track(to) || self.decks[to].spent || self.loading(to) {
-            return None;
+            return Err(BeatMiss::Off);
         }
-        let old = self.segment_at(from, old_at)?;
-        let new = self.segment_at(to, self.ctl.shared.decks[to].position_secs())?;
+        let missing = |d: usize, end: bool| {
+            let title = self.decks[d].path.as_deref().map(|p| self.title_of(p)).unwrap_or_default();
+            let pending = self.decks[d].path.as_ref().is_none_or(|p| !self.grids.contains_key(p));
+            BeatMiss::NoGrid { end, title, pending }
+        };
+        let old = self.segment_at(from, old_at).ok_or_else(|| missing(from, true))?;
+        let new = self.segment_at(to, self.ctl.shared.decks[to].position_secs()).ok_or_else(|| missing(to, false))?;
         let theirs = old.bpm * (1.0 + self.decks[from].pitch_pct as f64 / 100.0);
         let pct = |f: f64| (theirs / (new.bpm * f) - 1.0) * 100.0;
-        let factor = [1.0, 2.0, 0.5].into_iter().min_by(|a, b| pct(*a).abs().total_cmp(&pct(*b).abs()))?;
+        let factor = [1.0, 2.0, 0.5].into_iter().min_by(|a, b| pct(*a).abs().total_cmp(&pct(*b).abs())).unwrap_or(1.0);
         let p = pct(factor) as f32;
-        (p.abs() <= BEAT_MAX_PCT).then_some(BeatPlan { from, to, old, new, factor, pct: p })
+        if p.abs() > BEAT_MAX_PCT {
+            return Err(BeatMiss::Tempo(p.abs()));
+        }
+        Ok(BeatPlan { from, to, old, new, factor, pct: p })
     }
 
     /// Stelle im alten Titel, an der ein Übergang im Takt beginnt: die letzte Phrasengrenze (8, sonst 4 Takte) vor

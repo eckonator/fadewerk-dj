@@ -221,7 +221,7 @@ impl FadeWerkDjApp {
     pub(super) fn lock_ui(&mut self, now: f64) {
         self.palette.open = false;
         self.midi_learn = None;
-        self.lock.set_locked(true);
+        self.lock.begin(self.settings.lock_pin.is_some());
         // Ohne Auto-Fade bliebe die Musik nach dem Titel stehen, solange niemand bedienen kann
         if self.autofade.enabled {
             self.notify(tr("Oberfläche gesperrt. Die Musik läuft weiter."), now);
@@ -229,6 +229,38 @@ impl FadeWerkDjApp {
             self.fade_action(FadeAction::Auto(true), now);
             self.auto_for_lock = true;
             self.notify(tr("Oberfläche gesperrt. Auto-Fade ist an, bis du entsperrst."), now);
+        }
+    }
+
+    /// Titel auf Sendung für den Sperrbildschirm (wie in der Statuszeile, dazu Interpret und Fortschritt).
+    pub(super) fn lock_now_playing(&self) -> Option<crate::lock::NowPlaying> {
+        let d = [self.autofade.active, 1 - self.autofade.active].into_iter().find(|&d| self.on_air(d))?;
+        let st = &self.ctl.shared.decks[d];
+        let meta = self.decks[d].meta.as_ref();
+        let title = match meta.filter(|m| !m.title.is_empty()) {
+            Some(m) => m.title.clone(),
+            None => self.decks[d].path.as_deref().map(|p| self.title_of(p)).unwrap_or_default(),
+        };
+        let (position, duration) = (st.position_secs(), st.duration_secs());
+        let left = duration - position;
+        Some(crate::lock::NowPlaying {
+            deck: d,
+            title,
+            artist: meta.map(|m| m.artist.clone()).unwrap_or_default(),
+            position,
+            duration,
+            warn: st.is_playing() && left > 0.0 && left <= END_WARNING_SECS,
+        })
+    }
+
+    /// Nach dem Entsperren (oder abgebrochenen Sperren): Auto-Fade wieder aus, wenn es nur für die Sperre an war
+    /// (eine laufende Überblendung läuft zu Ende).
+    pub(super) fn after_unlock(&mut self, msg: &str, now: f64) {
+        if std::mem::take(&mut self.auto_for_lock) {
+            self.fade_action(FadeAction::Auto(false), now);
+            self.notify(trf("{} Auto-Fade ist wieder aus.", &[&msg]), now);
+        } else {
+            self.notify(msg.to_owned(), now);
         }
     }
 }

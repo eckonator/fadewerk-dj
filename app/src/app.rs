@@ -748,7 +748,7 @@ impl FadeWerkDjApp {
         }
         // FW_CLEAR_ALL=1 (nur Debug): Rückfrage „Alles leeren“ gleich offen
         app.confirm_clear_all = cfg!(debug_assertions) && std::env::var_os("FW_CLEAR_ALL").is_some();
-        // FW_LOCK=1 bzw. FW_LOCK=pin (nur Debug): Oberfläche gleich gesperrt, mit „pin“ über den PIN 1234
+        // FW_LOCK=1|wahl|pin (nur Debug): Oberfläche gleich gesperrt, mit „pin“ über den PIN 1234
         if cfg!(debug_assertions)
             && let Ok(v) = std::env::var("FW_LOCK")
         {
@@ -756,6 +756,10 @@ impl FadeWerkDjApp {
                 app.settings.lock_pin = Some(crate::lock::pin_hash("1234"));
             }
             app.lock_ui(0.0);
+            // FW_LOCK=1: gleich gesperrt, Viertel links unten; FW_LOCK=wahl: Viertel wählen
+            if v != "pin" && v != "wahl" {
+                app.lock.lock_quarter(2);
+            }
         }
         // FW_STATUS=alle (nur Debug): Uhr, Akku, CPU, RAM und Temperatur in der Statuszeile
         if cfg!(debug_assertions) && std::env::var_os("FW_STATUS").is_some() {
@@ -1047,7 +1051,7 @@ impl eframe::App for FadeWerkDjApp {
 
         self.check_audio_errors(now);
         // Gesperrt: Schließen des Fensters (rotes X, Alt+F4) verweigern
-        if self.lock.locked() && !crate::lock::close_allowed() && ctx.input(|i| i.viewport().close_requested()) {
+        if self.lock.active() && !crate::lock::close_allowed() && ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
         // Entwicklerschalter FW_FADE_AT=<s>: nach so vielen Sekunden FADE drücken (Übergang im Takt testen)
@@ -1279,7 +1283,7 @@ impl eframe::App for FadeWerkDjApp {
             let lost = &mut self.browser_window_lost;
             let pads = &mut detached_pads;
             let main_pos = ctx.input(|i| i.viewport().outer_rect).map(|r| r.min);
-            let locked = self.lock.locked();
+            let locked = self.lock.active();
                         let closed = ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("fw-ordner"), builder, |ui, _class| {
                 let wctx = ui.ctx().clone();
                 egui::CentralPanel::default().frame(browser_frame).show(ui, |ui| {
@@ -1736,13 +1740,19 @@ impl eframe::App for FadeWerkDjApp {
         self.track_settings(now);
 
         // Gesperrt: über allem abgedunkelt, in der Mitte die Plakette zum Entsperren
-        if self.lock.locked() && self.lock.show(&ctx, self.settings.lock_pin.as_deref(), now) {
-            // Auto-Fade wieder aus, wenn es nur für die Sperre an war (eine laufende Überblendung läuft zu Ende)
-            if std::mem::take(&mut self.auto_for_lock) {
-                self.fade_action(FadeAction::Auto(false), now);
-                self.notify(tr("Oberfläche entsperrt. Auto-Fade ist wieder aus."), now);
-            } else {
-                self.notify(tr("Oberfläche entsperrt."), now);
+        if self.lock.active() {
+            let view = crate::lock::LockView {
+                clock: jiff::Zoned::now().strftime("%H:%M").to_string(),
+                date: crate::lock::date_text(),
+                meters: &self.meters,
+                bands: &self.bands,
+                now: self.lock_now_playing(),
+                transition: &transition,
+            };
+            match self.lock.show(&ctx, self.settings.lock_pin.as_deref(), &view, now) {
+                crate::lock::Outcome::Unlocked => self.after_unlock(tr("Oberfläche entsperrt."), now),
+                crate::lock::Outcome::Canceled => self.after_unlock(tr("Sperren abgebrochen."), now),
+                crate::lock::Outcome::Locked | crate::lock::Outcome::None => {}
             }
         }
 

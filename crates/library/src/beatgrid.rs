@@ -76,10 +76,12 @@ impl BeatGrid {
 pub const WINDOW_SECS: f64 = 30.0;
 const OFFSET_SECS: f64 = 10.0;
 pub const REGION_SECS: f64 = 60.0;
-/// Suchbereich im Abschnitt (±3 %, das Tempo kann dort vom Durchschnitt abweichen) und Mindestschärfe.
+/// Suchbereich im Abschnitt (±3 %, das Tempo kann dort vom Durchschnitt abweichen) und Mindestschärfe. 1,7 statt
+/// 2,0 seit 2026-11-08: An Live-Punk (Böhse Onkelz, 1985) gemessen passten zwei unabhängige 15-s-Hälften bei 1,7
+/// genauso oft zusammen wie bei 2,0 (80 % gegen 78 %, Rest echte Tempowanderung), Raster am Ende 6 → 19 von 34.
 const WINDOW_SEARCH: i32 = 150;
 const WINDOW_STEP: f64 = 0.0002;
-const WINDOW_MIN_PEAK: f32 = 2.0;
+const WINDOW_MIN_PEAK: f32 = 1.7;
 
 /// Bestimmt das Beatraster; `hint` = schon bekanntes Tempo (Tag oder Cache), sonst wird es geschätzt.
 pub fn estimate_grid(audio: &TrackAudio, hint: Option<f32>) -> Option<BeatGrid> {
@@ -114,16 +116,16 @@ fn grid_at(onset: &[f32], bass: &[f32], rate: f64, pulse: f64, sub: usize, debug
     if let Some((seg, _)) = search(onset, bass, rate, pulse, sub, 0, onset.len(), SEARCH, STEP, MIN_PEAK, debug) {
         return Some(BeatGrid { start: Some(seg), end: Some(seg), steady: true });
     }
-    // Je der deutlichste Abschnitt in den ersten bzw. letzten `REGION_SECS` (Intro und Ausklang haben oft wenig
-    // Schlagzeug)
+    // Je der Abschnitt in den ersten bzw. letzten `REGION_SECS`, der am nächsten am Rand liegt und sicher genug
+    // ist (Intro und Ausklang haben oft wenig Schlagzeug): Bei wanderndem Tempo zählt die Nähe zur Übergangsstelle
+    // mehr als die Schärfe
     let win = ((WINDOW_SECS * rate) as usize).min(onset.len() / 3);
     let region = ((REGION_SECS * rate) as usize).clamp(win, onset.len() / 2);
     let step = (OFFSET_SECS * rate) as usize;
     let best_in = |starts: Vec<usize>| {
         starts
             .into_iter()
-            .filter_map(|from| search(onset, bass, rate, pulse, sub, from, from + win, WINDOW_SEARCH, WINDOW_STEP, WINDOW_MIN_PEAK, debug))
-            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .find_map(|from| search(onset, bass, rate, pulse, sub, from, from + win, WINDOW_SEARCH, WINDOW_STEP, WINDOW_MIN_PEAK, debug))
             .map(|(seg, _)| seg)
     };
     let offsets: Vec<usize> = (0..).map(|k| k * step).take_while(|o| o + win <= region).collect();
@@ -386,6 +388,54 @@ mod folder {
                 start += win;
             }
             println!("{}  {}", out.join(" "), f.file_name().unwrap().to_string_lossy());
+        }
+    }
+}
+
+/// Gegenprobe für die Schwellen (nur von Hand): `FW_GRID_DIR=<Ordner> cargo test --release -p fw-library
+/// halves_agreement -- --ignored --nocapture`. Zwei getrennte 15-s-Hälften am Anfang und Ende werden unabhängig
+/// ausgewertet; passen Tempo und Schläge an der Grenze zusammen, war das Raster echt (Zufall träfe selten).
+#[cfg(test)]
+mod experiment {
+    /// Unabhängige Hälften (je 15 s, ohne Überlappung): passen Tempo und Schläge an der Grenze zusammen?
+    #[test]
+    #[ignore]
+    fn halves_agreement() {
+        let Some(dir) = std::env::var_os("FW_GRID_DIR") else { return };
+        let mut files: Vec<_> = std::fs::read_dir(dir).unwrap().flatten().map(|e| e.path()).collect();
+        files.sort();
+        let ths = [1.4f32, 1.5, 1.6, 1.7, 1.8, 2.0];
+        let mut pairs = [0usize; 6];
+        let mut agree = [0usize; 6];
+        for f in files.iter().filter(|f| crate::scan::is_audio(f)) {
+            let Ok(audio) = crate::decode::decode_file(f) else { continue };
+            let (onset, bass) = super::envelopes(&audio);
+            let rate = audio.sample_rate as f64 / super::HOP as f64;
+            let Some(mut bpm) = crate::bpm::estimate_bpm(&audio).map(|b| b as f64) else { continue };
+            while bpm < 70.0 { bpm *= 2.0 }
+            while bpm > 180.0 { bpm /= 2.0 }
+            let half = (15.0 * rate) as usize;
+            let mut line = String::new();
+            for (region, label) in [(onset.len() - 2 * half - (5.0 * rate) as usize, "E"), ((5.0 * rate) as usize, "A")] {
+                for (ti, th) in ths.iter().enumerate() {
+                    let p0 = rate * 60.0 / bpm;
+                    let a = super::search(&onset, &bass, rate, p0, 1, region, region + half, super::WINDOW_SEARCH, super::WINDOW_STEP, *th, false).map(|x| x.0);
+                    let b = super::search(&onset, &bass, rate, p0, 1, region + half, region + 2 * half, super::WINDOW_SEARCH, super::WINDOW_STEP, *th, false).map(|x| x.0);
+                    if let (Some(a), Some(b)) = (a, b) {
+                        pairs[ti] += 1;
+                        let t = (region + half) as f64 / rate;
+                        let d = (a.beats_at(t) - b.beats_at(t)).rem_euclid(1.0);
+                        let d = d.min(1.0 - d);
+                        let ok = d < 0.1 && (a.bpm / b.bpm - 1.0).abs() < 0.015;
+                        if ok { agree[ti] += 1; }
+                        if ti == 1 { line.push_str(&format!(" {label}:{:.1}/{:.1} d{:.2}{}", a.bpm, b.bpm, d, if ok { "✓" } else { "✗" })); }
+                    }
+                }
+            }
+            println!("{}{}", f.file_name().unwrap().to_string_lossy(), line);
+        }
+        for (ti, th) in ths.iter().enumerate() {
+            println!("Schwelle {th}: Paare {}  einig {} ({:.0} %)", pairs[ti], agree[ti], 100.0 * agree[ti] as f64 / pairs[ti].max(1) as f64);
         }
     }
 }

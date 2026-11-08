@@ -176,7 +176,7 @@ impl FadeWerkDjApp {
             }
             SettingsAction::ResetAll => self.reset_all(ctx, now),
             SettingsAction::LockPin(pin) => {
-                let msg = if pin.is_some() { tr("PIN gespeichert. Entsperren jetzt nur noch mit diesem PIN.") } else { tr("PIN entfernt. Entsperren durch 2 Sekunden Drücken auf das Schloss.") };
+                let msg = if pin.is_some() { tr("PIN gespeichert. Entsperren jetzt nur noch mit diesem PIN.") } else { tr("PIN entfernt. Beim Sperren wählst du jetzt ein Feld zum Entsperren.") };
                 self.settings.lock_pin = pin;
                 self.save_settings();
                 self.notify(msg, now);

@@ -11,7 +11,7 @@ impl FadeWerkDjApp {
         self.midi.scan(now, ctx);
         let msgs = self.midi.poll(now);
         // Gesperrte Oberfläche: auch der Controller bewirkt nichts (Nachrichten werden verworfen)
-        if self.lock.locked() {
+        if self.lock.active() {
             return;
         }
         if let Some(learn) = &mut self.midi_learn {

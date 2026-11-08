@@ -81,7 +81,7 @@ pub(super) fn automatic(ui: &mut egui::Ui, v: &Views<'_>, out: &mut ViewOut) {
                 // Kompakt schmaler, aber nur ohne Frequenzbänder: zwischen L und R von MAIN passen sonst keine Säulen
                 let meters_w = if compact && theme::lite().no_bands { 56.0 } else { 70.0 };
                 let meters = Rect::from_min_size(display.min + vec2(12.0, 9.0), vec2(meters_w, bh - 15.0));
-                mixer_ui::display_meters(ui.painter(), meters, v.mixer);
+                mixer_ui::display_meters(ui.painter(), meters, v.mixer.meters, v.mixer.bands);
                 let sep_x = meters.right() + 12.0;
                 ui.painter().vline(sep_x, display.y_range().shrink(10.0), Stroke::new(1.0, egui::Color32::from_white_alpha(22)));
                 let trans = Rect::from_min_max(pos2(sep_x + 2.0, display.top()), display.max);

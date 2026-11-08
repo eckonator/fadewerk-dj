@@ -296,6 +296,8 @@ pub struct TransitionView {
     pub bass_swap: bool,
     /// Übergang im Takt (Beatraster beider Titel, AUTO SYNC an).
     pub on_beat: bool,
+    /// Geplant, aber nicht im Takt: kurzer Grund und Erklärung (nur mit AUTO SYNC).
+    pub beat_miss: Option<(String, String)>,
 }
 
 pub struct FadeModel<'a> {
@@ -510,8 +512,19 @@ pub fn transition_bar(ui: &mut egui::Ui, t: &TransitionView, height: Option<f32>
         left.push_str(tr("im Takt"));
     }
     let lg = p.layout_no_wrap(left, small.clone(), ink.gamma_multiply(0.75));
-    let left_w = lg.size().x + (x0 - inner.left());
+    let mut left_w = lg.size().x + (x0 - inner.left());
+    let miss_x = x0 + lg.size().x;
     p.galley(pos2(x0, foot_y - lg.size().y / 2.0), lg, ink);
+    // Warum nicht im Takt: gedämpft hinter der Kurve, ausführlich als Tooltip
+    if let Some((short, tip)) = &t.beat_miss {
+        let mut job = egui::text::LayoutJob::simple_singleline(format!(" · {short}"), small.clone(), ink.gamma_multiply(0.45));
+        job.wrap = egui::text::TextWrapping::truncate_at_width((inner.right() - miss_x).max(0.0));
+        let g = p.layout_job(job);
+        let r = Rect::from_min_size(pos2(miss_x, foot_y - g.size().y / 2.0), g.size());
+        left_w += g.size().x;
+        p.galley(r.min, g, ink);
+        ui.interact(r, ui.id().with("beat_miss"), Sense::hover()).on_hover_text(tip);
+    }
     if let Some((d, title)) = &t.after {
         let room = inner.width() - left_w - 14.0;
         let mut job = egui::text::LayoutJob::default();
@@ -527,7 +540,7 @@ pub fn transition_bar(ui: &mut egui::Ui, t: &TransitionView, height: Option<f32>
 
 /// Pegel A | MAIN | B im Display der Automatik-Ansicht. Ohne eigene Schächte (das Display ist schon dunkles Glas),
 /// die Beschriftung steht unten im Display, damit die Säulen mit dem Übergang daneben bündig enden.
-pub fn display_meters(p: &egui::Painter, rect: Rect, m: &MixerModel<'_>) {
+pub fn display_meters(p: &egui::Painter, rect: Rect, meters: &[Meter; 3], bands: &crate::meter::Bands) {
     let label_h = 12.0;
     let bar = rect.with_max_y(rect.bottom() - label_h - 4.0);
     let led_w = (rect.width() * 0.17).clamp(9.0, 13.0);
@@ -536,9 +549,9 @@ pub fn display_meters(p: &egui::Painter, rect: Rect, m: &MixerModel<'_>) {
     let a = Rect::from_min_size(bar.min, vec2(led_w, bar.height()));
     let main = Rect::from_min_size(pos2(a.right() + gap, bar.top()), vec2(main_w, bar.height()));
     let b = Rect::from_min_size(pos2(main.right() + gap, bar.top()), vec2(led_w, bar.height()));
-    m.meters[0].paint(p, a);
-    m.meters[2].paint_with_bands(p, main, (!theme::lite().no_bands).then_some(m.bands), led_w * 1.7);
-    m.meters[1].paint(p, b);
+    meters[0].paint(p, a);
+    meters[2].paint_with_bands(p, main, (!theme::lite().no_bands).then_some(bands), led_w * 1.7);
+    meters[1].paint(p, b);
     let ly = rect.bottom() - label_h / 2.0;
     let ink = theme::well_ink().gamma_multiply(0.55);
     p.text(pos2(a.center().x, ly), Align2::CENTER_CENTER, "A", fonts::bold(10.0), theme::deck_color(0));
