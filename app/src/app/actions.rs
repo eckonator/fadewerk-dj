@@ -363,6 +363,12 @@ impl FadeWerkDjApp {
                     self.queue_fade_suggestion(d, p, Some(i), now);
                 }
             }
+            PlaylistAction::NeedGrid(p) => {
+                if !self.grids.contains_key(&p) && self.bpm_pending.insert(p.clone()) {
+                    self.bpm_total += 1;
+                    self.lib.analyze(p, false, true);
+                }
+            }
             PlaylistAction::SuggestFades => {
                 let open: Vec<PathBuf> = (0..self.playlists[d].entries.len())
                     .filter(|&i| self.playlists[d].fade(i).is_empty())

@@ -36,6 +36,8 @@ pub enum PlaylistAction {
     /// FadeWerk-Bereiche vorschlagen: für einen Eintrag (überschreibt) bzw. für alle ohne eigene Bereiche.
     SuggestFade(usize),
     SuggestFades,
+    /// Beatraster für den offenen Fade-Editor ermitteln (fehlt noch).
+    NeedGrid(PathBuf),
     /// Fenster „Playlist prüfen“ öffnen.
     Check,
     Shuffle,
@@ -728,6 +730,9 @@ pub fn show(
                 let (erect, eresp) = ui.allocate_exact_size(vec2(width, EDIT_H), Sense::click());
                 // Zeile und Editor gehören sichtbar zusammen
                 ui.painter().rect_stroke(rect.union(erect).expand(1.0), 5.0, Stroke::new(1.5, theme::yellow().gamma_multiply(0.8)), egui::StrokeKind::Inside);
+                if !key_info.grids.contains_key(path) {
+                    out.push(PlaylistAction::NeedGrid(path.clone()));
+                }
                 let grid = key_info.grids.get(path).copied().flatten();
                 if fade_editor(ui, (list, i), erect, sk, grid, duration, pl.fade(i), color, editor_audio, out) || eresp.secondary_clicked() {
                     close_editor = true;
@@ -985,6 +990,17 @@ fn edge_well(
         t += 5.0;
     }
 
+    // Beat-Linien (mit Raster): hell auf dem Grund, über der Wellenform noch einmal dunkel
+    let beat_xs: Vec<(f32, bool)> = beats
+        .map(|seg| {
+            let (first, last) = (seg.beats_at(t0 as f64).ceil() as i64, seg.beats_at(t1 as f64).floor() as i64);
+            (first..=last).map(|b| (to_x((seg.downbeat + b as f64 * seg.beat_secs()) as f32), b.rem_euclid(4) == 0)).collect()
+        })
+        .unwrap_or_default();
+    for &(x, bar) in &beat_xs {
+        p.line_segment([pos2(x, rect.top()), pos2(x, rect.bottom())], Stroke::new(if bar { 1.2 } else { 0.6 }, egui::Color32::from_white_alpha(if bar { 60 } else { 28 })));
+    }
+
     // Wellenform
     let inset = rect.shrink2(vec2(1.0, 4.0));
     let cols = (inset.width() / 2.0).max(1.0) as usize;
@@ -1002,14 +1018,9 @@ fn edge_well(
     }
     p.add(egui::Shape::mesh(mesh));
 
-    // Beat-Linien über der Wellenform, Taktbeginn kräftiger
-    if let Some(seg) = beats {
-        let (first, last) = (seg.beats_at(t0 as f64).ceil() as i64, seg.beats_at(t1 as f64).floor() as i64);
-        for b in first..=last {
-            let x = to_x((seg.downbeat + b as f64 * seg.beat_secs()) as f32);
-            let bar = b.rem_euclid(4) == 0;
-            p.line_segment([pos2(x, rect.top()), pos2(x, rect.bottom())], Stroke::new(if bar { 1.2 } else { 0.6 }, egui::Color32::from_black_alpha(if bar { 130 } else { 70 })));
-        }
+    // Beat-Linien darüber dunkel (darunter hell, siehe oben), Taktbeginn kräftiger
+    for &(x, bar) in &beat_xs {
+        p.line_segment([pos2(x, rect.top()), pos2(x, rect.bottom())], Stroke::new(if bar { 1.2 } else { 0.6 }, egui::Color32::from_black_alpha(if bar { 110 } else { 55 })));
     }
 
     // Bereich: abgeschnittener Teil abgedunkelt, Rampe als Linie
