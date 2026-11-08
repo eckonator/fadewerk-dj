@@ -37,8 +37,6 @@ pub(super) enum BeatMiss {
     NoGrid { end: bool, title: String, pending: bool },
     /// Tempi liegen so viele Prozent auseinander (auch halb/doppelt gerechnet).
     Tempo(f32),
-    /// FadeWerk-Bereiche: der Übergang folgt ihnen statt dem Takt.
-    Split,
 }
 
 impl BeatMiss {
@@ -59,7 +57,6 @@ impl BeatMiss {
                 let p = format!("{p:.1}");
                 (tr("ohne Takt (Tempo)").to_owned(), trf("Nicht im Takt: Die Tempi liegen {} % auseinander, erlaubt sind höchstens 6 %.", &[&p]))
             }
-            BeatMiss::Split => (tr("ohne Takt (FadeWerk)").to_owned(), tr("Nicht im Takt: Der Übergang folgt den FadeWerk-Bereichen.").to_owned()),
         })
     }
 }
@@ -120,6 +117,11 @@ impl FadeWerkDjApp {
             }
         }
         planned
+    }
+
+    /// Letzter Taktbeginn im alten Titel vor `planned` (für Übergänge mit FadeWerk-Bereichen).
+    pub(super) fn bar_start(old: Segment, planned: f64) -> f64 {
+        old.downbeat + (old.beats_at(planned) / 4.0).floor() * 4.0 * old.beat_secs()
     }
 
     /// Startet den neuen Titel im Takt: Tempo angleichen, Einstieg so wählen, dass seine Takte auf denen des alten

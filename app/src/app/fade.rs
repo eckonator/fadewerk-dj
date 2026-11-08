@@ -172,11 +172,12 @@ impl FadeWerkDjApp {
         let rate = 1.0 + self.decks[a].pitch_pct as f64 / 100.0;
         let pos = st.position_secs();
         let remaining = (plan.end - pos) / rate;
-        // Im Takt: an der letzten Phrasengrenze vor dem geplanten Beginn starten (nicht bei FadeWerk-Bereichen, die
-        // legen den Beginn selbst fest)
+        // Im Takt: an der letzten Phrasengrenze vor dem geplanten Beginn starten; bei FadeWerk-Bereichen nur am
+        // letzten Taktbeginn davor (die Bereiche legen den Beginn fest, höchstens ein Takt früher)
         let planned = plan.end - plan.lead as f64 * rate;
-        let on_beat = plan.split.is_none().then(|| self.beat_plan(planned)).flatten();
+        let on_beat = self.beat_plan(planned);
         let start = match on_beat {
+            Some(bp) if plan.split.is_some() => self.autofade.should_start(st.is_playing(), remaining, plan.lead) || pos >= Self::bar_start(bp.old, planned),
             Some(bp) => self.autofade.should_start(st.is_playing(), remaining, plan.lead) || pos >= Self::phrase_start(bp.old, planned),
             None => self.autofade.should_start(st.is_playing(), remaining, plan.lead),
         };
@@ -193,11 +194,12 @@ impl FadeWerkDjApp {
         if self.has_track(to) && !self.decks[to].spent && !self.loading(to) {
             let from = self.autofade.active;
             let transition = self.transition();
-            // Im Takt: ohne Motor-Anlauf an der passenden Stelle, Länge in ganzen Takten
+            // Im Takt: ohne Motor-Anlauf an der passenden Stelle, Länge in ganzen Takten. Mit FadeWerk-Bereichen
+            // ebenso im Takt starten, die Phasen der Bereiche bleiben
             let pos = self.ctl.shared.decks[from].position_secs();
+            let beat = self.ctl.shared.decks[from].is_playing().then(|| self.beat_plan(pos)).flatten();
             if transition.split.is_none()
-                && self.ctl.shared.decks[from].is_playing()
-                && let Some(bp) = self.beat_plan(pos)
+                && let Some(bp) = beat
             {
                 let secs = self.start_on_beat(bp);
                 let saved = std::mem::replace(&mut self.autofade.fade_secs, secs);
@@ -205,7 +207,12 @@ impl FadeWerkDjApp {
                 self.autofade.fade_secs = saved;
                 return;
             }
-            self.ctl.send(Command::Play { deck: to });
+            match beat {
+                Some(bp) => {
+                    self.start_on_beat(bp);
+                }
+                None => self.ctl.send(Command::Play { deck: to }),
+            }
             match transition.split {
                 // Zweiphasig nur aus der Endstellung, sonst sprängen die Pegel beim Umschalten der Auswertung
                 Some(sp) if self.crossfader == fw_engine::automix::side(from) => {
@@ -382,7 +389,7 @@ impl FadeWerkDjApp {
             v.lead = if progress < 0.97 { (rest / (1.0 - progress)).max(0.5) } else { self.autofade.fade_secs };
         } else if let FadePlan::Planned { rem, plan, .. } = self.fade_plan() {
             let rate = 1.0 + self.decks[self.autofade.active].pitch_pct as f64 / 100.0;
-            let check = if plan.split.is_some() { Err(beatmatch::BeatMiss::Split) } else { self.beat_check(plan.end - plan.lead as f64 * rate) };
+            let check = self.beat_check(plan.end - plan.lead as f64 * rate);
             v.on_beat = check.is_ok();
             // Grund nur, wenn AUTO SYNC an ist (sonst ist „ohne Takt“ ohnehin gewollt)
             v.beat_miss = check.err().filter(|_| self.auto_sync).and_then(|m| m.texts());
