@@ -443,6 +443,7 @@ fn en(de: &str) -> Option<&'static str> {
         "Tags werden gelesen, dann wird die Beliebtheit abgefragt …" => "Reading tags, then looking up popularity …",
         "Die Beliebtheit dieser Titel ist schon bekannt (wird nach 30 Tagen neu abgefragt)." => "The popularity of these tracks is already known (looked up again after 30 days).",
         "Beliebtheit abgefragt. Daten: ListenBrainz (CC0)." => "Popularity looked up. Data: ListenBrainz (CC0).",
+        "im Takt" => "on the beat",
         // DJ-Controller (MIDI)
         "Höhen" => "highs",
         "Mitten" => "mids",
@@ -512,8 +513,8 @@ fn en(de: &str) -> Option<&'static str> {
         "Band ganz herausnehmen" => "Remove this band completely",
         "Beim Überblenden kommt der neue Titel ohne Bässe herein, in der Mitte tauschen die Bässe. Klingt sauberer als ein reiner Lautstärke-Fade."
             => "While fading, the new track comes in without bass; halfway through the basses swap. Sounds cleaner than a plain volume fade.",
-        "Beim Titelwechsel bekommt der neue Titel das Tempo des laufenden. Danach läuft sein Pitch langsam auf 0 % zurück (0,1 % pro Sekunde)."
-            => "On a track change the new track takes over the tempo of the playing one. Afterwards its pitch slowly returns to 0 % (0.1 % per second).",
+        "Beim Titelwechsel bekommt der neue Titel das Tempo des laufenden. Haben beide ein Beatraster und liegen höchstens 6 % auseinander, blendet Auto-Fade im Takt: Beginn an einer Phrasengrenze, Einstieg auf dem Taktbeginn, Länge in ganzen Takten. Danach läuft der Pitch langsam auf 0 % zurück (0,1 % pro Sekunde)."
+            => "On a track change the new track takes over the tempo of the playing one. If both have a beat grid and are at most 6 % apart, auto fade mixes on the beat: it starts at a phrase boundary, the new track comes in on the downbeat, the length is whole bars. Afterwards the pitch slowly returns to 0 % (0.1 % per second).",
         "Auto-Sync steuert den Pitch; Pitch anfassen übernimmt von Hand" => "Auto sync controls the pitch; touching the pitch takes over manually",
         "Auto-Sync: {} ↔ {} BPM liegen zu weit auseinander" => "Auto sync: {} ↔ {} BPM are too far apart",
         "Auswahl in Playlist {}" => "Selection to playlist {}",

@@ -30,6 +30,15 @@ impl FadeWerkDjApp {
             }
             Resolved::Unknown => {}
         }
+        match self.caches.grid.resolve_stamped(path, stamp) {
+            Resolved::Value(g) => {
+                self.grids.insert(path.to_path_buf(), g.grid());
+            }
+            Resolved::Stale => {
+                self.grids.remove(path);
+            }
+            Resolved::Unknown => {}
+        }
     }
 
     /// Klingende Tonart eines Players und ihre Verschiebung in Halbtönen: ohne Keylock hebt bzw. senkt Pitch die
@@ -168,7 +177,7 @@ impl FadeWerkDjApp {
         // Cover nur für sichtbare Plattenteller (nicht in der kompakten Ansicht, nicht bei ausgeblendeten)
         let cover = self.settings.platters && !self.compact();
         // Bekannte Tags mitgeben: ohne Cover muss der Tag-Block einer MP3 dann nicht übers Netz gelesen werden
-        let known = fw_library::Known { meta: self.metas.get(&path).cloned(), bpm: self.bpms.get(&path).copied(), key: self.keys.get(&path).copied() };
+        let known = fw_library::Known { meta: self.metas.get(&path).cloned(), bpm: self.bpms.get(&path).copied(), key: self.keys.get(&path).copied(), grid: self.grids.contains_key(&path) };
         self.lib.load(d, token, path, cover, known);
         true
     }
@@ -238,7 +247,11 @@ impl FadeWerkDjApp {
                     self.metas.insert(path, meta);
                 }
                 Response::MetaValid { path, stamp } => self.resolve_bpm(&path, Some(stamp)),
-                Response::Analysis { path, bpm, bpm_analyzed, key, key_analyzed, readable } => {
+                Response::Analysis { path, bpm, bpm_analyzed, key, key_analyzed, readable, grid } => {
+                    if let Some(g) = grid {
+                        self.caches.grid.insert(&path, crate::analysis_cache::Grid::new(g));
+                        self.grids.insert(path.clone(), g);
+                    }
                     self.bpm_pending.remove(&path);
                     if self.bpm_pending.is_empty() {
                         self.bpm_total = 0;

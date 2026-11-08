@@ -37,6 +37,12 @@ view; otherwise in the live view. The choice is remembered.
   stopped glides the crossfader over to it. When one playlist runs out, the other deck plays on alone.
 - **AUTO SYNC**: a deck that starts while the other one is audible takes over its tempo (also at double
   or half speed) and follows it; once it plays alone, its pitch drifts slowly back to 0 %.
+- **Mixing on the beat**: FadeWerk DJ finds a beat grid for each track (tempo, beat positions and the
+  downbeat), shown as beat lines in the waveform. With AUTO SYNC on, both tracks gridded and at most 6 %
+  apart in tempo, auto-fade starts the transition at a phrase boundary of the outgoing track, brings the
+  new one in on the downbeat without turntable spin-up, rounds the fade to whole bars and keeps the beats
+  locked while both play. Tracks with a drifting live tempo get separate grids for their start and end;
+  where no reliable grid is found, the fade works as before.
 - **The transition bar** shows the next transition at a glance: which track comes in, a countdown, two
   lanes with the volume of the outgoing and the incoming track over time, the fade range, a line for
   “now”, the fade time, curve and bass swap, and what follows afterwards. While fading it turns yellow and
@@ -136,8 +142,16 @@ view; otherwise in the live view. The choice is remembered.
 - Select several tracks or folders (⌘/Ctrl-click, Shift-click) and drag them into a playlist, or use the
   right-click menu: append, play next, shuffle in, spread across A and B, show in Finder. The pre-listen and
   A/B buttons of a row show up under the mouse.
-- Choose the track list columns (artist, album, genre, year, comment, subfolder, file name, format, BPM,
-  key, time), drag their widths and click a header to sort. All of this is remembered.
+- Choose the track list columns (artist, album, genre, year, comment, subfolder, file name, format,
+  rating, popularity, times played, BPM, key, time), drag their widths and click a header to sort. All of
+  this is remembered.
+- **Ratings**: give tracks 1 to 5 stars in the track list, in the playlist rows or with ⌥/Alt+1–5, sort by
+  them and show only well-rated tracks with the star button next to the search. Ratings written by other
+  players (ID3 POPM, Vorbis RATING, MP4 rate) are read; your own are kept by FadeWerk DJ and, if you like,
+  written into the files.
+- **Popularity**: on request, FadeWerk DJ looks up how often each track is played on ListenBrainz (open data)
+  and shows a bar compared with the biggest hit of the album or folder – the hits of a compilation stand out
+  at once.
 - **Track info & tags**: right-click a track to view and edit its tags. **Find tags online** (AcoustID and
   MusicBrainz, only when you ask for it) fills in missing title, artist, album, year, genre and cover, for one
   track or a whole folder, with an undo log.
@@ -176,10 +190,13 @@ view; otherwise in the live view. The choice is remembered.
 - **Quiet while you play** (optional, Settings → Audio): mutes system alert sounds while FadeWerk DJ is
   running, and on Windows and Linux other programs too (as in the volume mixer). On macOS, the master device
   can instead be used exclusively. Everything comes back when you quit, even after a crash (on the next start).
+- **DJ controllers (MIDI)**: connect a controller and assign its buttons, faders and knobs under Settings →
+  Controller, or click a control on screen and move it on the controller. Faders only take over once they
+  pass the current value (soft takeover); moving the controller's crossfader cancels a running auto-fade.
 - User interface in **English and German**.
 - **No telemetry, no account.** The only network requests are an optional check for new versions on GitHub
   (FadeWerk DJ asks once before enabling it, Settings → General) and, only when you ask for it, track
-  recognition online (Settings → Music). Nothing about your music or folders is sent otherwise.
+  recognition and popularity online (Settings → Music). Nothing about your music or folders is sent otherwise.
 
 ## Download
 
@@ -289,6 +306,10 @@ Code comments are in German; issues and contributions in English are welcome.
 | `FW_HISTORY=1` | Creates two example days in the history (one with a missing file) and opens the newer one. |
 | `FW_TAGS=1` | Opens “Track info & tags” for the first track. |
 | `FW_BPM=1` | Analyzes the missing BPM and keys of the start folder. |
+| `FW_RATINGS=1` | Gives the demo tracks sample star ratings (not saved). |
+| `FW_POPULARITY=1` | Looks up the popularity of the demo tracks online (real requests). |
+| `FW_MIDI_LEARN=1` | Starts assigning a controller in the interface. |
+| `FW_FADE_AT=<s>` | Presses FADE after that many seconds (with `FW_AUTOSYNC=1` to test mixing on the beat). |
 | `FW_SEARCH="genre=rock,year=1980-1989"` | Opens the advanced search with these fields. |
 | `FW_COLUMNS=artist,album,genre,…` | Shows these columns in the track list. |
 | `FW_SORT=artist` / `FW_SORT=bpm:desc` | Sorts the track list by this column. |
@@ -309,7 +330,7 @@ With these switches FadeWerk DJ saves nothing (`FW_PERSIST=1` forces saving, bes
 - Keylock (tempo changes without changing the key; next step)
 - Beat grid with phase, hot cues
 - Suggesting the next track by key and BPM
-- MIDI controllers (jog wheels as turntables)
+- MIDI controllers: LED feedback, jog wheels as turntables, ready-made mappings
 - Importing playlists from other DJ software
 
 ## Legal

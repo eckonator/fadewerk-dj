@@ -294,6 +294,8 @@ pub struct TransitionView {
     pub after: Option<(usize, String)>,
     pub curve: Curve,
     pub bass_swap: bool,
+    /// Übergang im Takt (Beatraster beider Titel, AUTO SYNC an).
+    pub on_beat: bool,
 }
 
 pub struct FadeModel<'a> {
@@ -340,7 +342,7 @@ pub fn show_fade(ui: &mut egui::Ui, m: &FadeModel<'_>, out: &mut Vec<FadeAction>
         if swap.on_hover_text(tip).clicked() {
             out.push(FadeAction::BassSwap(!m.bass_swap));
         }
-        let tip = tr("Beim Titelwechsel bekommt der neue Titel das Tempo des laufenden. Danach läuft sein Pitch langsam auf 0 % zurück (0,1 % pro Sekunde).");
+        let tip = tr("Beim Titelwechsel bekommt der neue Titel das Tempo des laufenden. Haben beide ein Beatraster und liegen höchstens 6 % auseinander, blendet Auto-Fade im Takt: Beginn an einer Phrasengrenze, Einstieg auf dem Taktbeginn, Länge in ganzen Takten. Danach läuft der Pitch langsam auf 0 % zurück (0,1 % pro Sekunde).");
         let sync = hw::button(ui, vec2(small_w, 34.0 * k), "AUTO\nSYNC", fonts::bold(10.0 * k), hw::Look::Color(theme::yellow()), m.auto_sync, true);
         if sync.on_hover_text(tip).clicked() {
             out.push(FadeAction::AutoSync(!m.auto_sync));
@@ -503,6 +505,10 @@ pub fn transition_bar(ui: &mut egui::Ui, t: &TransitionView, height: Option<f32>
     if t.bass_swap {
         left.push_str(" · Bass-Swap");
     }
+    if t.on_beat {
+        left.push_str(" · ");
+        left.push_str(tr("im Takt"));
+    }
     let lg = p.layout_no_wrap(left, small.clone(), ink.gamma_multiply(0.75));
     let left_w = lg.size().x + (x0 - inner.left());
     p.galley(pos2(x0, foot_y - lg.size().y / 2.0), lg, ink);
@@ -577,7 +583,7 @@ pub fn auto_controls(ui: &mut egui::Ui, f: &FadeModel<'_>, m: &MixerModel<'_>, f
     if put(cell(1, 0, 1), &mut |ui| hw::button(ui, cell(1, 0, 1).size(), "BASS SWAP", small_font.clone(), hw::Look::Color(theme::yellow()), f.bass_swap, true)).on_hover_text(tip).clicked() {
         fade_out.push(FadeAction::BassSwap(!f.bass_swap));
     }
-    let tip = tr("Beim Titelwechsel bekommt der neue Titel das Tempo des laufenden. Danach läuft sein Pitch langsam auf 0 % zurück (0,1 % pro Sekunde).");
+    let tip = tr("Beim Titelwechsel bekommt der neue Titel das Tempo des laufenden. Haben beide ein Beatraster und liegen höchstens 6 % auseinander, blendet Auto-Fade im Takt: Beginn an einer Phrasengrenze, Einstieg auf dem Taktbeginn, Länge in ganzen Takten. Danach läuft der Pitch langsam auf 0 % zurück (0,1 % pro Sekunde).");
     if put(cell(1, 1, 1), &mut |ui| hw::button(ui, cell(1, 1, 1).size(), "AUTO SYNC", small_font.clone(), hw::Look::Color(theme::yellow()), f.auto_sync, true)).on_hover_text(tip).clicked() {
         fade_out.push(FadeAction::AutoSync(!f.auto_sync));
     }

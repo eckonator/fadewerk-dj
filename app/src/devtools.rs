@@ -13,6 +13,7 @@
 //! - `FW_RATINGS=1` bewertet die Demo-Titel mit Beispielsternen (nicht gespeichert).
 //! - `FW_POPULARITY=1` fragt in der Demo die Beliebtheit der Titel ab (echte Abfrage, mit `FW_SHOT_SECS` warten).
 //! - `FW_MIDI_LEARN=1` startet den Lernmodus für Controller in der Oberfläche (Bedienelement anklicken, dann MIDI senden).
+//! - `FW_FADE_AT=<s>` drückt nach so vielen Sekunden FADE (Übergang im Takt testen, mit `FW_AUTOSYNC=1`).
 //! - `FW_HISTORY=1` legt in der Demo zwei Beispieltage der Historie an (einer mit fehlender Datei) und öffnet den neueren.
 //! - `FW_BPM=1` ermittelt in der Demo die fehlenden BPM des Startordners (Ergebnis in `bpm.json`, mit `FW_PERSIST=1`).
 //! - `FW_SEARCH="genre=Rock,year=1980-1989"` öffnet die erweiterte Suche mit diesen Feldern.
@@ -87,6 +88,8 @@ pub struct DevTools {
     keys: Vec<Result<egui::Key, String>>,
     /// `FW_MINIMIZE`: Fenster nach dem Start minimieren (ist es schon geschehen?).
     minimize: Option<bool>,
+    /// `FW_FADE_AT=<s>`: nach so vielen Sekunden FADE drücken.
+    pub fade_at: Option<f64>,
 }
 
 impl DevTools {
@@ -96,6 +99,7 @@ impl DevTools {
         }
         Self {
             screenshot: std::env::var_os("FW_SCREENSHOT").map(PathBuf::from),
+            fade_at: std::env::var("FW_FADE_AT").ok().and_then(|v| v.parse().ok()),
             demo: std::env::var_os("FW_DEMO").is_some(),
             skin: std::env::var("FW_SKIN").ok().and_then(|s| match s.as_str() {
                 "nacht" => Some(SkinId::Nacht),

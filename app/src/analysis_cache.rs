@@ -76,6 +76,39 @@ impl CacheValue for Key {
     }
 }
 
+/// Beatraster (`beatraster.json`): Tempo und Taktbeginn für den ganzen Titel bzw. Anfang und Ende; beide leer =
+/// unsicher (nicht erneut berechnen).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Grid {
+    #[serde(rename = "a", default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<(f64, f64)>,
+    #[serde(rename = "e", default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<(f64, f64)>,
+    #[serde(rename = "g", default)]
+    pub steady: bool,
+}
+
+impl Grid {
+    pub fn new(g: Option<fw_library::BeatGrid>) -> Self {
+        let seg = |s: Option<fw_library::Segment>| s.map(|s| (s.bpm, s.downbeat));
+        g.map_or(Self { start: None, end: None, steady: false }, |g| Self { start: seg(g.start), end: seg(g.end), steady: g.steady })
+    }
+
+    pub fn grid(self) -> Option<fw_library::BeatGrid> {
+        let seg = |s: Option<(f64, f64)>| s.map(|(bpm, downbeat)| fw_library::Segment { bpm, downbeat });
+        (self.start.is_some() || self.end.is_some()).then_some(fw_library::BeatGrid { start: seg(self.start), end: seg(self.end), steady: self.steady })
+    }
+}
+
+impl CacheValue for Grid {
+    const FILE: &'static str = "beatraster.json";
+    const NAME: &'static str = "Beatraster-Cache";
+    fn plausible(&self) -> bool {
+        let ok = |s: Option<(f64, f64)>| s.is_none_or(|(bpm, at)| bpm.is_finite() && (40.0..=250.0).contains(&bpm) && at.is_finite() && at > -10.0);
+        ok(self.start) && ok(self.end)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 struct Entry<V> {
     #[serde(flatten)]
@@ -112,6 +145,7 @@ pub struct AnalysisCache<V> {
 
 pub type BpmCache = AnalysisCache<Bpm>;
 pub type KeyCache = AnalysisCache<Key>;
+pub type GridCache = AnalysisCache<Grid>;
 
 impl<V> Default for AnalysisCache<V> {
     fn default() -> Self {

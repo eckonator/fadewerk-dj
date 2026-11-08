@@ -161,6 +161,8 @@ impl FadeWerkDjApp {
                     self.bpms.clear();
                     self.caches.key = Default::default();
                     self.keys.clear();
+                    self.caches.grid = Default::default();
+                    self.grids.clear();
                     self.data_gen += 1;
                 }
                 if self.persist {

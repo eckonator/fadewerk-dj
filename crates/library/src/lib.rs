@@ -2,6 +2,7 @@
 //! Musikbibliothek ohne Datenbank: Ordner werden beim Öffnen direkt gelesen,
 //! Tags und Analysen laufen im Hintergrund.
 
+pub mod beatgrid;
 pub mod bpm;
 pub mod decode;
 pub mod fx;
@@ -13,6 +14,7 @@ pub mod sketch;
 pub mod waveform;
 pub mod worker;
 
+pub use beatgrid::{BeatGrid, Segment, estimate_grid};
 pub use key::{Camelot, estimate_key, parse_key};
 pub use meta::{Cover, CoverChange, FileInfo, TagFields, TrackMeta, has_cover, decode_cover, read_cover, read_meta_bytes, read_tags, write_rating, write_tags, write_tags_ext, write_tags_with_cover};
 pub use scan::{DirListing, is_system_dir, list_dir, walk_audio, walk_audio_progress};

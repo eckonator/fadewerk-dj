@@ -9,6 +9,7 @@ use anyhow::Context;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use fw_engine::TrackAudio;
 
+use crate::beatgrid::{BeatGrid, estimate_grid};
 use crate::bpm::estimate_bpm;
 use crate::key::{Camelot, estimate_key};
 use crate::decode::{Early, decode_file, decode_file_bytes_early, read_audio_without_id3};
@@ -60,7 +61,8 @@ pub enum Response {
     /// Ergebnis von [`Library::analyze`]: BPM und Tonart, je aus dem Tag oder (`*_analyzed`) aus der Erkennung.
     /// `None`, wenn die Datei nicht lesbar ist, kein Beat erkennbar war bzw. die Tonart unsicher ist.
     /// `readable` = die Datei ließ sich dekodieren (sonst nichts merken).
-    Analysis { path: PathBuf, bpm: Option<f32>, bpm_analyzed: bool, key: Option<Camelot>, key_analyzed: bool, readable: bool },
+    /// `grid`: Beatraster, wenn es berechnet wurde (`Some(None)` = unsicher), sonst `None`.
+    Analysis { path: PathBuf, bpm: Option<f32>, bpm_analyzed: bool, key: Option<Camelot>, key_analyzed: bool, readable: bool, grid: Option<Option<BeatGrid>> },
     /// Ergebnis von [`Library::request_sketches`], `None` wenn die Datei nicht lesbar ist.
     Sketch { path: PathBuf, sketch: Option<Arc<WaveSketch>> },
 }
@@ -125,6 +127,8 @@ struct LoadJob {
     /// Was fehlt, wird erst nach dem Laden ermittelt und als [`Response::Analysis`] nachgereicht.
     known_bpm: Option<f32>,
     known_key: Option<Option<Camelot>>,
+    /// Beatraster schon bekannt (auch „unsicher“)? Sonst wird es nach dem Laden berechnet.
+    known_grid: bool,
 }
 
 /// Nach so vielen dekodierten Sekunden bekommt der Player den Anfang des Titels ([`Response::Partial`]).
@@ -137,6 +141,8 @@ pub struct Known {
     pub meta: Option<TrackMeta>,
     pub bpm: Option<f32>,
     pub key: Option<Option<Camelot>>,
+    /// Beatraster schon bekannt (auch „unsicher“).
+    pub grid: bool,
 }
 
 /// Hintergrund-Arbeiter: ein Thread liest Tags, einer dekodiert und analysiert.
@@ -186,7 +192,7 @@ impl Library {
                             continue;
                         }
                         let a = analyze(&job);
-                        let resp = Response::Analysis { path: job.path, bpm: a.bpm, bpm_analyzed: a.bpm_analyzed, key: a.key, key_analyzed: a.key_analyzed, readable: a.readable };
+                        let resp = Response::Analysis { path: job.path, bpm: a.bpm, bpm_analyzed: a.bpm_analyzed, key: a.key, key_analyzed: a.key_analyzed, readable: a.readable, grid: a.grid };
                         if tx.send(resp).is_err() {
                             break;
                         }
@@ -336,6 +342,7 @@ impl Library {
                         let t = std::time::Instant::now();
                         let bpm = job.known_bpm.or_else(|| estimate_bpm(&audio));
                         let key = job.known_key.unwrap_or_else(|| estimate_key(&audio));
+                        let grid = (!job.known_grid).then(|| estimate_grid(&audio, bpm));
                         log::info!("Analyse nach dem Laden {} ms", t.elapsed().as_millis());
                         let resp = Response::Analysis {
                             path: job.path.clone(),
@@ -344,6 +351,7 @@ impl Library {
                             key,
                             key_analyzed: job.known_key.is_none(),
                             readable: true,
+                            grid,
                         };
                         if tx.send(resp).is_err() {
                             break;
@@ -411,7 +419,7 @@ impl Library {
     /// bei sichtbaren Plattentellern.
     pub fn load(&self, deck: usize, token: u64, path: PathBuf, cover: bool, known: Known) {
         let sketch_cache = self.sketch_cache.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        let _ = self.load_tx.send(LoadJob { deck, token, path, sketch_cache, cover, known: known.meta, known_bpm: known.bpm, known_key: known.key });
+        let _ = self.load_tx.send(LoadJob { deck, token, path, sketch_cache, cover, known: known.meta, known_bpm: known.bpm, known_key: known.key, known_grid: known.grid });
     }
 
     /// Ordner für den Wellenform-Cache; `None` merkt nichts (Entwicklerläufe).
@@ -488,7 +496,7 @@ fn load(job: &LoadJob, send_partial: &mut dyn FnMut(Response)) -> anyhow::Result
     // Tempo und Tonart aus Tag oder Cache; was fehlt, kommt nach dem Laden (siehe Lade-Thread)
     let bpm = job.known_bpm.or(meta.bpm);
     let key = job.known_key.or(meta.key.map(Some));
-    let missing = bpm.is_none() || key.is_none();
+    let missing = bpm.is_none() || key.is_none() || !job.known_grid;
     let mut meta = meta;
     meta.duration_secs = audio.duration_secs();
     let ms = |a: std::time::Duration, b: std::time::Duration| a.saturating_sub(b).as_millis();
@@ -549,27 +557,33 @@ struct Analysis {
     key: Option<Camelot>,
     key_analyzed: bool,
     readable: bool,
+    grid: Option<Option<BeatGrid>>,
 }
 
 /// BPM und Tonart eines Titels: aus dem Tag (ohne `force`), sonst aus der Erkennung. Dekodiert wird nur,
-/// wenn einer der beiden Werte fehlt, und dann nur einmal für beide.
+/// wenn einer der beiden Werte fehlt, und dann nur einmal für beide; dabei (und mit `force`) entsteht auch das
+/// Beatraster.
 fn analyze(job: &BpmJob) -> Analysis {
     let meta = if job.force { None } else { read_meta(&job.path).ok() };
     let (tag_bpm, tag_key) = meta.map_or((None, None), |m| (m.bpm, m.key));
     if let (Some(bpm), Some(key)) = (tag_bpm, tag_key) {
-        return Analysis { bpm: Some(bpm), bpm_analyzed: false, key: Some(key), key_analyzed: false, readable: true };
+        return Analysis { bpm: Some(bpm), bpm_analyzed: false, key: Some(key), key_analyzed: false, readable: true, grid: None };
     }
     match decode_file(&job.path) {
-        Ok(audio) => Analysis {
-            bpm: tag_bpm.or_else(|| estimate_bpm(&audio)),
-            bpm_analyzed: tag_bpm.is_none(),
-            key: tag_key.or_else(|| estimate_key(&audio)),
-            key_analyzed: tag_key.is_none(),
-            readable: true,
-        },
+        Ok(audio) => {
+            let bpm = tag_bpm.or_else(|| estimate_bpm(&audio));
+            Analysis {
+                bpm,
+                bpm_analyzed: tag_bpm.is_none(),
+                key: tag_key.or_else(|| estimate_key(&audio)),
+                key_analyzed: tag_key.is_none(),
+                readable: true,
+                grid: Some(estimate_grid(&audio, bpm)),
+            }
+        }
         Err(e) => {
             log::debug!("Analyse von {}: {e:#}", job.path.display());
-            Analysis { bpm: tag_bpm, bpm_analyzed: false, key: tag_key, key_analyzed: false, readable: false }
+            Analysis { bpm: tag_bpm, bpm_analyzed: false, key: tag_key, key_analyzed: false, readable: false, grid: None }
         }
     }
 }

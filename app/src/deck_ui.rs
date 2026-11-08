@@ -52,6 +52,8 @@ pub struct DeckModel<'a> {
     pub title: &'a str,
     pub artist: &'a str,
     pub bpm: Option<f32>,
+    /// Beatraster: Beat-Linien in der Wellenform.
+    pub grid: Option<fw_library::BeatGrid>,
     /// Klingende Tonart (mit Pitch verschoben, solange kein Keylock) und die Verschiebung in Halbtönen.
     pub key: Option<fw_library::Camelot>,
     pub key_shift: i32,
@@ -534,15 +536,25 @@ fn waveform_sized(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, height: 
     }
     // „Wellenform aus“ (Leistung): nur Loop und Abspielstrich, Klicken und Scratchen bleiben
     let waves = !theme::lite().no_waves;
-    if let Some(bpm) = m.bpm.filter(|_| waves) {
-        let beat = 60.0 / bpm as f64;
-        let first = (t0 / beat).ceil() as i64;
-        let last = ((t0 + WAVE_SPAN) / beat).floor() as i64;
-        for b in first..=last {
-            let x = to_x(b as f64 * beat);
-            let w = if b % 4 == 0 { 1.5 } else { 0.75 };
-            p.line_segment([pos2(x, rect.top()), pos2(x, rect.bottom())], Stroke::new(w, Color32::from_white_alpha(14)));
-        }
+    // Beat-Linien auf dem Beatraster, Taktbeginn deutlicher; ohne (sicheres) Raster keine, statt geratener.
+    // Hell auf dem Grund, über der Wellenform noch einmal dunkel (dort, wo sie gebraucht werden, verdeckt sie sonst)
+    let beats: Vec<(f32, bool)> = m
+        .grid
+        .filter(|_| waves)
+        .and_then(|g| g.at(t0 + WAVE_SPAN / 2.0, m.duration))
+        .map(|seg| {
+            let first = seg.beats_at(t0).ceil() as i64;
+            let last = seg.beats_at(t0 + WAVE_SPAN).floor() as i64;
+            (first..=last)
+                .map(|b| (seg.downbeat + b as f64 * seg.beat_secs(), b.rem_euclid(4) == 0))
+                .filter(|(t, _)| (0.0..=m.duration).contains(t))
+                .map(|(t, bar)| (to_x(t), bar))
+                .collect()
+        })
+        .unwrap_or_default();
+    for &(x, bar) in &beats {
+        let stroke = if bar { Stroke::new(1.5, Color32::from_white_alpha(34)) } else { Stroke::new(0.75, Color32::from_white_alpha(14)) };
+        p.line_segment([pos2(x, rect.top()), pos2(x, rect.bottom())], stroke);
     }
     // Grobe Wellenformen: halb so viele Spalten, auf kleinen Bildschirmen kaum zu sehen, spart Vertices
     let cols = if waves { (rect.width() / if theme::lite().coarse_waves { 4.0 } else { 2.0 }) as usize } else { 0 };
@@ -555,6 +567,10 @@ fn waveform_sized(ui: &mut egui::Ui, m: &DeckModel<'_>, color: Color32, height: 
         let c = if t < m.position { Color32::from_rgba_unmultiplied(230, 235, 245, 70) } else { color };
         Some((v, c))
     });
+    for &(x, bar) in &beats {
+        let stroke = Stroke::new(if bar { 1.5 } else { 0.75 }, Color32::from_black_alpha(if bar { 110 } else { 60 }));
+        p.line_segment([pos2(x, rect.top()), pos2(x, rect.bottom())], stroke);
+    }
     if !waves {
         // Feine Mittellinie, damit die leere Fläche als Spur erkennbar bleibt
         p.line_segment([pos2(rect.left(), mid), pos2(rect.right(), mid)], Stroke::new(1.0, color.gamma_multiply(0.35)));

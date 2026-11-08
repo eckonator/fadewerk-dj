@@ -13,6 +13,7 @@ const TAGS: &str = "tags.json";
 const FOLDERS: &str = "ordner.json";
 const BPM: &str = "bpm.json";
 const KEYS: &str = "tonart.json";
+const GRIDS: &str = "beatraster.json";
 pub const WAVES: &str = "wellenformen";
 
 /// Belegter Platz der Caches in Bytes.
@@ -42,7 +43,7 @@ pub fn measure() -> Receiver<CacheSizes> {
             tags: size_of(&dir.join(TAGS)),
             folders: size_of(&dir.join(FOLDERS)),
             waves: size_of(&dir.join(WAVES)),
-            bpm: size_of(&dir.join(BPM)) + size_of(&dir.join(KEYS)),
+            bpm: size_of(&dir.join(BPM)) + size_of(&dir.join(KEYS)) + size_of(&dir.join(GRIDS)),
         });
     });
     if let Err(e) = spawned {
@@ -59,6 +60,7 @@ pub fn clear(bpm: bool) {
     if bpm {
         files.push(BPM);
         files.push(KEYS);
+        files.push(GRIDS);
     }
     for name in files {
         remove(&dir.join(name));

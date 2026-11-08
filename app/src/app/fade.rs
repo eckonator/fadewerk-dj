@@ -169,8 +169,18 @@ impl FadeWerkDjApp {
             return;
         }
         let plan = self.transition();
-        let remaining = (plan.end - st.position_secs()) / (1.0 + self.decks[a].pitch_pct as f64 / 100.0);
-        if self.autofade.should_start(st.is_playing(), remaining, plan.lead) {
+        let rate = 1.0 + self.decks[a].pitch_pct as f64 / 100.0;
+        let pos = st.position_secs();
+        let remaining = (plan.end - pos) / rate;
+        // Im Takt: an der letzten Phrasengrenze vor dem geplanten Beginn starten (nicht bei FadeWerk-Bereichen, die
+        // legen den Beginn selbst fest)
+        let planned = plan.end - plan.lead as f64 * rate;
+        let on_beat = plan.split.is_none().then(|| self.beat_plan(planned)).flatten();
+        let start = match on_beat {
+            Some(bp) => self.autofade.should_start(st.is_playing(), remaining, plan.lead) || pos >= Self::phrase_start(bp.old, planned),
+            None => self.autofade.should_start(st.is_playing(), remaining, plan.lead),
+        };
+        if start && self.autofade.enabled && self.autofade.fade().is_none() && st.is_playing() {
             self.start_fade(false, 0.0);
         }
     }
@@ -181,9 +191,22 @@ impl FadeWerkDjApp {
         }
         let to = self.autofade.other();
         if self.has_track(to) && !self.decks[to].spent && !self.loading(to) {
-            self.ctl.send(Command::Play { deck: to });
             let from = self.autofade.active;
-            match self.transition().split {
+            let transition = self.transition();
+            // Im Takt: ohne Motor-Anlauf an der passenden Stelle, Länge in ganzen Takten
+            let pos = self.ctl.shared.decks[from].position_secs();
+            if transition.split.is_none()
+                && self.ctl.shared.decks[from].is_playing()
+                && let Some(bp) = self.beat_plan(pos)
+            {
+                let secs = self.start_on_beat(bp);
+                let saved = std::mem::replace(&mut self.autofade.fade_secs, secs);
+                self.autofade.start(self.crossfader);
+                self.autofade.fade_secs = saved;
+                return;
+            }
+            self.ctl.send(Command::Play { deck: to });
+            match transition.split {
                 // Zweiphasig nur aus der Endstellung, sonst sprängen die Pegel beim Umschalten der Auswertung
                 Some(sp) if self.crossfader == fw_engine::automix::side(from) => {
                     self.autofade.start_split(self.crossfader, sp.in_secs, sp.out_secs);
@@ -205,8 +228,9 @@ impl FadeWerkDjApp {
     /// nächstliegende aus 1, 2 und ½ gewählt (70 und 140 BPM passen zusammen). `None` ohne BPM.
     pub(super) fn sync_pitch(&self, d: usize, factor: Option<f32>) -> Option<(f32, f32)> {
         let o = 1 - d;
-        let mine = self.decks[d].bpm?;
-        let theirs = self.decks[o].bpm.filter(|_| self.has_track(o))? * (1.0 + self.decks[o].pitch_pct / 100.0);
+        // Mit Beatraster das genaue Tempo (sonst laufen die Schläge über eine lange Überblendung auseinander)
+        let mine = self.tempo_of(d)? as f32;
+        let theirs = self.tempo_of(o).filter(|_| self.has_track(o))? as f32 * (1.0 + self.decks[o].pitch_pct / 100.0);
         let pct = |f: f32| (theirs / (mine * f) - 1.0) * 100.0;
         let f = factor.unwrap_or_else(|| [1.0, 2.0, 0.5].into_iter().min_by(|a, b| pct(*a).abs().total_cmp(&pct(*b).abs())).unwrap_or(1.0));
         Some((pct(f), f))
@@ -249,14 +273,18 @@ impl FadeWerkDjApp {
                     self.send_pitch(d, 0.0);
                 }
             } else if self.on_air(o) {
-                // Dem anderen folgen, auch wenn dessen Pitch sich ändert
+                // Dem anderen folgen, auch wenn dessen Pitch sich ändert; nach einem Übergang im Takt auch die Schläge
+                let lock = if self.beat_lock == Some(d) { self.phase_correction(d, factor) } else { 0.0 };
                 if let Some((pct, _)) = self.sync_pitch(d, Some(factor))
                     && pct.abs() <= PITCH_RANGE
-                    && pct != self.decks[d].pitch_pct
+                    && (pct + lock - self.decks[d].pitch_pct).abs() > 0.0005
                 {
-                    self.send_pitch(d, pct);
+                    self.send_pitch(d, pct + lock);
                 }
             } else {
+                if self.beat_lock == Some(d) {
+                    self.beat_lock = None;
+                }
                 let p = self.decks[d].pitch_pct;
                 let step = AUTO_SYNC_RATE * dt;
                 if p.abs() <= step {
@@ -343,13 +371,17 @@ impl FadeWerkDjApp {
             after: None,
             curve: self.curve,
             bass_swap: self.bass_swap,
+            on_beat: false,
         };
         if let Some(f) = self.autofade.fade() {
+            v.on_beat = self.beat_lock == Some(f.to);
             let (progress, rest) = (f.progress(), f.remaining_secs());
             v.from = f.from;
             v.fading = Some((progress, rest));
             v.lead = if progress < 0.97 { (rest / (1.0 - progress)).max(0.5) } else { self.autofade.fade_secs };
         } else if let FadePlan::Planned { rem, plan, .. } = self.fade_plan() {
+            let rate = 1.0 + self.decks[self.autofade.active].pitch_pct as f64 / 100.0;
+            v.on_beat = plan.split.is_none() && self.beat_plan(plan.end - plan.lead as f64 * rate).is_some();
             v.until = Some(rem);
             v.lead = plan.lead;
             v.split_in = plan.split.map(|s| s.in_secs);
@@ -382,3 +414,4 @@ pub(super) enum FadePlan {
     /// Überblendung zu `to` beginnt in `rem` Sekunden.
     Planned { to: usize, rem: f64, plan: crate::fadewerk::Transition },
 }
+

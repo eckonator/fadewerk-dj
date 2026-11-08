@@ -30,6 +30,7 @@ use crate::theme;
 
 mod actions;
 mod check;
+mod beatmatch;
 mod commands;
 mod controller;
 mod fade;
@@ -229,6 +230,7 @@ struct Caches {
     /// Ermittelte BPM bzw. Tonarten (`bpm.json`, `tonart.json`).
     bpm: crate::analysis_cache::BpmCache,
     key: crate::analysis_cache::KeyCache,
+    grid: crate::analysis_cache::GridCache,
     /// Gemessene Größen für Einstellungen → Musik und die laufende Messung.
     sizes: Option<crate::caches::CacheSizes>,
     sizes_rx: Option<std::sync::mpsc::Receiver<crate::caches::CacheSizes>>,
@@ -308,6 +310,8 @@ pub struct FadeWerkDjApp {
     /// Ermittelte Tonarten, `None` = Analyse war unsicher (nicht erneut analysieren). Tonarten aus Tags stehen
     /// in `metas`; [`Self::key_of`] fragt beide ab.
     keys: HashMap<PathBuf, Option<Camelot>>,
+    /// Beatraster (`None` = unsicher), aus `beatraster.json` oder nach dem Laden berechnet.
+    grids: HashMap<PathBuf, Option<fw_library::BeatGrid>>,
     /// Laufende Ordnersuche: Kennung, gesuchte Ordner, Start (zum Merken langsamer Ordner).
     scan_job: Option<(u64, crate::folder_cache::Roots, std::time::Instant)>,
     /// Titel, deren BPM-Analyse noch läuft, und Gesamtzahl seit dem letzten Leerlauf (für die Fortschrittsanzeige).
@@ -421,6 +425,8 @@ pub struct FadeWerkDjApp {
     plays: (HashMap<PathBuf, u32>, u64),
     /// Eigene Bewertungen (`bewertung.json`).
     ratings: crate::ratings::Ratings,
+    /// Player, dessen Schläge nach einem Übergang im Takt auf denen des anderen gehalten werden.
+    beat_lock: Option<usize>,
     /// DJ-Controller (MIDI) und laufendes Lernen.
     midi: crate::midi::Midi,
     midi_learn: Option<crate::midi::Learn>,
@@ -509,6 +515,7 @@ impl FadeWerkDjApp {
             meta_urgent: HashSet::new(),
             bpms: HashMap::new(),
             keys: HashMap::new(),
+            grids: HashMap::new(),
             scan_job: None,
             fadewerk: false,
             bpm_pending: HashSet::new(),
@@ -594,6 +601,7 @@ impl FadeWerkDjApp {
             history: History::default(),
             plays: (HashMap::new(), u64::MAX),
             ratings: Default::default(),
+            beat_lock: None,
             midi: Default::default(),
             midi_learn: None,
             popularity: Default::default(),
@@ -658,6 +666,8 @@ impl FadeWerkDjApp {
             app.caches.key = crate::analysis_cache::KeyCache::load();
             app.keys.extend(app.caches.key.all().map(|(p, k)| (p.clone(), k.camelot())));
             app.key_check = Some(app.caches.key.start_check());
+            app.caches.grid = crate::analysis_cache::GridCache::load();
+            app.grids.extend(app.caches.grid.all().map(|(p, g)| (p.clone(), g.grid())));
             app.caches.tag = crate::tag_cache::TagCache::load();
             app.caches.folder = crate::folder_cache::FolderCache::load();
             log::info!("Tag-Cache: {} Titel", app.caches.tag.len());
@@ -1003,6 +1013,11 @@ impl eframe::App for FadeWerkDjApp {
         self.last_logic = now;
 
         self.check_audio_errors(now);
+        // Entwicklerschalter FW_FADE_AT=<s>: nach so vielen Sekunden FADE drücken (Übergang im Takt testen)
+        if self.dev.fade_at.is_some_and(|at| now >= at) {
+            self.dev.fade_at = None;
+            self.start_fade(true, now);
+        }
         self.step_midi(ctx, now);
         self.poll_library(ctx, now);
         self.poll_fx(now);
@@ -1029,6 +1044,7 @@ impl eframe::App for FadeWerkDjApp {
             if self.persist {
                 self.caches.bpm.save_if_dirty();
                 self.caches.key.save_if_dirty();
+                self.caches.grid.save_if_dirty();
                 self.caches.tag.save_if_dirty(false);
                 self.caches.folder.save_if_dirty();
                 self.history.save_dirty();
@@ -1366,7 +1382,9 @@ impl eframe::App for FadeWerkDjApp {
                     deck: d,
                     title: v.meta.as_ref().map_or("", |m| m.title.as_str()),
                     artist: v.meta.as_ref().map_or("", |m| m.artist.as_str()),
-                    bpm: v.bpm,
+                    // Mit Beatraster dessen Tempo (genauer; bei treibenden Achteln der Schlag statt des Pulses)
+                    bpm: self.segment_at(d, shown[d]).map(|s| s.bpm as f32).or(v.bpm),
+                    grid: v.path.as_ref().and_then(|p| self.grids.get(p).copied().flatten()),
                     pitch_pct: v.pitch_pct,
                     filter: self.filter[d],
                     auto_synced: v.sync.is_some(),
@@ -1772,6 +1790,7 @@ impl Drop for FadeWerkDjApp {
             crate::session::clear_places();
             self.caches.bpm.save_if_dirty();
             self.caches.key.save_if_dirty();
+            self.caches.grid.save_if_dirty();
             self.caches.tag.save_if_dirty(true);
             self.caches.folder.save_if_dirty();
             self.history.save_dirty();
