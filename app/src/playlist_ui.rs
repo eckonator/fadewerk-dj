@@ -50,6 +50,8 @@ pub enum PlaylistAction {
     EditTags(PathBuf),
     /// Tempo und Tonart neu ermitteln (auch mit Angaben im Tag), wie im Ordnerbrowser.
     Analyze(PathBuf),
+    /// Titel bewerten (0 = Bewertung entfernen).
+    Rate { paths: Vec<PathBuf>, stars: u8 },
     /// Titel direkt hinter den geladenen verschieben.
     PlayNext(usize),
     /// Titel ans Ende der anderen Playlist verschieben.
@@ -111,6 +113,7 @@ pub struct TrackInfo<'a> {
     pub metas: &'a HashMap<PathBuf, TrackMeta>,
     pub bpms: &'a HashMap<PathBuf, f32>,
     pub keys: &'a HashMap<PathBuf, Option<Camelot>>,
+    pub ratings: &'a crate::ratings::Ratings,
     pub reference: Option<(Camelot, &'a Path)>,
     /// Zustand des Auswahlfelds „Sortieren“ (gilt für beide Playlists).
     pub harmonic: Harmonic,
@@ -531,7 +534,7 @@ pub fn show(
             let text_left = rect.left() + 38.0;
             let fade = pl.fade(i);
             // Eigene Fades: zwei Dreiecke vor der Kopfhörertaste, dafür endet der Text früher
-            let text_right = rect.right() - if fade.is_empty() { 168.0 } else { 202.0 };
+            let text_right = rect.right() - if fade.is_empty() { 222.0 } else { 256.0 };
             let clip = Rect::from_min_max(pos2(text_left, rect.top()), pos2(text_right, rect.bottom()));
             let pc = p.with_clip_rect(clip);
             if key_info.compact {
@@ -562,9 +565,17 @@ pub fn show(
             p.text(pos2(rect.right() - 60.0, rect.center().y), Align2::RIGHT_CENTER, bpm, FontId::monospace(12.0), theme::dim().gamma_multiply(alpha));
             let dur = if m.duration_secs > 0.0 { fmt_time(m.duration_secs) } else { String::new() };
             p.text(pos2(rect.right() - 8.0, rect.center().y), Align2::RIGHT_CENTER, dur, FontId::monospace(12.0), theme::dim().gamma_multiply(alpha));
+            // Bewertung links neben der Tonart; leere Sterne nur bei Maus darüber (Klick bewertet wie im Browser)
+            let hot = ui.rect_contains_pointer(rect);
+            let stars_rect = Rect::from_min_size(pos2(rect.right() - 176.0, rect.center().y - 7.0), vec2(52.0, 14.0));
+            let stars = key_info.ratings.stars(path, Some(m));
+            if let Some(stars) = hw::star_rating(ui, egui::Id::new(("pl_stars", list, i)), stars_rect, stars, true, hot) {
+                let paths = if marked && sel.len() > 1 { marked_indices(&sel).iter().filter_map(|&k| pl.entries.get(k).cloned()).collect() } else { vec![path.clone()] };
+                out.push(PlaylistAction::Rate { paths, stars });
+            }
 
             if !fade.is_empty() {
-                let mark = Rect::from_center_size(pos2(rect.right() - 185.0, rect.center().y), vec2(24.0, 11.0));
+                let mark = Rect::from_center_size(pos2(rect.right() - 239.0, rect.center().y), vec2(24.0, 11.0));
                 let tip = fade_mark(ui.painter(), mark, fade, alpha);
                 // Tooltip über die Zeile: ein eigenes Element darüber bekäme unter der anklickbaren Zeile kein Hover
                 if resp.hover_pos().is_some_and(|pt| mark.expand(4.0).contains(pt)) {
@@ -575,7 +586,7 @@ pub fn show(
             // Vorhören: Kopfhörertaste vor BPM und Länge, leuchtet, solange dieser Titel vorgehört wird. Nur bei
             // Bedarf sichtbar (Maus über der Zeile, geladener oder markierter Titel), das nimmt Unruhe aus der Liste
             let previewing = preview == Some(path.as_path());
-            let head = Rect::from_center_size(pos2(rect.right() - 146.0, rect.center().y), vec2(30.0, 24.0));
+            let head = Rect::from_center_size(pos2(rect.right() - 200.0, rect.center().y), vec2(30.0, 24.0));
             let wanted = previewing || current == Some(i) || cursor == Some(i) || ui.rect_contains_pointer(rect);
             if wanted && ui.place(head, |ui: &mut egui::Ui| hw::preview_button(ui, head.size(), previewing)).clicked() {
                 out.push(if previewing { PlaylistAction::StopPreview } else { PlaylistAction::Preview(path.clone()) });
@@ -651,6 +662,15 @@ pub fn show(
                     }
                 }
                 ui.separator();
+                let paths: Vec<PathBuf> = match &several {
+                    Some(s) => s.iter().filter_map(|&k| pl.entries.get(k).cloned()).collect(),
+                    None => vec![path.clone()],
+                };
+                let current = several.is_none().then(|| key_info.ratings.stars(path, metas.get(path)));
+                if let Some(stars) = crate::browser::rating_menu(ui, current) {
+                    out.push(PlaylistAction::Rate { paths, stars });
+                    ui.close();
+                }
                 if ui.button(tr("Titelinfo & Tags …")).clicked() {
                     out.push(PlaylistAction::EditTags(path.clone()));
                     ui.close();

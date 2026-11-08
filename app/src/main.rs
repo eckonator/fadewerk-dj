@@ -33,6 +33,8 @@ mod playlist;
 mod playlist_ui;
 mod quiet;
 mod recorder;
+mod popularity;
+mod ratings;
 mod relocate;
 mod search;
 mod selection;

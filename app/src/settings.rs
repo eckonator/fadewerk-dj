@@ -67,7 +67,8 @@ pub struct Settings {
     pub columns_share: f32,
     /// Sichtbare Spalten der Titelliste im Browser (Schlüssel aus `browser::TrackColumn`), Titel ist immer da.
     pub track_columns: Vec<String>,
-    /// Stand der Spaltenauswahl: 1 = Spalte „Tonart“ ist einmal hinter BPM eingefügt worden (für ältere Einstellungen).
+    /// Stand der Spaltenauswahl: 1 = Spalte „Tonart“ ist einmal hinter BPM eingefügt worden, 2 = Spalte „Bewertung“
+    /// einmal dazugekommen (für ältere Einstellungen).
     /// Fehlt das Feld (Einstellungen von vorher), gilt 0.
     #[serde(default)]
     pub columns_rev: u32,
@@ -143,6 +144,8 @@ pub struct Settings {
     pub online_lookup: bool,
     /// Gespielte Titel in der Historie aufzeichnen.
     pub record_history: bool,
+    /// Eigene Bewertungen auch in die Tags der Dateien schreiben (gemerkt werden sie immer in `bewertung.json`).
+    pub rating_to_files: bool,
     /// Bildschirm und Rechner nicht in den Ruhezustand gehen lassen, solange Musik spielt.
     pub keep_awake: bool,
     /// Limiter auf dem Master: Spitzen werden abgesenkt statt abgeschnitten.
@@ -191,7 +194,7 @@ impl Default for Settings {
             folder_columns: false,
             columns_share: 0.0,
             track_columns: crate::browser::TrackColumn::DEFAULT.iter().map(|c| c.key().to_owned()).collect(),
-            columns_rev: 1,
+            columns_rev: 2,
             lite_rev: 1,
             column_widths: Vec::new(),
             track_sort: None,
@@ -230,6 +233,7 @@ impl Default for Settings {
             update_check: None,
             online_lookup: false,
             record_history: true,
+            rating_to_files: false,
             keep_awake: true,
             limiter: true,
             mic_device: None,
@@ -357,6 +361,13 @@ impl Settings {
                 self.track_columns.insert(i + 1, "key".into());
             }
             self.columns_rev = 1;
+        }
+        // Neue Spalte „Bewertung“: einmal zeigen (die Reihenfolge legt die Titelliste selbst fest)
+        if self.columns_rev < 2 {
+            if !self.track_columns.iter().any(|c| c == "rating") {
+                self.track_columns.push("rating".into());
+            }
+            self.columns_rev = 2;
         }
         if std::mem::take(&mut self.lite_ui) {
             self.lite = crate::theme::Lite::ALL;

@@ -81,6 +81,11 @@ pub fn count_tracks(n: usize, time: &str) -> String {
     }
 }
 
+/// „1 Stern“, „3 Sterne“.
+pub fn count_stars(n: u8) -> String {
+    if n == 1 { tr("1 Stern").to_owned() } else { trf("{} Sterne", &[&n]) }
+}
+
 fn en(de: &str) -> Option<&'static str> {
     Some(match de {
         // Player
@@ -401,6 +406,43 @@ fn en(de: &str) -> Option<&'static str> {
         "Player" => "Deck",
         "Datei" => "File",
         "Gespielte Titel aufzeichnen" => "Record played tracks",
+        // Bewertungen
+        "Bewertung" => "Rating",
+        "Bewertungen" => "Ratings",
+        "Sterne" => "Stars",
+        "1 Stern" => "1 star",
+        "{} Sterne" => "{} stars",
+        "Bewerten" => "Rate",
+        "Bewertung entfernen" => "Remove rating",
+        "Klick entfernt die Bewertung" => "Click removes the rating",
+        "Bewertungen in die Dateien schreiben" => "Write ratings into the files",
+        "Dann sehen auch andere Player die Sterne." => "Other players will see the stars too.",
+        "FadeWerk DJ merkt sich jede Bewertung selbst. Mit diesem Schalter steht sie zusätzlich in den Tags der Datei (ID3 POPM, Vorbis RATING, MP4 rate), wie bei anderen Playern üblich. Dabei ändert sich die Datei. Bewertungen aus den Tags liest FadeWerk DJ immer." => "FadeWerk DJ always remembers every rating itself. With this switch it is also stored in the file's tags (ID3 POPM, Vorbis RATING, MP4 rate), as other players do. This changes the file. Ratings from the tags are always read.",
+        "Gefiltert nach Bewertung" => "Filtered by rating",
+        "Nur gut bewertete Titel zeigen" => "Show only well-rated tracks",
+        "nur diese" => "only these",
+        "und mehr" => "and up",
+        "Alle Titel zeigen" => "Show all tracks",
+        "{}1 bis {}5 bewertet die Auswahl, {}0 entfernt" => "{}1 to {}5 rates the selection, {}0 removes",
+        "Spielende Titel bekommen die Bewertung erst einmal nur in FadeWerk DJ, nicht in die Datei." => "Tracks that are playing keep the rating in FadeWerk DJ only for now, not in the file.",
+        "Bewertung von {} Titeln entfernt" => "Rating removed from {} tracks",
+        "{} Titel mit {} bewertet" => "{} tracks rated {}",
+        // Beliebtheit (ListenBrainz)
+        "Beliebtheit" => "Popularity",
+        "Beliebtheit online abfragen" => "Look up popularity online",
+        "Wie oft die Titel bei ListenBrainz (offene Hördaten) gehört werden, im Vergleich zum größten Hit des Albums. Gefragt wird mit Interpret und Titel (etwa 1,5 s je Titel); die Werte werden gemerkt." => "How often the tracks are played on ListenBrainz (open listening data), compared with the album's biggest hit. Only artist and title are sent (about 1.5 s per track); the values are remembered.",
+        "Wie oft die ausgewählten Titel bei ListenBrainz gehört werden, im Vergleich zum größten Hit des Albums. Gefragt wird mit Interpret und Titel." => "How often the selected tracks are played on ListenBrainz, compared with the album's biggest hit. Only artist and title are sent.",
+        "Bei ListenBrainz nicht gefunden" => "Not found on ListenBrainz",
+        "Abfrage der Beliebtheit abbrechen" => "Stop looking up popularity",
+        "{} Wiedergaben bei ListenBrainz" => "{} plays on ListenBrainz",
+        "{} Wiedergaben · Hit Nr. {} im Album" => "{} plays · no. {} hit on the album",
+        "{} Wiedergaben · Platz {} von {} im Album" => "{} plays · no. {} of {} on the album",
+        "{} Wiedergaben · Hit Nr. {} im Ordner" => "{} plays · no. {} hit in the folder",
+        "{} Wiedergaben · Platz {} von {} im Ordner" => "{} plays · no. {} of {} in the folder",
+        "Beliebtheit {} von {} Titeln" => "Popularity {} of {} tracks",
+        "Tags werden gelesen, dann wird die Beliebtheit abgefragt …" => "Reading tags, then looking up popularity …",
+        "Die Beliebtheit dieser Titel ist schon bekannt (wird nach 30 Tagen neu abgefragt)." => "The popularity of these tracks is already known (looked up again after 30 days).",
+        "Beliebtheit abgefragt. Daten: ListenBrainz (CC0)." => "Popularity looked up. Data: ListenBrainz (CC0).",
         "Ein Titel zählt, sobald er 30 Sekunden über Master zu hören war. Zu finden im Ordnerbrowser unter „Historie“." => "A track counts once it has been audible on master for 30 seconds. Find it in the folder browser under “History”.",
         "Spaltenbreiten zurücksetzen" => "Reset column widths",
         "Spalten auswählen (auch mit Rechtsklick auf den Tabellenkopf)" => "Choose columns (also by right-clicking the table header)",

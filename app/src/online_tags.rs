@@ -287,7 +287,7 @@ fn acoustid_lookup(fp: &fw_library::identify::Fingerprint) -> Result<Value, Stri
 
 /// GET bei MusicBrainz: höchstens eine Anfrage pro Sekunde (für alle Threads), bei „busy“ (503) bis zu
 /// dreimal neu versuchen.
-fn mb_get(url: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn mb_get(url: &str) -> Result<Vec<u8>, String> {
     static LAST: Mutex<Option<Instant>> = Mutex::new(None);
     for attempt in 0..4 {
         {
@@ -311,7 +311,7 @@ fn http_get(url: &str) -> Result<Vec<u8>, String> {
     if status == 200 { Ok(body) } else { Err(format!("{status} {url}")) }
 }
 
-fn curl() -> Command {
+pub(crate) fn curl() -> Command {
     let mut cmd = Command::new("curl");
     let agent = format!("FadeWerkDJ/{} ( {} )", env!("CARGO_PKG_VERSION"), env!("CARGO_PKG_REPOSITORY"));
     // Statuscode hinter den Inhalt hängen (immer drei Zeichen, „000“ ohne Verbindung)
@@ -324,7 +324,7 @@ fn curl() -> Command {
     cmd
 }
 
-fn run(cmd: &mut Command) -> Result<(u16, Vec<u8>), String> {
+pub(crate) fn run(cmd: &mut Command) -> Result<(u16, Vec<u8>), String> {
     let out = cmd.output().map_err(|e| format!("curl: {e}"))?;
     let mut body = out.stdout;
     if body.len() < 3 {
@@ -338,7 +338,7 @@ fn run(cmd: &mut Command) -> Result<(u16, Vec<u8>), String> {
     Ok((status, body))
 }
 
-fn url_encode(s: &str) -> String {
+pub(crate) fn url_encode(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),

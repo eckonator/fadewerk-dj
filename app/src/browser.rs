@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use eframe::egui::{self, Button, CursorIcon, Key, RichText, Sense, vec2};
+use eframe::egui::{self, Button, CursorIcon, Key, Rect, RichText, Sense, pos2, vec2};
 use egui_extras::{Column, TableBuilder};
 use fw_library::{Camelot, SCAN_LIMIT, TrackMeta, is_system_dir, list_dir};
 
@@ -33,6 +33,11 @@ pub enum BrowserAction {
     Reveal(PathBuf),
     /// Fenster „Titelinfo & Tags“ öffnen.
     EditTags(PathBuf),
+    /// Titel bewerten (0 = Bewertung entfernen).
+    Rate { paths: Vec<PathBuf>, stars: u8 },
+    /// Beliebtheit dieser Titel bei ListenBrainz abfragen bzw. die Abfrage stoppen.
+    Popularity(Vec<PathBuf>),
+    StopPopularity,
     /// Der Nutzer hat die Breite des Ordnerbaums geändert.
     TreeWidth(f32),
     /// Höhe des Ordnerbaums, wenn er über der Titelliste steht (Browser rechts).
@@ -43,7 +48,7 @@ pub enum BrowserAction {
     ColumnsShare(f32),
     /// Erweiterte Suche zum Speichern: „Suchfilter merken“ an/aus, „Doppelte Titel ausblenden“,
     /// „Nur ganze Wörter“ und die Suche (leer, wenn nicht gemerkt).
-    SearchMemory(bool, bool, bool, AdvancedSearch),
+    SearchMemory(bool, bool, bool, Box<AdvancedSearch>),
     /// Sichtbare Spalten der Titelliste oder ihre Breiten haben sich geändert (Schlüssel, Breiten je Schlüssel).
     TrackColumns(Vec<String>, Vec<(String, f32)>),
     /// Sortierung der Titelliste (Spaltenschlüssel, absteigend) oder `None` = Reihenfolge der Ordner bzw. Historie.
@@ -99,13 +104,16 @@ pub enum TrackColumn {
     Subfolder,
     FileName,
     Format,
+    Rating,
+    Popularity,
+    Plays,
     Bpm,
     Key,
     Time,
 }
 
 impl TrackColumn {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 14] = [
         Self::Artist,
         Self::Album,
         Self::Genre,
@@ -114,11 +122,14 @@ impl TrackColumn {
         Self::Subfolder,
         Self::FileName,
         Self::Format,
+        Self::Rating,
+        Self::Popularity,
+        Self::Plays,
         Self::Bpm,
         Self::Key,
         Self::Time,
     ];
-    pub const DEFAULT: [Self; 5] = [Self::Artist, Self::Subfolder, Self::Bpm, Self::Key, Self::Time];
+    pub const DEFAULT: [Self; 6] = [Self::Artist, Self::Subfolder, Self::Rating, Self::Bpm, Self::Key, Self::Time];
 
     /// Schlüssel in den Einstellungen (bleibt stabil, auch wenn sich die Anzeige ändert).
     pub fn key(self) -> &'static str {
@@ -132,6 +143,9 @@ impl TrackColumn {
             Self::Subfolder => "subfolder",
             Self::FileName => "file",
             Self::Format => "format",
+            Self::Rating => "rating",
+            Self::Popularity => "popularity",
+            Self::Plays => "plays",
             Self::Bpm => "bpm",
             Self::Key => "key",
             Self::Time => "time",
@@ -154,6 +168,9 @@ impl TrackColumn {
             Self::Subfolder => "Unterordner",
             Self::FileName => "Dateiname",
             Self::Format => "Format",
+            Self::Rating => "Bewertung",
+            Self::Popularity => "Beliebtheit",
+            Self::Plays => "Gespielt",
             Self::Bpm => "BPM",
             Self::Key => "Tonart",
             Self::Time => "Zeit",
@@ -162,7 +179,7 @@ impl TrackColumn {
 
     /// Hängt der Wert der Spalte von den Tags ab (sonst reicht der Pfad)?
     fn needs_tags(self) -> bool {
-        !matches!(self, Self::Subfolder | Self::FileName | Self::Format)
+        !matches!(self, Self::Subfolder | Self::FileName | Self::Format | Self::Plays)
     }
 
     fn default_width(self) -> f32 {
@@ -172,6 +189,9 @@ impl TrackColumn {
             Self::Genre => 110.0,
             Self::Subfolder | Self::FileName => 200.0,
             Self::Year | Self::Format | Self::Bpm | Self::Key => 52.0,
+            Self::Rating => 84.0,
+            Self::Popularity => 90.0,
+            Self::Plays => 64.0,
             Self::Time => 48.0,
         }
     }
@@ -179,7 +199,9 @@ impl TrackColumn {
     fn min_width(self) -> f32 {
         match self {
             Self::Title => 120.0,
-            Self::Year | Self::Format | Self::Bpm | Self::Key | Self::Time => 36.0,
+            Self::Year | Self::Format | Self::Bpm | Self::Key | Self::Time | Self::Plays => 36.0,
+            Self::Rating => 70.0,
+            Self::Popularity => 50.0,
             _ => 60.0,
         }
     }
@@ -188,6 +210,12 @@ impl TrackColumn {
 pub struct BrowserCtx<'a> {
     pub metas: &'a HashMap<PathBuf, TrackMeta>,
     pub bpms: &'a HashMap<PathBuf, f32>,
+    /// Eigene Bewertungen (Bewertungen aus Tags stehen in `metas`).
+    pub ratings: &'a crate::ratings::Ratings,
+    /// Wie oft jeder Titel laut Historie gespielt wurde.
+    pub plays: &'a HashMap<PathBuf, u32>,
+    /// Beliebtheit bei ListenBrainz (gemerkt je Interpret) und laufende Abfrage.
+    pub popularity: &'a crate::popularity::Popularity,
     /// Ermittelte Tonarten (`None` = unsicher); Tonarten aus Tags stehen in `metas`.
     pub keys: &'a HashMap<PathBuf, Option<Camelot>>,
     /// Laufende Analyse: (fertig, gesamt).
@@ -286,6 +314,8 @@ enum FolderOp {
     Analyze,
     /// Tags online ergänzen.
     OnlineTags,
+    /// Beliebtheit bei ListenBrainz abfragen.
+    Popularity,
 }
 
 /// Breite des Ordnerbaums ohne gespeicherten Wert und Grenzen beim Ziehen.
@@ -363,6 +393,8 @@ pub struct Browser {
     tree_width: f32,
     /// Sichtbare wählbare Spalten der Titelliste, in der Reihenfolge von [`TrackColumn::ALL`].
     columns: Vec<TrackColumn>,
+    /// Von außen geänderte Spalten, noch zu speichern ([`Self::show_column`]).
+    columns_pending: bool,
     /// Vom Nutzer gezogene Spaltenbreiten; fehlt eine, gilt [`TrackColumn::default_width`].
     widths: HashMap<TrackColumn, f32>,
     /// Wird erhöht, wenn die Breiten zurückgesetzt werden; egui merkt sich die Tabelle sonst weiter.
@@ -460,6 +492,7 @@ impl Browser {
             col_root: None,
             col_seen: None,
             columns: TrackColumn::DEFAULT.to_vec(),
+            columns_pending: false,
             widths: HashMap::new(),
             table_gen: 0,
             sort: None,
@@ -534,6 +567,14 @@ impl Browser {
 
     fn width(&self, c: TrackColumn) -> f32 {
         self.widths.get(&c).copied().unwrap_or(c.default_width()).max(c.min_width())
+    }
+
+    /// Spalte einblenden (etwa nach einer Abfrage, deren Ergebnis dort steht); gemeldet wird beim nächsten Bild.
+    pub fn show_column(&mut self, c: TrackColumn) {
+        if !self.columns.contains(&c) {
+            self.columns = TrackColumn::ALL.into_iter().filter(|x| *x == c || self.columns.contains(x)).collect();
+            self.columns_pending = true;
+        }
     }
 
     fn columns_changed(&self, out: &mut Vec<BrowserAction>) {
@@ -990,6 +1031,10 @@ impl Browser {
         if search_key {
             self.toggle_search();
         }
+        if std::mem::take(&mut self.columns_pending) {
+            self.table_gen += 1;
+            self.columns_changed(out);
+        }
         self.players_bottom = ui.max_rect().top();
         // Vor der Liste, damit Eingaben noch in diesem Bild filtern
         self.search_window(&ui.ctx().clone());
@@ -997,7 +1042,7 @@ impl Browser {
         let now = (self.remember, self.hide_duplicates, self.whole_words, if self.remember { self.adv.clone() } else { AdvancedSearch::default() });
         if now != self.reported {
             self.reported = now.clone();
-            out.push(BrowserAction::SearchMemory(now.0, now.1, now.2, now.3));
+            out.push(BrowserAction::SearchMemory(now.0, now.1, now.2, Box::new(now.3)));
         }
         if refresh_key {
             self.refresh();
@@ -1022,6 +1067,7 @@ impl Browser {
                 FolderOp::Distribute => BrowserAction::Distribute(paths),
                 FolderOp::Analyze => BrowserAction::Analyze { paths, force: false },
                 FolderOp::OnlineTags => BrowserAction::OnlineTags(paths),
+                FolderOp::Popularity => BrowserAction::Popularity(paths),
             });
         }
 
@@ -1541,7 +1587,7 @@ impl Browser {
                 let p = &r.path;
                 if let Some(adv) = &adv {
                     let bpm = ctx.bpms.get(p).copied().or(m.bpm);
-                    if !adv.matches(&m, p, bpm) {
+                    if !adv.matches(&m, p, bpm, ctx.ratings.stars(p, Some(&m))) {
                         return false;
                     }
                 }
@@ -1567,7 +1613,12 @@ impl Browser {
                 .iter()
                 .map(|r| {
                     let m = meta_for(ctx.metas, &r.path, entry_of(r));
-                    sort_key(col, &m, &r.path, dirs, ctx.bpms.get(&r.path).copied(), key_of(ctx.metas, ctx.keys, &r.path))
+                    let listens = match ctx.popularity.of(&r.path, &m) {
+                        crate::popularity::Pop::Found { listens, .. } => Some(listens),
+                        _ => None,
+                    };
+                    let known = Known { bpm: ctx.bpms.get(&r.path).copied(), key: key_of(ctx.metas, ctx.keys, &r.path), stars: ctx.ratings.stars(&r.path, Some(&m)), plays: ctx.plays.get(&r.path).copied().unwrap_or(0), listens };
+                    sort_key(col, &m, &r.path, dirs, known)
                 })
                 .collect();
             let order = sort_order(&keys, desc);
@@ -1688,6 +1739,13 @@ impl Browser {
         let sel_rows = self.picked.ordered(rows);
         let row_paths = &data.paths;
         let sel_paths = playable(&sel_rows);
+        // ⌥0 bis ⌥5 (Alt) bewertet die Auswahl, wenn zuletzt in diese Liste geklickt wurde oder die Maus darüber ist
+        let listening = ui.rect_contains_pointer(ui.max_rect()) || crate::keynav::focused(ui.ctx()) == Some(KeyList::Browser);
+        if !sel_paths.is_empty() && listening && !ui.ctx().egui_wants_keyboard_input()
+            && let Some(stars) = ui.input(rating_key)
+        {
+            out.push(BrowserAction::Rate { paths: sel_paths.clone(), stars });
+        }
 
         // Reicht die Breite nicht für Angaben und Tasten nebeneinander, kommen die Tasten in eine eigene Zeile
         // (gemessen im letzten Bild, sonst überdecken sie „Mit Unterordnern“)
@@ -1923,6 +1981,20 @@ impl Browser {
                         let shade = |c: egui::Color32| if gone { theme::faint().gamma_multiply(0.8) } else { c };
                         for c in &cols {
                             row.col(|ui| {
+                                if *c == TrackColumn::Rating {
+                                    let stars = ctx.ratings.stars(path, ctx.metas.get(path));
+                                    let rect = Rect::from_min_size(ui.max_rect().left_top(), vec2(ui.max_rect().width().min(80.0), ui.max_rect().height())).shrink2(vec2(0.0, 5.0));
+                                    if let Some(stars) = crate::hw::star_rating(ui, ui.id().with("stars"), rect, stars, !gone, hot) {
+                                        out.push(BrowserAction::Rate { paths: targets(), stars });
+                                    }
+                                    return;
+                                }
+                                if *c == TrackColumn::Popularity {
+                                    if !gone {
+                                        popularity_cell(ui, ctx.popularity.of(path, &m), &mut tip);
+                                    }
+                                    return;
+                                }
                                 let text_cell = |t: &str, size: f32, color| RichText::new(t).font(fonts::list(size)).color(shade(color));
                                 let number_cell = |t: &str| RichText::new(t).monospace().size(12.0).color(shade(theme::dim()));
                                 let text = match c {
@@ -1949,6 +2021,11 @@ impl Browser {
                                         number_cell(&bpm.map(|b| format!("{b:.0}")).unwrap_or_else(|| "–".into()))
                                     }
                                     // Farbe nach dem Camelot-Rad, wie in Playlist und Player
+                                    TrackColumn::Rating | TrackColumn::Popularity => unreachable!("oben gezeichnet"),
+                                    TrackColumn::Plays => match ctx.plays.get(path) {
+                                        Some(n) => number_cell(&format!("{n}×")),
+                                        None => number_cell(""),
+                                    },
                                     TrackColumn::Key => match key_of(ctx.metas, ctx.keys, path) {
                                         Some(k) => text_cell(&k.label(), 12.5, theme::key_color(k)),
                                         None => number_cell("–"),
@@ -2098,7 +2175,18 @@ enum SortKey {
     Number(f64),
 }
 
-fn sort_key(col: TrackColumn, m: &TrackMeta, path: &Path, dirs: &[PathBuf], bpm: Option<f32>, key: Option<Camelot>) -> Option<SortKey> {
+/// Angaben zu einem Titel, die nicht in den Tags stehen (ermittelt, bewertet, gezählt).
+struct Known {
+    bpm: Option<f32>,
+    key: Option<Camelot>,
+    stars: u8,
+    plays: u32,
+    /// Wiedergaben bei ListenBrainz.
+    listens: Option<u64>,
+}
+
+fn sort_key(col: TrackColumn, m: &TrackMeta, path: &Path, dirs: &[PathBuf], known: Known) -> Option<SortKey> {
+    let Known { bpm, key, stars, plays, listens } = known;
     let text = |t: &str| (!t.trim().is_empty()).then(|| SortKey::Text(fold(t)));
     match col {
         TrackColumn::Title => text(&m.title),
@@ -2113,6 +2201,11 @@ fn sort_key(col: TrackColumn, m: &TrackMeta, path: &Path, dirs: &[PathBuf], bpm:
         TrackColumn::Bpm => bpm.or(m.bpm).map(|b| SortKey::Number(b as f64)),
         // Reihenfolge des Rades: 1A, 1B, 2A, …
         TrackColumn::Key => key.map(|k| SortKey::Number(k.code() as f64)),
+        // Unbewertete und nie gespielte Titel stehen wie leere Werte am Ende
+        TrackColumn::Rating => (stars > 0).then_some(SortKey::Number(stars as f64)),
+        TrackColumn::Plays => (plays > 0).then_some(SortKey::Number(plays as f64)),
+        // Nach absoluten Wiedergaben: so stehen auch auf Samplern die größten Hits oben
+        TrackColumn::Popularity => listens.map(|n| SortKey::Number(n as f64)),
         TrackColumn::Time => (m.duration_secs > 0.0).then_some(SortKey::Number(m.duration_secs)),
     }
 }
@@ -2295,6 +2388,10 @@ fn list_tools(ui: &mut egui::Ui, ctx: &BrowserCtx<'_>, rows: &[PathBuf], rows_mi
         };
         if ui.add_enabled(!paths.is_empty() && history.is_none(), Button::new(tr("Tags online"))).on_hover_text(tip).clicked() {
             out.push(BrowserAction::OnlineTags(paths.to_vec()));
+        }
+        let tip = if sel_rows.is_empty() { tr(POPULARITY_HINT) } else { tr("Wie oft die ausgewählten Titel bei ListenBrainz gehört werden, im Vergleich zum größten Hit des Albums. Gefragt wird mit Interpret und Titel.") };
+        if ui.add_enabled(!paths.is_empty(), Button::new(tr("Beliebtheit"))).on_hover_text(tip).clicked() {
+            out.push(BrowserAction::Popularity(paths.to_vec()));
         }
         if let Some(date) = history
             && ui.add_enabled(!rows.is_empty(), Button::new(tr("Wiederherstellen"))).on_hover_text(tr(RESTORE_HINT)).clicked()
@@ -2524,6 +2621,9 @@ fn folder_menu(ui: &mut egui::Ui, count: usize, removable: bool) -> Option<Folde
     if ui.button(tr("Tags online ergänzen …")).on_hover_text(hint).clicked() {
         pick = Some(FolderMenu::Op(FolderOp::OnlineTags));
     }
+    if ui.button(tr("Beliebtheit online abfragen")).on_hover_text(tr(POPULARITY_HINT)).clicked() {
+        pick = Some(FolderMenu::Op(FolderOp::Popularity));
+    }
     ui.separator();
     if ui.button(reveal_label()).clicked() {
         pick = Some(FolderMenu::Reveal);
@@ -2542,6 +2642,90 @@ fn folder_menu(ui: &mut egui::Ui, count: usize, removable: bool) -> Option<Folde
 
 /// Rechtsklick-Menü für einen oder mehrere Titel.
 /// `remove` = Tag und Einträge der Historie, die „Aus der Historie entfernen“ löscht (nur in der Historie).
+/// Gedrückte Taste ⌥0 bis ⌥5 (Alt), ohne Tastenwiederholung. Auf dem Mac liefert ⌥1 ein Sonderzeichen,
+/// darum zählt auch die Taste selbst (`physical_key`).
+pub fn rating_key(i: &egui::InputState) -> Option<u8> {
+    const KEYS: [Key; 6] = [Key::Num0, Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5];
+    i.events.iter().find_map(|e| match e {
+        egui::Event::Key { key, physical_key, pressed: true, repeat: false, modifiers, .. }
+            if modifiers.alt && !modifiers.command && !modifiers.ctrl =>
+        {
+            KEYS.iter().position(|k| k == key || Some(*k) == *physical_key).map(|n| n as u8)
+        }
+        _ => None,
+    })
+}
+
+/// Erklärung zu „Beliebtheit online abfragen“.
+pub const POPULARITY_HINT: &str = "Wie oft die Titel bei ListenBrainz (offene Hördaten) gehört werden, im Vergleich zum größten Hit des Albums. Gefragt wird mit Interpret und Titel (etwa 1,5 s je Titel); die Werte werden gemerkt.";
+
+/// Zelle „Beliebtheit“: Balken im Verhältnis zum größten Hit des Albums, die Top 3 in der Auswahlfarbe.
+/// Der Tooltip nennt Wiedergaben und Platz.
+fn popularity_cell(ui: &mut egui::Ui, pop: crate::popularity::Pop, tip: &mut Option<String>) {
+    use crate::popularity::{Pop, fmt_listens};
+    let cell = ui.max_rect();
+    let hovered = ui.rect_contains_pointer(cell);
+    match pop {
+        Pop::Unknown => {}
+        Pop::NotFound => {
+            ui.label(RichText::new("–").monospace().size(12.0).color(theme::faint()));
+            if hovered {
+                *tip = Some(tr("Bei ListenBrainz nicht gefunden").to_owned());
+            }
+        }
+        Pop::Found { listens, rank, group_size, by_folder, .. } => {
+            let share = pop.share().unwrap_or(0.0);
+            let hit = pop.is_hit();
+            let track = Rect::from_min_size(pos2(cell.left(), cell.center().y - 3.0), vec2((cell.width() - 6.0).clamp(10.0, 80.0), 6.0));
+            let p = ui.painter();
+            p.rect_filled(track, 3.0, theme::faint().gamma_multiply(0.18));
+            let mut bar = track;
+            bar.max.x = track.left() + (track.width() * share).max(3.0);
+            let color = if hit { theme::select_accent() } else { theme::dim().gamma_multiply(0.8) };
+            p.rect_filled(bar, 3.0, color);
+            if hovered {
+                let text = match (group_size, by_folder, hit) {
+                    (0, ..) => trf("{} Wiedergaben bei ListenBrainz", &[&fmt_listens(listens)]),
+                    (_, false, true) => trf("{} Wiedergaben · Hit Nr. {} im Album", &[&fmt_listens(listens), &rank]),
+                    (_, false, false) => trf("{} Wiedergaben · Platz {} von {} im Album", &[&fmt_listens(listens), &rank, &group_size]),
+                    (_, true, true) => trf("{} Wiedergaben · Hit Nr. {} im Ordner", &[&fmt_listens(listens), &rank]),
+                    (_, true, false) => trf("{} Wiedergaben · Platz {} von {} im Ordner", &[&fmt_listens(listens), &rank, &group_size]),
+                };
+                *tip = Some(text);
+            }
+        }
+    }
+}
+
+/// Untermenü „Bewerten“ (auch für die Playlists): fünf Zeilen mit Sternen, darunter „Bewertung entfernen“.
+/// `current` = Bewertung des einzelnen Titels (bei mehreren Titeln `None`). Liefert die gewählte Bewertung.
+pub fn rating_menu(ui: &mut egui::Ui, current: Option<u8>) -> Option<u8> {
+    let mut chosen = None;
+    ui.menu_button(tr("Bewerten"), |ui| {
+        for n in (1..=crate::ratings::MAX_STARS).rev() {
+            let (rect, resp) = ui.allocate_exact_size(vec2(150.0, 22.0), Sense::click());
+            if resp.hovered() {
+                ui.painter().rect_filled(rect, 3.0, ui.visuals().widgets.hovered.weak_bg_fill);
+            }
+            let stars = Rect::from_min_size(rect.left_top() + vec2(6.0, 4.0), vec2(80.0, 14.0));
+            crate::hw::star_rating(ui, ui.id().with(("menu_stars", n)), stars, n, false, true);
+            if current == Some(n) {
+                ui.painter().rect_stroke(rect.shrink(1.0), 3.0, egui::Stroke::new(1.0, theme::select_accent()), egui::StrokeKind::Inside);
+            }
+            if resp.on_hover_text(crate::i18n::count_stars(n)).clicked() {
+                chosen = Some(n);
+            }
+        }
+        ui.separator();
+        if ui.add_enabled(current != Some(0), Button::new(tr("Bewertung entfernen"))).clicked() {
+            chosen = Some(0);
+        }
+        let alt = if cfg!(target_os = "macos") { "⌥" } else { "Alt+" };
+        ui.label(RichText::new(trf("{}1 bis {}5 bewertet die Auswahl, {}0 entfernt", &[&alt, &alt, &alt])).size(11.0).color(theme::faint()));
+    });
+    chosen
+}
+
 fn track_menu(ui: &mut egui::Ui, paths: &[PathBuf], remove: Option<(String, Vec<usize>)>, ctx: &BrowserCtx<'_>, out: &mut Vec<BrowserAction>) {
     let mut act = None;
     if let Some((date, slots)) = remove {
@@ -2582,9 +2766,16 @@ fn track_menu(ui: &mut egui::Ui, paths: &[PathBuf], remove: Option<(String, Vec<
         }
     }
     ui.separator();
+    let current = (paths.len() == 1).then(|| ctx.ratings.stars(&paths[0], ctx.metas.get(&paths[0])));
+    if let Some(stars) = rating_menu(ui, current) {
+        act = Some(BrowserAction::Rate { paths: paths.to_vec(), stars });
+    }
     let hint = tr(ANALYZE_HINT);
     if ui.button(tr("Analysieren (BPM, Tonart)")).on_hover_text(hint).clicked() {
         act = Some(BrowserAction::Analyze { paths: paths.to_vec(), force: true });
+    }
+    if ui.button(tr("Beliebtheit online abfragen")).on_hover_text(tr(POPULARITY_HINT)).clicked() {
+        act = Some(BrowserAction::Popularity(paths.to_vec()));
     }
     if let [path] = paths {
         ui.separator();
@@ -2920,6 +3111,40 @@ pub fn paint_lupe(p: &egui::Painter, center: egui::Pos2, color: egui::Color32) {
 }
 
 impl Browser {
+    /// Taste mit Stern neben der Lupe: zeigt nur Titel ab einer Bewertung (Feld „Sterne“ der erweiterten Suche).
+    fn star_filter(&mut self, ui: &mut egui::Ui) {
+        let min: u8 = self.adv.rating.0.trim().parse().unwrap_or(0);
+        let active = self.adv.is_set(Field::Rating);
+        let h = ui.spacing().interact_size.y;
+        let tip = if active { tr("Gefiltert nach Bewertung") } else { tr("Nur gut bewertete Titel zeigen") };
+        let resp = ui.add(egui::Button::new("").min_size(egui::vec2(theme::ICON_BTN_W, h))).on_hover_text(tip);
+        let color = if active { theme::select_accent() } else { ui.style().interact(&resp).fg_stroke.color };
+        crate::hw::paint_star(ui.painter(), resp.rect.center(), 6.5, active.then_some(color), egui::Stroke::new(if active { 0.0 } else { 1.4 }, color));
+        egui::Popup::menu(&resp).show(|ui| {
+            for n in (1..=crate::ratings::MAX_STARS).rev() {
+                let (rect, r) = ui.allocate_exact_size(vec2(170.0, 22.0), Sense::click());
+                if r.hovered() {
+                    ui.painter().rect_filled(rect, 3.0, ui.visuals().widgets.hovered.weak_bg_fill);
+                }
+                if active && min == n && self.adv.rating.1.trim().is_empty() {
+                    ui.painter().rect_stroke(rect.shrink(1.0), 3.0, egui::Stroke::new(1.0, theme::select_accent()), egui::StrokeKind::Inside);
+                }
+                crate::hw::star_rating(ui, ui.id().with(("filter_stars", n)), Rect::from_min_size(rect.left_top() + vec2(6.0, 4.0), vec2(80.0, 14.0)), n, false, true);
+                let label = if n == crate::ratings::MAX_STARS { tr("nur diese") } else { tr("und mehr") };
+                ui.painter().text(rect.left_center() + vec2(94.0, 0.0), egui::Align2::LEFT_CENTER, label, fonts::list(12.0), theme::dim());
+                if r.clicked() {
+                    self.adv.rating = (n.to_string(), String::new());
+                    ui.close();
+                }
+            }
+            ui.separator();
+            if ui.add_enabled(active, Button::new(tr("Alle Titel zeigen"))).clicked() {
+                self.adv.clear(Field::Rating);
+                ui.close();
+            }
+        });
+    }
+
     /// Schnellsuche, erweiterte Suche, BPM-Fortschritt und (in der langen Kopfzeile) Hinweis und Pfad,
     /// in einem Layout von rechts nach links.
     fn header_tools(&mut self, ui: &mut egui::Ui, ctx: &BrowserCtx<'_>, out: &mut Vec<BrowserAction>, compact: bool) {
@@ -2927,6 +3152,7 @@ impl Browser {
         if search_button(ui, self.adv_open || !self.adv.is_empty()).clicked() {
             self.toggle_search();
         }
+        self.star_filter(ui);
         let search_w = if compact { (ui.available_width() * 0.5).clamp(140.0, 260.0) } else { 200.0 };
         ui.add(
             egui::TextEdit::singleline(&mut self.filter)
@@ -2940,6 +3166,13 @@ impl Browser {
                 out.push(BrowserAction::StopBpm);
             }
             ui.label(RichText::new(trf("Analyse {} von {}", &[&done, &total])).size(12.0).color(theme::dim()));
+            ui.add(egui::Spinner::new().size(14.0));
+        }
+        if let Some((done, total)) = ctx.popularity.progress() {
+            if ui.small_button(tr("Stopp")).on_hover_text(tr("Abfrage der Beliebtheit abbrechen")).clicked() {
+                out.push(BrowserAction::StopPopularity);
+            }
+            ui.label(RichText::new(trf("Beliebtheit {} von {} Titeln", &[&done, &total])).size(12.0).color(theme::dim()));
             ui.add(egui::Spinner::new().size(14.0));
         }
         if let Some(st) = ctx.tag_batch {

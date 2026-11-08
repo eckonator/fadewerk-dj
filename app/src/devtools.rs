@@ -10,6 +10,8 @@
 //! - `FW_BATCH=1` öffnet in der Demo „Tags online ergänzen“ für alle Titel des Startordners (mit `FW_ONLINE=1`
 //!   startet die Erkennung sofort; geschrieben wird nur per Klick).
 //! - `FW_SELECT=1` wählt in der Demo im Ordnerbrowser den 2. bis 4. Titel aus.
+//! - `FW_RATINGS=1` bewertet die Demo-Titel mit Beispielsternen (nicht gespeichert).
+//! - `FW_POPULARITY=1` fragt in der Demo die Beliebtheit der Titel ab (echte Abfrage, mit `FW_SHOT_SECS` warten).
 //! - `FW_HISTORY=1` legt in der Demo zwei Beispieltage der Historie an (einer mit fehlender Datei) und öffnet den neueren.
 //! - `FW_BPM=1` ermittelt in der Demo die fehlenden BPM des Startordners (Ergebnis in `bpm.json`, mit `FW_PERSIST=1`).
 //! - `FW_SEARCH="genre=Rock,year=1980-1989"` öffnet die erweiterte Suche mit diesen Feldern.

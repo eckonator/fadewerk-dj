@@ -1085,3 +1085,58 @@ pub fn horizontal_fader(ui: &mut egui::Ui, rect: Rect, id: impl std::hash::Hash 
     let out = glide_reset(ui, &resp, value, default, 2.0, out);
     (resp, out)
 }
+
+/// Fünfzackiger Stern um `c` mit Außenradius `r`, gefüllt oder als Umriss. Aus einem Fünfeck in der Mitte
+/// und fünf Spitzen gebaut (egui füllt nur konvexe Formen).
+pub fn paint_star(p: &Painter, c: Pos2, r: f32, fill: Option<Color32>, stroke: Stroke) {
+    let inner = r * 0.45;
+    let point = |i: usize, radius: f32| {
+        let a = -std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::PI / 5.0;
+        c + vec2(a.cos(), a.sin()) * radius
+    };
+    let outline: Vec<Pos2> = (0..10).map(|i| point(i, if i % 2 == 0 { r } else { inner })).collect();
+    if let Some(color) = fill {
+        let pentagon: Vec<Pos2> = (0..5).map(|k| outline[2 * k + 1]).collect();
+        p.add(egui::Shape::convex_polygon(pentagon, color, Stroke::NONE));
+        for k in 0..5 {
+            let tip = vec![outline[(2 * k + 9) % 10], outline[2 * k], outline[2 * k + 1]];
+            p.add(egui::Shape::convex_polygon(tip, color, Stroke::NONE));
+        }
+    }
+    if stroke.width > 0.0 {
+        p.add(egui::Shape::closed_line(outline, stroke));
+    }
+}
+
+/// Bewertung als fünf Sterne in `rect` (links ausgerichtet). Mit `editable` zeigt die Maus darüber die
+/// neue Bewertung als Vorschau; ein Klick setzt sie, ein Klick auf die schon gesetzte Zahl entfernt sie.
+/// `show_empty`: unbewertete Sterne schwach zeigen (sonst bleibt eine Zeile ohne Bewertung leer).
+pub fn star_rating(ui: &mut egui::Ui, id: egui::Id, rect: Rect, stars: u8, editable: bool, show_empty: bool) -> Option<u8> {
+    let n = crate::ratings::MAX_STARS;
+    let step = (rect.width() / n as f32).min(rect.height() + 2.0);
+    let r = (step * 0.42).min(rect.height() * 0.45);
+    let area = Rect::from_min_size(rect.left_top(), vec2(step * n as f32, rect.height()));
+    let resp = if editable { Some(ui.interact(area, id, Sense::click())) } else { None };
+    let hover = resp.as_ref().and_then(|h| h.hover_pos()).map(|pt| (((pt.x - area.left()) / step).floor() as i32 + 1).clamp(1, n as i32) as u8);
+    let shown = hover.unwrap_or(stars);
+    let p = ui.painter();
+    let on = theme::select_accent();
+    let r = r.min(step * 0.48);
+    for i in 1..=n {
+        let c = pos2(area.left() + step * (i as f32 - 0.5), area.center().y);
+        if i <= shown {
+            let color = if hover.is_some() && i > stars { on.gamma_multiply(0.55) } else { on };
+            paint_star(p, c, r, Some(color), Stroke::NONE);
+        } else if show_empty || hover.is_some() || stars > 0 {
+            paint_star(p, c, r, None, Stroke::new(1.0, theme::faint().gamma_multiply(0.7)));
+        }
+    }
+    let resp = resp?;
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let resp = match hover {
+        Some(h) if h == stars => resp.on_hover_text(crate::i18n::tr("Klick entfernt die Bewertung")),
+        Some(h) => resp.on_hover_text(crate::i18n::count_stars(h)),
+        None => resp,
+    };
+    resp.clicked().then(|| if hover == Some(stars) { 0 } else { hover.unwrap_or(stars) })
+}

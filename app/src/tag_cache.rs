@@ -24,8 +24,9 @@ const DAY_SECS: u64 = 24 * 60 * 60;
 /// neue Einträge, die Datei hat dann einige MB).
 const SAVE_EVERY_SECS: u64 = 30;
 const FORMAT: &str = "FadeWerk-DJ-Tags";
-/// 2 = mit Tonart. Ältere Einträge wissen nicht, ob ein Tonart-Tag da war: dann einmal neu lesen.
-const VERSION: u32 = 2;
+/// 2 = mit Tonart, 3 = mit Bewertung. Ältere Einträge wissen nicht, ob ein solcher Tag da war: dann einmal
+/// neu lesen.
+const VERSION: u32 = 3;
 
 /// Ein Eintrag mit kurzen Feldnamen; leere Felder werden nicht gespeichert.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -57,6 +58,9 @@ struct Entry {
     /// Tonart aus dem Tag als Camelot-Code (0 bis 23).
     #[serde(rename = "k", default, skip_serializing_if = "Option::is_none")]
     key: Option<u8>,
+    /// Bewertung aus dem Tag (1 bis 5 Sterne).
+    #[serde(rename = "r", default, skip_serializing_if = "Option::is_none")]
+    rating: Option<u8>,
 }
 
 impl Entry {
@@ -71,6 +75,7 @@ impl Entry {
             duration_secs: self.duration,
             bpm: self.bpm,
             key: self.key.and_then(fw_library::Camelot::from_code),
+            rating: self.rating.filter(|r| (1..=5).contains(r)),
         }
     }
 }
@@ -117,7 +122,7 @@ impl TagCache {
             return Err(format!("unbekanntes Format „{}“", file.format));
         }
         if file.version < VERSION {
-            log::info!("Tag-Cache aus einer älteren Version (ohne Tonart): wird neu aufgebaut");
+            log::info!("Tag-Cache aus einer älteren Version (ohne Tonart oder Bewertung): wird neu aufgebaut");
             return Ok(Self { saved_at: now, dirty: true, ..Default::default() });
         }
         let mut c = Self { saved_at: now, ..Default::default() };
@@ -185,6 +190,7 @@ impl TagCache {
             duration: meta.duration_secs,
             bpm: meta.bpm,
             key: meta.key.map(|k| k.code()),
+            rating: meta.rating,
         };
         let same = self.entries.get(file).is_some_and(|old| Entry { used: old.used, ..e.clone() } == *old);
         if !same {

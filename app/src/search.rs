@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Erweiterte Suche im Ordnerbrowser: gezielt nach Titel, Interpret, Album, Dateiname, Ordner, Genre,
-//! Jahr und BPM filtern. Das Ergebnis filtert die normale Titelliste, zusätzlich zur Schnellsuche.
+//! Jahr, BPM und Bewertung filtern. Das Ergebnis filtert die normale Titelliste, zusätzlich zur Schnellsuche.
 
 use std::path::Path;
 
@@ -18,10 +18,11 @@ pub enum Field {
     Genre,
     Year,
     Bpm,
+    Rating,
 }
 
 impl Field {
-    pub const ALL: [Self; 8] = [Self::Title, Self::Artist, Self::Album, Self::FileName, Self::Folder, Self::Genre, Self::Year, Self::Bpm];
+    pub const ALL: [Self; 9] = [Self::Title, Self::Artist, Self::Album, Self::FileName, Self::Folder, Self::Genre, Self::Year, Self::Bpm, Self::Rating];
 
     /// Anzeigename (deutscher Schlüssel für `tr`).
     pub fn name(self) -> &'static str {
@@ -34,6 +35,7 @@ impl Field {
             Self::Genre => "Genre",
             Self::Year => "Jahr",
             Self::Bpm => "BPM",
+            Self::Rating => "Sterne",
         }
     }
 }
@@ -51,6 +53,8 @@ pub struct AdvancedSearch {
     pub genre: String,
     pub year: (String, String),
     pub bpm: (String, String),
+    /// Sterne von–bis (unbewertet = 0).
+    pub rating: (String, String),
 }
 
 impl AdvancedSearch {
@@ -76,6 +80,7 @@ impl AdvancedSearch {
             Field::Genre => &mut self.genre,
             Field::Year => &mut self.year.0,
             Field::Bpm => &mut self.bpm.0,
+            Field::Rating => &mut self.rating.0,
         }
     }
 
@@ -83,6 +88,7 @@ impl AdvancedSearch {
         match f {
             Field::Year => Some((&mut self.year.0, &mut self.year.1)),
             Field::Bpm => Some((&mut self.bpm.0, &mut self.bpm.1)),
+            Field::Rating => Some((&mut self.rating.0, &mut self.rating.1)),
             _ => None,
         }
     }
@@ -97,6 +103,7 @@ impl AdvancedSearch {
             Field::Genre => &self.genre,
             Field::Year => &self.year.0,
             Field::Bpm => &self.bpm.0,
+            Field::Rating => &self.rating.0,
         }
     }
 
@@ -104,6 +111,7 @@ impl AdvancedSearch {
         match f {
             Field::Year => Some((&self.year.0, &self.year.1)),
             Field::Bpm => Some((&self.bpm.0, &self.bpm.1)),
+            Field::Rating => Some((&self.rating.0, &self.rating.1)),
             _ => None,
         }
     }
@@ -162,13 +170,14 @@ impl AdvancedSearch {
             genre: words(&self.genre),
             year: (parse(&self.year.0), parse(&self.year.1)),
             bpm: (parse(&self.bpm.0), parse(&self.bpm.1)),
+            rating: (parse(&self.rating.0), parse(&self.rating.1)),
         }
     }
 
     /// Passt der Titel? Für einzelne Prüfungen; bei vielen Titeln [`Self::prepare`] benutzen.
     #[cfg(test)]
     pub fn matches(&self, meta: &TrackMeta, path: &str, bpm: Option<f32>) -> bool {
-        self.prepare(false).matches(meta, Path::new(path), bpm)
+        self.prepare(false).matches(meta, Path::new(path), bpm, 0)
     }
 }
 
@@ -183,13 +192,14 @@ pub struct PreparedSearch {
     genre: Vec<String>,
     year: (Option<f32>, Option<f32>),
     bpm: (Option<f32>, Option<f32>),
+    rating: (Option<f32>, Option<f32>),
 }
 
 impl PreparedSearch {
     /// Passt der Titel unter `path`? `bpm` ist die bekannte Geschwindigkeit. Textfelder: alle Wörter müssen
     /// vorkommen, Groß/Klein egal; Ordner = Pfad des Dateiordners, Dateiname samt Endung.
-    /// Bereiche: Titel ohne Angabe fallen heraus.
-    pub fn matches(&self, meta: &TrackMeta, path: &Path, bpm: Option<f32>) -> bool {
+    /// Bereiche: Titel ohne Angabe fallen heraus. `stars` = geltende Bewertung (0 = keine).
+    pub fn matches(&self, meta: &TrackMeta, path: &Path, bpm: Option<f32>, stars: u8) -> bool {
         let text_ok = |words: &[String], hay: &str| {
             if words.is_empty() {
                 return true;
@@ -207,6 +217,7 @@ impl PreparedSearch {
             && text_ok(&self.genre, &meta.genre)
             && in_range(self.year, || meta.year.trim().parse::<f32>().ok())
             && in_range(self.bpm, || bpm.map(|b| b.round()))
+            && in_range(self.rating, || Some(stars as f32))
             && (self.file_name.is_empty() || text_ok(&self.file_name, &path.file_name().unwrap_or_default().to_string_lossy()))
             && (self.folder.is_empty() || text_ok(&self.folder, &path.parent().map(|d| d.to_string_lossy()).unwrap_or_default()))
     }
@@ -270,7 +281,7 @@ mod tests {
     #[test]
     fn whole_words_skip_longer_words() {
         let s = AdvancedSearch { artist: "Cro".into(), ..Default::default() }.prepare(true);
-        let hit = |artist: &str| s.matches(&meta("Easy", artist, "", ""), Path::new("/x.mp3"), None);
+        let hit = |artist: &str| s.matches(&meta("Easy", artist, "", ""), Path::new("/x.mp3"), None, 0);
         assert!(hit("Cro"));
         assert!(hit("Cro & Bausa"));
         assert!(hit("Teesy feat. Cro"));
@@ -280,11 +291,11 @@ mod tests {
         assert!(!hit("Cro2"));
         // Umlaute zählen als Buchstaben, Satzzeichen im Suchwort gehören dazu
         let s = AdvancedSearch { artist: "bär ac/dc".into(), ..Default::default() }.prepare(true);
-        assert!(s.matches(&meta("", "Bär, AC/DC", "", ""), Path::new("/x.mp3"), None));
-        assert!(!s.matches(&meta("", "Bären, AC/DC", "", ""), Path::new("/x.mp3"), None));
+        assert!(s.matches(&meta("", "Bär, AC/DC", "", ""), Path::new("/x.mp3"), None, 0));
+        assert!(!s.matches(&meta("", "Bären, AC/DC", "", ""), Path::new("/x.mp3"), None, 0));
         // Ohne Häkchen wie bisher
         let s = AdvancedSearch { artist: "Cro".into(), ..Default::default() }.prepare(false);
-        assert!(s.matches(&meta("", "Crosby", "", ""), Path::new("/x.mp3"), None));
+        assert!(s.matches(&meta("", "Crosby", "", ""), Path::new("/x.mp3"), None, 0));
     }
 
     #[test]
@@ -299,5 +310,15 @@ mod tests {
         assert!(!s.matches(&m, "", Some(110.0)));
         assert!(!s.matches(&m, "", None));
         assert_eq!(s.summary(Field::Bpm), "≥ 120");
+    }
+
+    #[test]
+    fn rating_from_counts_unrated_as_zero() {
+        let s = AdvancedSearch { rating: ("4".into(), String::new()), ..Default::default() }.prepare(false);
+        let m = meta("A", "B", "", "");
+        assert!(s.matches(&m, Path::new("/x.mp3"), None, 5));
+        assert!(s.matches(&m, Path::new("/x.mp3"), None, 4));
+        assert!(!s.matches(&m, Path::new("/x.mp3"), None, 3));
+        assert!(!s.matches(&m, Path::new("/x.mp3"), None, 0));
     }
 }

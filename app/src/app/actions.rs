@@ -385,6 +385,7 @@ impl FadeWerkDjApp {
             // Wie Ziehen ans Ende der anderen Playlist
             PlaylistAction::MoveToOther(i) => self.playlist_action(1 - d, PlaylistAction::Drop { item: DragItem::Row { list: d, index: i }, before: usize::MAX }, now),
             PlaylistAction::Analyze(p) => self.browser_action(BrowserAction::Analyze { paths: vec![p], force: true }, now),
+            PlaylistAction::Rate { paths, stars } => self.rate(paths, stars, now),
             PlaylistAction::Drop { item, before } => match item {
                 DragItem::Files(paths) => {
                     let at = before.min(self.playlists[d].entries.len());
@@ -532,6 +533,12 @@ impl FadeWerkDjApp {
                 self.save_settings();
             }
             BrowserAction::EditTags(path) => self.tag_editor = Some(TagEditor::open(path)),
+            BrowserAction::Rate { paths, stars } => self.rate(paths, stars, now),
+            BrowserAction::Popularity(paths) => self.request_popularity(paths, now),
+            BrowserAction::StopPopularity => {
+                self.popularity.stop();
+                self.popularity_wait = None;
+            }
             BrowserAction::OnlineTags(paths) => {
                 match &mut self.tag_batch {
                     None => self.tag_batch = Some(crate::tag_batch::TagBatch::new(paths)),
@@ -543,7 +550,7 @@ impl FadeWerkDjApp {
                 self.settings.remember_search = remember;
                 self.settings.hide_duplicates = hide_duplicates;
                 self.settings.search_whole_words = whole_words;
-                self.settings.advanced_search = search;
+                self.settings.advanced_search = *search;
                 self.save_settings();
             }
             BrowserAction::TrackColumns(visible, widths) => {

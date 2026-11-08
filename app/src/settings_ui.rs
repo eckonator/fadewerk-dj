@@ -85,6 +85,7 @@ pub enum SettingsAction {
     /// Sofort bei GitHub nach einer neuen Version fragen.
     CheckUpdateNow,
     RecordHistory(bool),
+    RatingToFiles(bool),
     RecordFormat(crate::recorder::RecordFormat),
     /// Ordner für Aufnahmen wählen (öffnet den Dialog).
     RecordPickDir,
@@ -399,6 +400,20 @@ impl SettingsUi {
             );
             if r.clicked() {
                 out.push(SettingsAction::OnlineLookup(!c.settings.online_lookup));
+            }
+        });
+
+        card(ui, tr("Bewertungen"), |ui| {
+            let r = switch(
+                ui,
+                tr("Bewertungen in die Dateien schreiben"),
+                c.settings.rating_to_files,
+                true,
+                tr("Dann sehen auch andere Player die Sterne."),
+                tr("FadeWerk DJ merkt sich jede Bewertung selbst. Mit diesem Schalter steht sie zusätzlich in den Tags der Datei (ID3 POPM, Vorbis RATING, MP4 rate), wie bei anderen Playern üblich. Dabei ändert sich die Datei. Bewertungen aus den Tags liest FadeWerk DJ immer."),
+            );
+            if r.clicked() {
+                out.push(SettingsAction::RatingToFiles(!c.settings.rating_to_files));
             }
         });
 

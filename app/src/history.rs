@@ -9,7 +9,7 @@
 //! ([`PlayTracker`]). Titel bis [`DAY_STARTS_AT_HOUR`] Uhr früh zählen zum Vortag, damit eine Feier über
 //! Mitternacht in einem Tag bleibt.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
 
@@ -131,6 +131,8 @@ pub struct History {
     /// Seit dem letzten Speichern geänderte bzw. gelöschte Tage.
     dirty: HashSet<String>,
     deleted: HashSet<String>,
+    /// Zählt jede Änderung (für abgeleitete Angaben wie [`Self::play_counts`]).
+    generation: u64,
 }
 
 impl History {
@@ -182,7 +184,21 @@ impl History {
         self.days.is_empty()
     }
 
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Wie oft jeder Titel bisher gespielt wurde, über alle Tage.
+    pub fn play_counts(&self) -> HashMap<PathBuf, u32> {
+        let mut counts: HashMap<PathBuf, u32> = HashMap::new();
+        for e in self.days.values().flat_map(|d| &d.entries) {
+            *counts.entry(e.path.clone()).or_default() += 1;
+        }
+        counts
+    }
+
     fn touch(&mut self, date: &str) {
+        self.generation += 1;
         self.deleted.remove(date);
         self.dirty.insert(date.to_owned());
     }
@@ -219,6 +235,7 @@ impl History {
 
     pub fn delete_day(&mut self, date: &str) {
         if self.days.remove(date).is_some() {
+            self.generation += 1;
             self.dirty.remove(date);
             self.deleted.insert(date.to_owned());
         }

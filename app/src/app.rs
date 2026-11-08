@@ -416,6 +416,14 @@ pub struct FadeWerkDjApp {
     browser_window_lost: u32,
     /// Gespielte Titel je Tag (`historie/`).
     history: History,
+    /// Wie oft jeder Titel laut Historie gespielt wurde, und für welchen Stand der Historie.
+    plays: (HashMap<PathBuf, u32>, u64),
+    /// Eigene Bewertungen (`bewertung.json`).
+    ratings: crate::ratings::Ratings,
+    /// Beliebtheit bei ListenBrainz (`beliebtheit.json`) und Titel, deren Tags dafür noch gelesen werden
+    /// (mit Startzeit).
+    popularity: crate::popularity::Popularity,
+    popularity_wait: Option<(Vec<PathBuf>, f64)>,
     /// Erkennt je Player, wann ein Titel als gespielt gilt.
     play_trackers: [PlayTracker; 2],
     /// Titelenden je Player, die die Historie schon gesehen hat (danach zählt ein Titel erneut).
@@ -580,6 +588,10 @@ impl FadeWerkDjApp {
             browser_window_init: None,
             browser_window_lost: 0,
             history: History::default(),
+            plays: (HashMap::new(), u64::MAX),
+            ratings: Default::default(),
+            popularity: Default::default(),
+            popularity_wait: None,
             play_trackers: Default::default(),
             history_ended: [0; 2],
             history_clock: std::time::Instant::now(),
@@ -630,6 +642,8 @@ impl FadeWerkDjApp {
         }
         if app.persist {
             app.history = History::load();
+            app.ratings = crate::ratings::Ratings::load();
+            app.popularity = crate::popularity::Popularity::load();
         }
         if app.persist {
             app.caches.bpm = crate::analysis_cache::BpmCache::load();
@@ -824,6 +838,16 @@ impl FadeWerkDjApp {
                     app.settings.online_lookup = true;
                 }
             }
+            // FW_RATINGS=1: Beispielbewertungen für die Demo-Titel (nicht gespeichert)
+            if std::env::var_os("FW_RATINGS").is_some() {
+                for (i, t) in tracks.iter().enumerate() {
+                    app.ratings.set(t, [5, 3, 0, 4, 2, 0, 5, 1][i % 8], None);
+                }
+            }
+            // FW_POPULARITY=1: Beliebtheit der Demo-Titel abfragen (echte Abfrage bei MusicBrainz/ListenBrainz)
+            if std::env::var_os("FW_POPULARITY").is_some() {
+                app.browser_action(BrowserAction::Popularity(tracks.clone()), 0.0);
+            }
             // FW_HISTORY=1: Beispiel-Historie aus den Demo-Titeln (nicht gespeichert), Tag geöffnet
             if std::env::var_os("FW_HISTORY").is_some() {
                 app.demo_history(&tracks);
@@ -997,6 +1021,8 @@ impl eframe::App for FadeWerkDjApp {
                 self.caches.tag.save_if_dirty(false);
                 self.caches.folder.save_if_dirty();
                 self.history.save_dirty();
+                self.ratings.save_if_dirty();
+                self.popularity.save_if_dirty();
             }
         }
         if let Some(rx) = &self.bpm_check
@@ -1114,10 +1140,18 @@ impl eframe::App for FadeWerkDjApp {
             self.browser_slid_for_drag = false;
         }
         let mut slid = self.browser_slid;
+        self.step_popularity(&ctx, ctx.input(|i| i.time));
+        if self.plays.1 != self.history.generation() {
+            self.plays = (self.history.play_counts(), self.history.generation());
+            self.data_gen += 1;
+        }
         let preview_st = &self.ctl.shared.decks[PREVIEW];
         let bctx = BrowserCtx {
             metas: &self.metas,
             bpms: &self.bpms,
+            ratings: &self.ratings,
+            plays: &self.plays.0,
+            popularity: &self.popularity,
             keys: &self.keys,
             bpm_progress: (self.bpm_total > 0).then(|| (self.bpm_total - self.bpm_pending.len(), self.bpm_total)),
             tag_batch: self.tag_batch.as_ref().and_then(|b| b.status()),
@@ -1390,7 +1424,7 @@ impl eframe::App for FadeWerkDjApp {
             fade: &fade_model,
             transition: &transition,
             playlists: &self.playlists,
-            info: playlist_ui::TrackInfo { metas: &self.metas, bpms: &self.bpms, keys: &self.keys, reference: key_ref_track, harmonic, compact },
+            info: playlist_ui::TrackInfo { metas: &self.metas, bpms: &self.bpms, keys: &self.keys, ratings: &self.ratings, reference: key_ref_track, harmonic, compact },
             has: [self.decks[0].loaded_id != 0, self.decks[1].loaded_id != 0],
             playing: [self.ctl.shared.decks[0].is_playing(), self.ctl.shared.decks[1].is_playing()],
             preview: self.preview.as_ref().filter(|p| p.clip.is_none()).map(|p| p.path.as_path()),
@@ -1713,6 +1747,8 @@ impl Drop for FadeWerkDjApp {
             self.caches.tag.save_if_dirty(true);
             self.caches.folder.save_if_dirty();
             self.history.save_dirty();
+            self.ratings.save_if_dirty();
+            self.popularity.save_if_dirty();
         }
     }
 }

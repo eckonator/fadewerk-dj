@@ -11,6 +11,7 @@ impl FadeWerkDjApp {
     pub(super) fn resolve_bpm(&mut self, path: &Path, stamp: Option<fw_library::Stamp>) {
         use crate::analysis_cache::Resolved;
         self.data_gen += 1;
+        self.ratings.follow(path, stamp);
         match self.caches.bpm.resolve_stamped(path, stamp) {
             Resolved::Value(b) => {
                 self.bpms.insert(path.to_path_buf(), b.bpm);
@@ -438,5 +439,88 @@ impl FadeWerkDjApp {
             }
         }
         self.lib.request_sketches(order);
+    }
+
+    /// Titel bewerten (0 = Bewertung entfernen). Gemerkt in `bewertung.json`; mit „Bewertungen in die Dateien
+    /// schreiben“ zusätzlich im Hintergrund in die Tags (nicht bei Titeln, die gerade spielen).
+    pub(super) fn rate(&mut self, paths: Vec<PathBuf>, stars: u8, now: f64) {
+        if paths.is_empty() {
+            return;
+        }
+        for p in &paths {
+            let stamp = self.caches.tag.get(p).map(|(_, s)| s);
+            self.ratings.set(p, stars, stamp);
+        }
+        self.data_gen += 1;
+        if paths.len() > 1 {
+            let msg = if stars == 0 { trf("Bewertung von {} Titeln entfernt", &[&paths.len()]) } else { trf("{} Titel mit {} bewertet", &[&paths.len(), &crate::i18n::count_stars(stars)]) };
+            self.notify(msg, now);
+        }
+        if !self.settings.rating_to_files || !self.persist {
+            return;
+        }
+        let playing: Vec<PathBuf> =
+            (0..2).filter(|&d| self.ctl.shared.decks[d].is_playing()).filter_map(|d| self.decks[d].path.clone()).collect();
+        let (write, skipped): (Vec<PathBuf>, Vec<PathBuf>) = paths.into_iter().partition(|p| !playing.contains(p));
+        if !skipped.is_empty() {
+            self.notify(tr("Spielende Titel bekommen die Bewertung erst einmal nur in FadeWerk DJ, nicht in die Datei."), now);
+        }
+        if write.is_empty() {
+            return;
+        }
+        let rating = (stars > 0).then_some(stars);
+        let spawned = std::thread::Builder::new().name("fw-rating-write".into()).spawn(move || {
+            for p in write {
+                if let Err(e) = fw_library::write_rating(&p, rating) {
+                    log::warn!("Bewertung nicht in {} geschrieben: {e:#}", p.display());
+                }
+            }
+        });
+        if let Err(e) = spawned {
+            log::warn!("Schreiben der Bewertungen startet nicht: {e}");
+        }
+    }
+
+    /// Beliebtheit dieser Titel abfragen. Fehlen noch Tags, werden sie zuerst gelesen ([`Self::step_popularity`]).
+    pub(super) fn request_popularity(&mut self, paths: Vec<PathBuf>, now: f64) {
+        let missing: Vec<PathBuf> = paths.iter().filter(|p| !self.metas.contains_key(*p)).cloned().collect();
+        for p in missing.iter().cloned() {
+            self.request_meta(p);
+        }
+        self.browser.show_column(crate::browser::TrackColumn::Popularity);
+        if missing.is_empty() {
+            self.start_popularity(&paths, now);
+        } else {
+            self.notify(tr("Tags werden gelesen, dann wird die Beliebtheit abgefragt …"), now);
+            self.popularity_wait = Some((paths, now));
+        }
+    }
+
+    fn start_popularity(&mut self, paths: &[PathBuf], now: f64) {
+        let ctx = self.repaint_ctx.clone();
+        let n = self.popularity.request(crate::popularity::metas_of(paths, &self.metas), move || ctx.request_repaint());
+        if n == 0 {
+            self.notify(tr("Die Beliebtheit dieser Titel ist schon bekannt (wird nach 30 Tagen neu abgefragt)."), now);
+        }
+    }
+
+    /// Ergebnisse der Beliebtheit übernehmen; wartende Abfrage starten, sobald die Tags da sind (spätestens
+    /// nach 20 s, unlesbare Dateien sollen sie nicht aufhalten).
+    pub(super) fn step_popularity(&mut self, ctx: &egui::Context, now: f64) {
+        let (changed, finished) = self.popularity.poll();
+        if changed {
+            self.data_gen += 1;
+        }
+        if finished {
+            self.notify(tr("Beliebtheit abgefragt. Daten: ListenBrainz (CC0)."), now);
+        }
+        if let Some((paths, since)) = &self.popularity_wait {
+            if paths.iter().all(|p| self.metas.contains_key(p)) || now - since > 20.0 {
+                let paths = std::mem::take(&mut self.popularity_wait).map(|(p, _)| p).unwrap_or_default();
+                self.start_popularity(&paths, now);
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_millis(500));
+            }
+        }
     }
 }

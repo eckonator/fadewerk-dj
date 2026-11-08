@@ -21,6 +21,8 @@ pub struct TrackMeta {
     pub bpm: Option<f32>,
     /// Tonart aus dem Tag (`TKEY` bzw. `INITIALKEY`, jede übliche Schreibweise), sonst aus der Analyse.
     pub key: Option<crate::key::Camelot>,
+    /// Bewertung aus dem Tag (1 bis 5 Sterne; ID3 `POPM`, Vorbis `RATING`, MP4 `rate`), `None` = keine.
+    pub rating: Option<u8>,
 }
 
 impl TrackMeta {
@@ -38,7 +40,11 @@ impl TrackMeta {
 
 /// Liest Tags und Laufzeit. Fehlen Tags, bleibt der Dateiname als Titel.
 pub fn read_meta(path: &Path) -> anyhow::Result<TrackMeta> {
-    meta_from(lofty::read_from_path(path)?, path)
+    let mut meta = meta_from(lofty::read_from_path(path)?, path)?;
+    if meta.rating == Some(1) && id3_unrated(&std::fs::read(path)?) {
+        meta.rating = None;
+    }
+    Ok(meta)
 }
 
 /// Wie [`read_meta`], aber aus der schon gelesenen Datei (`bytes`), ohne sie noch einmal zu öffnen. Liefert
@@ -49,7 +55,11 @@ pub fn read_meta_bytes(bytes: &[u8], path: &Path) -> anyhow::Result<(TrackMeta, 
         let pictures: Vec<_> = file.tags().iter().flat_map(|t| t.pictures()).collect();
         pictures.iter().find(|p| p.pic_type() == PictureType::CoverFront).or_else(|| pictures.first()).map(|p| p.data().to_vec())
     };
-    Ok((meta_from(file, path)?, picture))
+    let mut meta = meta_from(file, path)?;
+    if meta.rating == Some(1) && id3_unrated(bytes) {
+        meta.rating = None;
+    }
+    Ok((meta, picture))
 }
 
 /// Tags aus einer Datei im Speicher (Dateiart am Inhalt erkannt).
@@ -81,8 +91,55 @@ fn meta_from(file: lofty::file::TaggedFile, path: &Path) -> anyhow::Result<Track
             .and_then(|s| s.trim().replace(',', ".").parse::<f32>().ok())
             .filter(|b| (40.0..=250.0).contains(b));
         meta.key = tag.get_string(ItemKey::InitialKey).and_then(crate::key::parse_key);
+        meta.rating = tag.ratings().map(|r| r.rating() as u8).max();
     }
     Ok(meta)
+}
+
+/// lofty liest einen ID3-POPM-Wert 0 („nicht bewertet“, manche Player zählen dort nur die Wiedergaben)
+/// als einen Stern. Liegen nur solche POPM-Rahmen in der Datei, gilt sie als unbewertet. Nur für den
+/// seltenen Fall „1 Stern“ aufgerufen, darum darf es die Datei noch einmal zerlegen.
+fn id3_unrated(bytes: &[u8]) -> bool {
+    use lofty::id3::v2::Frame;
+    let Ok(file) = lofty::mpeg::MpegFile::read_from(&mut std::io::Cursor::new(bytes), lofty::config::ParseOptions::new()) else {
+        return false;
+    };
+    let Some(id3) = file.id3v2() else { return false };
+    let mut popm = id3.into_iter().filter_map(|f| match f {
+        Frame::Popularimeter(p) => Some(p.rating),
+        _ => None,
+    });
+    let first = popm.next();
+    first == Some(0) && popm.all(|r| r == 0)
+}
+
+/// Schreibt die Bewertung (1 bis 5 Sterne) in den Haupt-Tag der Datei, `None` entfernt sie. Andere Tags
+/// bleiben unverändert.
+pub fn write_rating(path: &Path, stars: Option<u8>) -> anyhow::Result<()> {
+    use lofty::tag::items::popularimeter::{Popularimeter, StarRating};
+    let mut file = lofty::read_from_path(path)?;
+    if file.primary_tag().is_none() {
+        if stars.is_none() {
+            return Ok(());
+        }
+        let kind = file.primary_tag_type();
+        file.insert_tag(Tag::new(kind));
+    }
+    let tag = file.primary_tag_mut().ok_or_else(|| anyhow::anyhow!("Kein Tag in dieser Datei möglich"))?;
+    tag.remove_key(ItemKey::Popularimeter);
+    let rating = match stars {
+        Some(1) => Some(StarRating::One),
+        Some(2) => Some(StarRating::Two),
+        Some(3) => Some(StarRating::Three),
+        Some(4) => Some(StarRating::Four),
+        Some(5..) => Some(StarRating::Five),
+        _ => None,
+    };
+    if let Some(r) = rating {
+        tag.insert_text(ItemKey::Popularimeter, Popularimeter::musicbee(r, 0).to_string());
+    }
+    file.save_to_path(path, WriteOptions::default())?;
+    Ok(())
 }
 
 /// Jahreszahl aus einer Datumsangabe wie „2021“, „2021-05-03“ oder „03.05.2021“.
@@ -359,6 +416,26 @@ mod tests {
         write_tags(&path, &TagFields { genre: String::new(), ..back }).unwrap();
         assert_eq!(read_tags(&path).unwrap().0.genre, "");
         assert_eq!(read_meta(&path).unwrap().title, "Ice Blue");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn writes_and_reads_back_ratings() {
+        let path = std::env::temp_dir().join(format!("fw-rating-{}.wav", std::process::id()));
+        write_wav(&path);
+        assert_eq!(read_meta(&path).unwrap().rating, None);
+        for stars in 1..=5 {
+            write_rating(&path, Some(stars)).unwrap();
+            assert_eq!(read_meta(&path).unwrap().rating, Some(stars));
+            let bytes = std::fs::read(&path).unwrap();
+            assert_eq!(read_meta_bytes(&bytes, &path).unwrap().0.rating, Some(stars));
+        }
+        // Andere Tags bleiben, die Bewertung lässt sich wieder entfernen
+        write_tags(&path, &TagFields { title: "Sterne".into(), ..Default::default() }).unwrap();
+        assert_eq!(read_meta(&path).unwrap().rating, Some(5));
+        write_rating(&path, None).unwrap();
+        let meta = read_meta(&path).unwrap();
+        assert_eq!((meta.title.as_str(), meta.rating), ("Sterne", None));
         std::fs::remove_file(&path).unwrap();
     }
 

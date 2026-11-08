@@ -51,6 +51,7 @@ impl FadeWerkDjApp {
             // Wirkt erst beim nächsten Start
             SettingsAction::OpenGl(on) => self.settings.opengl = on,
             SettingsAction::RecordHistory(on) => self.settings.record_history = on,
+            SettingsAction::RatingToFiles(on) => self.settings.rating_to_files = on,
             SettingsAction::KeepAwake(on) => self.settings.keep_awake = on,
             SettingsAction::StatusItem(i, on) => {
                 let s = &mut self.settings;
