@@ -293,7 +293,20 @@ impl FadeWerkDjApp {
                     self.beat_lock = None;
                 }
                 let p = self.decks[d].pitch_pct;
-                let step = AUTO_SYNC_RATE * dt;
+                // Passt der nächste Übergang nur mit dem jetzigen Pitch in den Takt, bleibt er bis dahin
+                if d == self.autofade.active && self.keep_pitch_for_beat() {
+                    continue;
+                }
+                // Sonst soll der Titel beim geplanten Übergang im natürlichen Tempo laufen: Damit rechnen Sortierung
+                // und Übergang im Takt. Bleibt dafür zu wenig Zeit, schneller zurück
+                let rate = match self.fade_plan() {
+                    FadePlan::Planned { rem, .. } if d == self.autofade.active => {
+                        let left = (rem - PITCH_ZERO_MARGIN_SECS).max(1.0) as f32;
+                        (p.abs() / left).clamp(AUTO_SYNC_RATE, AUTO_SYNC_RATE_MAX)
+                    }
+                    _ => AUTO_SYNC_RATE,
+                };
+                let step = rate * dt;
                 if p.abs() <= step {
                     self.decks[d].sync = None;
                     self.send_pitch(d, 0.0);

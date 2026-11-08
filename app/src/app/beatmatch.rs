@@ -8,6 +8,7 @@
 
 use super::*;
 use fw_library::Segment;
+use super::fade::FadePlan;
 
 /// Höchste Tempoanpassung für einen Übergang im Takt (ohne Keylock ändert sich die Tonhöhe mit).
 pub(super) const BEAT_MAX_PCT: f32 = 6.0;
@@ -80,8 +81,39 @@ impl FadeWerkDjApp {
         self.beat_check(old_at).ok()
     }
 
-    /// Wie `beat_plan`, ohne Takt aber mit dem Grund (für die Übergangsleiste).
+    /// Wie `beat_plan`, ohne Takt aber mit dem Grund (für die Übergangsleiste). Läuft der alte Titel allein und kommt
+    /// sein Pitch von Auto-Sync, gilt beim Übergang das natürliche Tempo (Auto-Sync bringt den Pitch bis dahin auf 0);
+    /// passt nur der aktuelle Pitch, hält Auto-Sync ihn stattdessen (`keep_pitch_for_beat`).
     pub(super) fn beat_check(&self, old_at: f64) -> Result<BeatPlan, BeatMiss> {
+        let (from, to) = (self.autofade.active, self.autofade.other());
+        let pitch = self.decks[from].pitch_pct as f64;
+        let returning = self.decks[from].sync.is_some() && !self.on_air(to);
+        if !returning {
+            return self.beat_check_at(old_at, pitch);
+        }
+        let natural = self.beat_check_at(old_at, 0.0);
+        match natural {
+            Err(BeatMiss::Tempo(_)) => self.beat_check_at(old_at, pitch).or(natural),
+            _ => natural,
+        }
+    }
+
+    /// Soll Auto-Sync den Pitch des alten Titels halten? Ja, wenn der nächste Übergang nur mit ihm im Takt laufen kann.
+    pub(super) fn keep_pitch_for_beat(&self) -> bool {
+        let Some(old_at) = self.planned_old_at() else { return false };
+        let pitch = self.decks[self.autofade.active].pitch_pct as f64;
+        pitch != 0.0 && matches!(self.beat_check_at(old_at, 0.0), Err(BeatMiss::Tempo(_))) && self.beat_check_at(old_at, pitch).is_ok()
+    }
+
+    /// Stelle im alten Titel, an der der geplante Übergang beginnt.
+    pub(super) fn planned_old_at(&self) -> Option<f64> {
+        let FadePlan::Planned { plan, .. } = self.fade_plan() else { return None };
+        let rate = 1.0 + self.decks[self.autofade.active].pitch_pct as f64 / 100.0;
+        Some(plan.end - plan.lead as f64 * rate)
+    }
+
+    /// Prüfung mit einem angenommenen Pitch des alten Titels beim Übergang.
+    fn beat_check_at(&self, old_at: f64, old_pitch: f64) -> Result<BeatPlan, BeatMiss> {
         if !self.auto_sync {
             return Err(BeatMiss::Off);
         }
@@ -96,7 +128,7 @@ impl FadeWerkDjApp {
         };
         let old = self.segment_at(from, old_at).ok_or_else(|| missing(from, true))?;
         let new = self.segment_at(to, self.ctl.shared.decks[to].position_secs()).ok_or_else(|| missing(to, false))?;
-        let theirs = old.bpm * (1.0 + self.decks[from].pitch_pct as f64 / 100.0);
+        let theirs = old.bpm * (1.0 + old_pitch / 100.0);
         let pct = |f: f64| (theirs / (new.bpm * f) - 1.0) * 100.0;
         let factor = [1.0, 2.0, 0.5].into_iter().min_by(|a, b| pct(*a).abs().total_cmp(&pct(*b).abs())).unwrap_or(1.0);
         let p = pct(factor) as f32;

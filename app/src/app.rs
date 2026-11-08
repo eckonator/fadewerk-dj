@@ -71,6 +71,10 @@ const END_WARNING_SECS: f64 = 15.0;
 const END_WARNING_FAST_SECS: f64 = 5.0;
 /// So schnell (Prozent Pitch pro Sekunde) läuft Auto-Sync nach der Überblendung auf 0 % zurück, unhörbar langsam.
 const AUTO_SYNC_RATE: f32 = 0.1;
+/// Steht der nächste Übergang früher an (Sprung nach vorn, kurzer Titel), läuft der Pitch schneller zurück, damit er
+/// `PITCH_ZERO_MARGIN_SECS` vorher bei 0 % ist – höchstens so schnell (Prozent pro Sekunde).
+const AUTO_SYNC_RATE_MAX: f32 = 1.0;
+const PITCH_ZERO_MARGIN_SECS: f64 = 3.0;
 /// So stark tritt ein Player zurück, solange nur der andere zu hören ist (Deckkraft der Grundfarbe darüber).
 const OFF_AIR_DIM: f32 = 0.38;
 
