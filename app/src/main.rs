@@ -27,6 +27,7 @@ mod devtools;
 mod diagnose;
 mod i18n;
 mod keynav;
+mod lock;
 mod meter;
 mod midi;
 mod mixer_ui;

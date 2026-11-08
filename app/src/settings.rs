@@ -142,6 +142,8 @@ pub struct Settings {
     pub update_check: Option<bool>,
     /// Titel online erkennen (AcoustID/MusicBrainz) erlaubt; vorher fragt das Tag-Fenster einmal nach.
     pub online_lookup: bool,
+    /// PIN zum Entsperren der Oberfläche (`lock::pin_hash`); `None` = Entsperren durch langes Drücken.
+    pub lock_pin: Option<String>,
     /// Gespielte Titel in der Historie aufzeichnen.
     pub record_history: bool,
     /// Zuordnungen von DJ-Controllern (MIDI), gelernt oder aus einem Profil.
@@ -234,6 +236,7 @@ impl Default for Settings {
             deck_height: 0.0,
             update_check: None,
             online_lookup: false,
+            lock_pin: None,
             record_history: true,
             rating_to_files: false,
             midi_bindings: Vec::new(),
@@ -381,6 +384,10 @@ impl Settings {
                 self.lite.no_waves = true;
             }
             self.lite_rev = 1;
+        }
+        // PIN nur in der Form von `lock::pin_hash`; sonst ließe sich die Oberfläche nie mehr entsperren
+        if self.lock_pin.as_ref().is_some_and(|h| h.len() != 16 || !h.bytes().all(|b| b.is_ascii_hexdigit())) {
+            self.lock_pin = None;
         }
         let d = Self::default();
         let fit = |v: f32, lo: f32, hi: f32, def: f32| if v.is_finite() { v.clamp(lo, hi) } else { def };

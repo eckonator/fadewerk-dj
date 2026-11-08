@@ -78,6 +78,7 @@ impl FadeWerkDjApp {
             StatusAction::StopRecording => self.mixer_action(MixerAction::Record, now),
             StatusAction::Fullscreen => self.toggle_fullscreen = true,
             StatusAction::Settings => self.settings_ui.toggle(),
+            StatusAction::Lock => self.lock_ui(now),
         }
     }
 
@@ -94,6 +95,7 @@ impl FadeWerkDjApp {
         add(tr("Live-Ansicht").into(), view, "", PaletteCmd::View(ViewMode::Live));
         add(tr("Automatik-Ansicht").into(), view, "", PaletteCmd::View(ViewMode::Auto));
         add(tr("Vollbild").into(), view, if mac { "⌃⌘F" } else { "F11" }, PaletteCmd::Fullscreen);
+        add(tr("Oberfläche sperren").into(), view, if mac { "⌘L" } else { "Strg+L" }, PaletteCmd::Lock);
         add(tr("Größer zoomen").into(), view, if mac { "⌘+" } else { "Strg++" }, PaletteCmd::Zoom(self.settings.ui_zoom + ZOOM_STEP));
         add(tr("Kleiner zoomen").into(), view, if mac { "⌘−" } else { "Strg+−" }, PaletteCmd::Zoom(self.settings.ui_zoom - ZOOM_STEP));
         add(tr("Zoom 100 %").into(), view, if mac { "⌘0" } else { "Strg+0" }, PaletteCmd::Zoom(1.0));
@@ -211,7 +213,16 @@ impl FadeWerkDjApp {
                 self.settings_action(SettingsAction::Lite(theme::Lite::NONE), ctx, now);
                 self.settings_action(SettingsAction::Platters(true), ctx, now);
             }
+            PaletteCmd::Lock => self.lock_ui(now),
         }
+    }
+
+    /// Oberfläche sperren (Taste in der Statuszeile, ⌘L, Befehlssuche). Offene Suche und Lernmodus enden.
+    pub(super) fn lock_ui(&mut self, now: f64) {
+        self.palette.open = false;
+        self.midi_learn = None;
+        self.lock.set_locked(true);
+        self.notify(tr("Oberfläche gesperrt. Die Musik läuft weiter."), now);
     }
 }
 
@@ -236,6 +247,7 @@ enum PaletteCmd {
     Lean,
     /// Volle Optik: alle Sparmaßnahmen aus und Plattenspieler an.
     FullLook,
+    Lock,
 }
 
 /// `FW_BATTERY=<Prozent>[,netz]` (nur Debug): Akkustand vortäuschen, um die Farben zu prüfen.

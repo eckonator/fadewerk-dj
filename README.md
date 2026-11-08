@@ -110,6 +110,10 @@ view; otherwise in the live view. The choice is remembered.
 - **Record the mix**: REC next to the master fader records what plays on master (before the master volume)
   as WAV (24 bit) or MP3 (320 kbit/s, LAME), by default into `Music/FadeWerk DJ Recordings`, file name with
   date and time. Format and folder under Settings → Audio.
+- **Lock the interface** while you step away: the lock in the status bar, ⌘L / Ctrl+L or the command
+  search dims the window and ignores mouse, keyboard, controller and closing, while music and auto-fade keep
+  running. Unlock by holding the lock for 2 seconds, or with an optional 4-digit PIN (Settings → General).
+  Forgot the PIN? Force-quit and restart; the lock does not survive a restart.
 - **Pre-listening** per deck, in the playlists and right in the folder browser. Headphones via split output
   (left master, right headphones), on outputs 3/4 of a multichannel interface, or on a separate second audio
   device. A **test tone** next to each device under Settings → Audio checks that the right output is chosen.

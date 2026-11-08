@@ -389,6 +389,8 @@ pub struct FadeWerkDjApp {
     settings_ui: SettingsUi,
     /// Befehlssuche (⌘K).
     palette: crate::palette::Palette,
+    /// Oberfläche gesperrt (DJ kurz weg); Musik läuft weiter.
+    lock: crate::lock::Lock,
     /// Rückfrage zu „Alles leeren“ ist offen.
     confirm_clear_all: bool,
     tag_editor: Option<TagEditor>,
@@ -585,6 +587,7 @@ impl FadeWerkDjApp {
             sketch: Sketches::default(),
             settings_ui: SettingsUi::default(),
             palette: Default::default(),
+            lock: crate::lock::Lock::install(&cc.egui_ctx),
             confirm_clear_all: false,
             tag_editor: None,
             tag_batch: None,
@@ -641,7 +644,10 @@ impl FadeWerkDjApp {
             app.settings.opengl = true;
             app.save_settings();
             match crate::self_update::restart_after_exit(crate::self_update::AFTER_OPENGL_FLAG) {
-                Ok(()) => cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                Ok(()) => {
+                    crate::lock::allow_close();
+                    cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::Close)
+                }
                 Err(e) => log::warn!("Neustart für OpenGL nicht möglich: {e}"),
             }
         }
@@ -739,6 +745,15 @@ impl FadeWerkDjApp {
         }
         // FW_CLEAR_ALL=1 (nur Debug): Rückfrage „Alles leeren“ gleich offen
         app.confirm_clear_all = cfg!(debug_assertions) && std::env::var_os("FW_CLEAR_ALL").is_some();
+        // FW_LOCK=1 bzw. FW_LOCK=pin (nur Debug): Oberfläche gleich gesperrt, mit „pin“ über den PIN 1234
+        if cfg!(debug_assertions)
+            && let Ok(v) = std::env::var("FW_LOCK")
+        {
+            if v == "pin" {
+                app.settings.lock_pin = Some(crate::lock::pin_hash("1234"));
+            }
+            app.lock.set_locked(true);
+        }
         // FW_STATUS=alle (nur Debug): Uhr, Akku, CPU, RAM und Temperatur in der Statuszeile
         if cfg!(debug_assertions) && std::env::var_os("FW_STATUS").is_some() {
             let st = &mut app.settings;
@@ -1028,6 +1043,10 @@ impl eframe::App for FadeWerkDjApp {
         self.last_logic = now;
 
         self.check_audio_errors(now);
+        // Gesperrt: Schließen des Fensters (rotes X, Alt+F4) verweigern
+        if self.lock.locked() && !crate::lock::close_allowed() && ctx.input(|i| i.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
         // Entwicklerschalter FW_FADE_AT=<s>: nach so vielen Sekunden FADE drücken (Übergang im Takt testen)
         if self.dev.fade_at.is_some_and(|at| now >= at) {
             self.dev.fade_at = None;
@@ -1257,6 +1276,7 @@ impl eframe::App for FadeWerkDjApp {
             let lost = &mut self.browser_window_lost;
             let pads = &mut detached_pads;
             let main_pos = ctx.input(|i| i.viewport().outer_rect).map(|r| r.min);
+            let locked = self.lock.locked();
                         let closed = ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("fw-ordner"), builder, |ui, _class| {
                 let wctx = ui.ctx().clone();
                 egui::CentralPanel::default().frame(browser_frame).show(ui, |ui| {
@@ -1286,6 +1306,11 @@ impl eframe::App for FadeWerkDjApp {
                     }
                 } else {
                     *lost = 0;
+                }
+                // Gesperrt: abgedunkelt, Schließen (= zurückholen) verweigert
+                if locked {
+                    crate::lock::shade(&wctx);
+                    return false;
                 }
                 info.close_requested()
             });
@@ -1557,6 +1582,10 @@ impl eframe::App for FadeWerkDjApp {
             }
         }
 
+        // Oberfläche sperren: ⌘L bzw. Strg+L (gesperrt kommen keine Tasten mehr an)
+        if ctx.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::L))) {
+            self.lock_ui(now);
+        }
         // Befehlssuche: ⌘K bzw. Strg+K
         if ctx.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::K))) {
             self.palette.open();
@@ -1702,6 +1731,11 @@ impl eframe::App for FadeWerkDjApp {
             self.settings_action(a, &ctx, now);
         }
         self.track_settings(now);
+
+        // Gesperrt: über allem abgedunkelt, in der Mitte die Plakette zum Entsperren
+        if self.lock.locked() && self.lock.show(&ctx, self.settings.lock_pin.as_deref(), now) {
+            self.notify(tr("Oberfläche entsperrt."), now);
+        }
 
         self.send_sketch_requests();
         self.dev.on_frame(&ctx);

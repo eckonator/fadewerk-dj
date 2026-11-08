@@ -175,6 +175,12 @@ impl FadeWerkDjApp {
                 self.notify(tr("Caches geleert."), now);
             }
             SettingsAction::ResetAll => self.reset_all(ctx, now),
+            SettingsAction::LockPin(pin) => {
+                let msg = if pin.is_some() { tr("PIN gespeichert. Entsperren jetzt nur noch mit diesem PIN.") } else { tr("PIN entfernt. Entsperren durch 2 Sekunden Drücken auf das Schloss.") };
+                self.settings.lock_pin = pin;
+                self.save_settings();
+                self.notify(msg, now);
+            }
             SettingsAction::FxResetAll => {
                 self.settings.fx_slots.clear();
                 for slot in 0..fw_engine::FX_SLOTS {
@@ -344,6 +350,7 @@ impl FadeWerkDjApp {
             while let Ok(p) = rx.try_recv() {
                 if p == Progress::Restart {
                     // Beim Schließen speichert `Drop` Einstellungen und Playlists; die neue Version startet danach
+                    crate::lock::allow_close();
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
                 self.update.progress = Some(p);
@@ -462,7 +469,10 @@ impl FadeWerkDjApp {
             log::warn!("Zurücksetzen unvollständig: {e}");
         }
         match crate::self_update::restart_after_exit(crate::self_update::AFTER_RESET_FLAG) {
-            Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Ok(()) => {
+                crate::lock::allow_close();
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close)
+            }
             Err(e) => {
                 log::warn!("Neustart nach dem Zurücksetzen nicht möglich: {e}");
                 self.notify(tr("Zurückgesetzt. Bitte FadeWerk DJ neu starten."), now);

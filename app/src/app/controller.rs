@@ -10,6 +10,10 @@ impl FadeWerkDjApp {
     pub(super) fn step_midi(&mut self, ctx: &egui::Context, now: f64) {
         self.midi.scan(now, ctx);
         let msgs = self.midi.poll(now);
+        // Gesperrte Oberfläche: auch der Controller bewirkt nichts (Nachrichten werden verworfen)
+        if self.lock.locked() {
+            return;
+        }
         if let Some(learn) = &mut self.midi_learn {
             for (dev, m) in &msgs {
                 learn.feed(dev, *m, now);

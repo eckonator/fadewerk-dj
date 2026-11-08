@@ -238,6 +238,7 @@ impl DevTools {
                 Ok(()) => log::info!("Bildschirmfoto gespeichert: {}", path.display()),
                 Err(e) => log::error!("Bildschirmfoto nicht gespeichert: {e}"),
             }
+            crate::lock::allow_close();
             ctx.send_viewport_cmd(ViewportCommand::Close);
         }
     }

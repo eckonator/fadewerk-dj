@@ -1461,7 +1461,7 @@ checksum = "af9673d8203fcb076b19dfd17e38b3d4ae9f44959416ea532ce72415a6020365"
 
 [[package]]
 name = "fadewerk-dj"
-version = "0.1.80"
+version = "0.1.81"
 dependencies = [
  "anyhow",
  "cpal",
@@ -1479,6 +1479,7 @@ dependencies = [
  "log",
  "midir",
  "mp3lame-encoder",
+ "objc2 0.6.5",
  "rfd",
  "rtrb",
  "serde",
@@ -1694,14 +1695,14 @@ dependencies = [
 
 [[package]]
 name = "fw-engine"
-version = "0.1.80"
+version = "0.1.81"
 dependencies = [
  "rtrb",
 ]
 
 [[package]]
 name = "fw-library"
-version = "0.1.80"
+version = "0.1.81"
 dependencies = [
  "anyhow",
  "crossbeam-channel",

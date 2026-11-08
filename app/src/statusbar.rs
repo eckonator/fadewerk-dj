@@ -57,6 +57,8 @@ pub enum StatusAction {
     StopRecording,
     Fullscreen,
     Settings,
+    /// Oberfläche sperren.
+    Lock,
 }
 
 pub fn show(ui: &mut egui::Ui, m: &StatusModel, out: &mut Vec<StatusAction>) {
@@ -71,6 +73,13 @@ pub fn show(ui: &mut egui::Ui, m: &StatusModel, out: &mut Vec<StatusAction>) {
             }
             if crate::browser::fullscreen_button_sized(ui, icon, m.fullscreen).clicked() {
                 out.push(StatusAction::Fullscreen);
+            }
+            // Wie Vollbild und ⚙: egui-Taste mit selbst gezeichnetem Schloss
+            let tip = if cfg!(target_os = "macos") { tr("Oberfläche sperren (⌘L)") } else { tr("Oberfläche sperren (Strg+L)") };
+            let lock = ui.add_sized(icon, egui::Button::new("")).on_hover_text(tip);
+            crate::lock::paint_icon(ui.painter(), lock.rect.center(), 15.0, ui.style().interact(&lock).fg_stroke.color, false);
+            if lock.clicked() {
+                out.push(StatusAction::Lock);
             }
             if let Some(secs) = m.recording
                 && recording(ui, secs).clicked()

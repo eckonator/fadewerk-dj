@@ -136,6 +136,8 @@ pub enum SettingsAction {
     ClearCaches { bpm: bool },
     /// Alles löschen (Einstellungen, Playlists, Historie, Caches) und neu starten.
     ResetAll,
+    /// PIN zum Entsperren der Oberfläche festlegen (als `lock::pin_hash`) bzw. entfernen.
+    LockPin(Option<String>),
 }
 
 pub struct SettingsCtx<'a> {
@@ -189,6 +191,8 @@ pub struct SettingsUi {
     confirm_reset: bool,
     /// Beim Leeren auch die ermittelten BPM löschen.
     clear_bpm: bool,
+    /// PIN wird gerade festgelegt: Eingabe und Wiederholung.
+    pin_edit: Option<(String, String)>,
 }
 
 const BUFFERS: [Option<u32>; 7] = [None, Some(64), Some(128), Some(256), Some(512), Some(1024), Some(2048)];
@@ -299,6 +303,7 @@ impl SettingsUi {
         match self.page {
             Page::General => {
                 general_page(ui, c, out);
+                self.lock_card(ui, c, out);
                 self.reset_card(ui, c, out);
             }
             Page::Audio => {
@@ -587,6 +592,76 @@ impl SettingsUi {
                     self.confirm_clear = true;
                 }
             });
+        });
+    }
+
+    /// Oberfläche sperren: PIN festlegen, ändern, entfernen; Hinweis für den vergessenen PIN.
+    fn lock_card(&mut self, ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction>) {
+        card(ui, tr("Oberfläche sperren"), |ui| {
+            let how = if cfg!(target_os = "macos") {
+                tr("Das Schloss oben rechts oder ⌘L sperrt Maus, Tastatur und Controller, etwa wenn du kurz weg bist. Die Musik und Auto-Fade laufen weiter.")
+            } else {
+                tr("Das Schloss oben rechts oder Strg+L sperrt Maus, Tastatur und Controller, etwa wenn du kurz weg bist. Die Musik und Auto-Fade laufen weiter.")
+            };
+            note(ui, how);
+            ui.add_space(2.0);
+            if let Some((first, second)) = &mut self.pin_edit {
+                let pin_field = |ui: &mut egui::Ui, label: &str, text: &mut String, focus: bool| {
+                    field(ui, label, "", |ui| {
+                        let r = ui.add(egui::TextEdit::singleline(text).password(true).char_limit(crate::lock::PIN_LEN).desired_width(90.0).min_size(vec2(0.0, BTN_H)));
+                        if focus {
+                            r.request_focus();
+                        }
+                        text.retain(|ch| ch.is_ascii_digit());
+                    });
+                };
+                let start = first.is_empty() && second.is_empty() && !ui.memory(|m| m.focused().is_some());
+                pin_field(ui, tr("Neuer PIN (4 Ziffern)"), first, start);
+                pin_field(ui, tr("PIN wiederholen"), second, false);
+                let valid = crate::lock::pin_valid(first);
+                let same = first == second;
+                if valid && second.len() == crate::lock::PIN_LEN && !same {
+                    ui.label(RichText::new(tr("Die beiden Eingaben stimmen nicht überein.")).size(12.0).color(theme::cue()));
+                }
+                let mut done = false;
+                ui.horizontal(|ui| {
+                    ui.add_space(FIELD_W + ui.spacing().item_spacing.x);
+                    if action(ui, tr("PIN speichern"), valid && same).clicked() {
+                        out.push(SettingsAction::LockPin(Some(crate::lock::pin_hash(first))));
+                        done = true;
+                    }
+                    if action(ui, tr("Abbrechen"), true).clicked() {
+                        done = true;
+                    }
+                });
+                if done {
+                    self.pin_edit = None;
+                }
+            } else {
+                let has_pin = c.settings.lock_pin.is_some();
+                field(ui, tr("PIN"), "", |ui| {
+                    let text = if has_pin { tr("festgelegt") } else { tr("keiner – entsperren durch 2 Sekunden Drücken auf das Schloss") };
+                    ui.add(egui::Label::new(RichText::new(text).size(12.5).color(theme::ink())).wrap());
+                });
+                ui.horizontal(|ui| {
+                    ui.add_space(FIELD_W + ui.spacing().item_spacing.x);
+                    if action(ui, if has_pin { tr("PIN ändern …") } else { tr("PIN festlegen …") }, true).clicked() {
+                        self.pin_edit = Some((String::new(), String::new()));
+                    }
+                    if has_pin && action(ui, tr("PIN entfernen"), true).clicked() {
+                        out.push(SettingsAction::LockPin(None));
+                    }
+                });
+            }
+            ui.add_space(2.0);
+            let forgot = if cfg!(target_os = "macos") {
+                tr("PIN vergessen? FadeWerk DJ über „Sofort beenden“ (Wahltaste+⌘+Esc) beenden und neu starten. Die Sperre gilt nicht über einen Neustart hinaus; danach hier einen neuen PIN festlegen.")
+            } else if cfg!(windows) {
+                tr("PIN vergessen? FadeWerk DJ im Task-Manager (Strg+Umschalt+Esc) beenden und neu starten. Die Sperre gilt nicht über einen Neustart hinaus; danach hier einen neuen PIN festlegen.")
+            } else {
+                tr("PIN vergessen? FadeWerk DJ über die Systemüberwachung oder „pkill fadewerk-dj“ beenden und neu starten. Die Sperre gilt nicht über einen Neustart hinaus; danach hier einen neuen PIN festlegen.")
+            };
+            note(ui, forgot);
         });
     }
 
