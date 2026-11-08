@@ -28,6 +28,7 @@
 //! - `FW_VIEW=live|auto` wählt die Arbeitsweise (Live oder Automatik).
 //! - `FW_PALETTE=<Text>` öffnet die Befehlssuche mit diesem Suchtext.
 //! - `FW_CLEAR_ALL=1` öffnet die Rückfrage „Alles leeren“ (in `app.rs`).
+//! - `FW_PERF=knapp|langsam|aussetzer|luft` zeigt gleich die Leistungsempfehlung mit erfundenen Messwerten.
 //! - `FW_SETTINGS=allgemein|audio|musik|effekte|aussehen|leistung|ueber|zuruecksetzen` öffnet das Einstellungsfenster auf dieser Seite.
 //! - `FW_POINTER=x,y` bewegt die Maus (in Punkten) nach Bild 100 dorthin, etwa um Tooltips zu sehen;
 //!   `FW_POINTER=x,y,2` klickt dort rechts (Kontextmenü), `FW_POINTER=x,y,1` links;
@@ -271,4 +272,21 @@ fn save_bmp(path: &Path, img: &ColorImage) -> std::io::Result<()> {
         f.write_all(&pad)?;
     }
     f.flush()
+}
+
+/// `FW_PERF=knapp|langsam|aussetzer|luft` (nur Debug): Leistungsempfehlung mit erfundenen Messwerten zeigen.
+pub fn fake_perf_advice() -> Option<crate::perf_probe::Advice> {
+    use crate::perf_probe::{Measured, advise};
+    use crate::theme::Lite;
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    let (ms, dropouts, lite, platters) = match std::env::var("FW_PERF").ok()?.as_str() {
+        "knapp" => (16.0, 0, Lite::NONE, true),
+        "langsam" => (60.0, 0, Lite::NONE, true),
+        "aussetzer" => (14.0, 3, Lite::NONE, true),
+        "luft" => (3.0, 0, Lite::ALL, false),
+        _ => return None,
+    };
+    advise(Measured { median_ms: ms, fps: (1000.0 / (2.0 * ms)).min(60.0), dropouts }, lite, platters, true)
 }

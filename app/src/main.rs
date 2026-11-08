@@ -45,6 +45,7 @@ mod self_update;
 mod tag_cache;
 mod online_tags;
 mod palette;
+mod perf_probe;
 mod tag_batch;
 mod tag_editor;
 mod session;

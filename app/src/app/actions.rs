@@ -369,13 +369,21 @@ impl FadeWerkDjApp {
                     self.lib.analyze(p, false, true);
                 }
             }
+            // Für beide Playlists (Übergänge laufen zwischen A und B), nur Titel ohne eigene Bereiche
             PlaylistAction::SuggestFades => {
-                let open: Vec<PathBuf> = (0..self.playlists[d].entries.len())
-                    .filter(|&i| self.playlists[d].fade(i).is_empty())
-                    .map(|i| self.playlists[d].entries[i].clone())
-                    .collect();
-                for p in open {
-                    self.queue_fade_suggestion(d, p, None, now);
+                let mut n = 0;
+                for list in 0..2 {
+                    let open: Vec<PathBuf> = (0..self.playlists[list].entries.len())
+                        .filter(|&i| self.playlists[list].fade(i).is_empty())
+                        .map(|i| self.playlists[list].entries[i].clone())
+                        .collect();
+                    n += open.len();
+                    for p in open {
+                        self.queue_fade_suggestion(list, p, None, now);
+                    }
+                }
+                if n == 0 {
+                    self.notify(tr("Alle Titel haben schon Fade-Bereiche."), now);
                 }
             }
             PlaylistAction::SetFade(i, fade) => {

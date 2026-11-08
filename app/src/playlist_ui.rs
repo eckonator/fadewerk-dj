@@ -283,12 +283,21 @@ pub fn show(
             if dups.clicked() {
                 out.push(PlaylistAction::RemoveDuplicates);
             }
+            // Wirkt auf beide Playlists: Übergänge laufen immer zwischen A und B
             let suggest = ui
-                .add_enabled(pl.entries.iter().enumerate().any(|(i, _)| pl.fade(i).is_empty()), egui::Button::new(tr("Fades vorschlagen")))
-                .on_hover_text(tr("Setzt für alle Titel ohne eigene Bereiche Ein- und Ausblendbereiche nach Beatraster und Lautstärke: Einstieg auf dem ersten Takt nach der Stille, Ausblenden vor dem Ausklang, so lang wie die Überblendzeit."));
+                .add_enabled(!pl.entries.is_empty(), egui::Button::new(tr("Fades vorschlagen (A und B)")))
+                .on_hover_text(tr("Setzt in beiden Playlists für alle Titel ohne eigene Bereiche Ein- und Ausblendbereiche nach Beatraster und Lautstärke: Einstieg auf dem ersten Takt nach der Stille, Ausblenden vor dem Ausklang, so lang wie die Überblendzeit."));
             if suggest.clicked() {
                 out.push(PlaylistAction::SuggestFades);
             }
+            // Rückfrage im Untermenü wie im Titelmenü: das betrifft alle Titel beider Playlists
+            ui.menu_button(tr("Alle Fade-Bereiche entfernen …"), |ui| {
+                ui.label(RichText::new(tr("Ein- und Ausblendbereiche aller Titel in beiden Playlists entfernen?")).color(theme::yellow()));
+                if ui.button(tr("Ja, alle entfernen")).clicked() {
+                    out.push(PlaylistAction::ResetAllFades);
+                    ui.close();
+                }
+            });
             let check = ui
                 .add_enabled(!pl.entries.is_empty(), egui::Button::new(tr("Playlist prüfen …")))
                 .on_hover_text(tr("Vor dem Auftritt: findet fehlende, verschobene, nicht abspielbare und noch nicht analysierte Titel."));

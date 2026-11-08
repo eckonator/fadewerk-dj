@@ -142,6 +142,8 @@ pub struct Settings {
     pub update_check: Option<bool>,
     /// Titel online erkennen (AcoustID/MusicBrainz) erlaubt; vorher fragt das Tag-Fenster einmal nach.
     pub online_lookup: bool,
+    /// Leistung schon einmal beim Abspielen gemessen (`perf_probe`); danach nur noch auf Knopfdruck.
+    pub perf_checked: bool,
     /// PIN zum Entsperren der Oberfläche (`lock::pin_hash`); `None` = Entsperren durch langes Drücken.
     pub lock_pin: Option<String>,
     /// Gespielte Titel in der Historie aufzeichnen.
@@ -236,6 +238,7 @@ impl Default for Settings {
             deck_height: 0.0,
             update_check: None,
             online_lookup: false,
+            perf_checked: false,
             lock_pin: None,
             record_history: true,
             rating_to_files: false,

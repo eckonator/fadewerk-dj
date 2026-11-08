@@ -138,10 +138,14 @@ pub enum SettingsAction {
     ResetAll,
     /// PIN zum Entsperren der Oberfläche festlegen (als `lock::pin_hash`) bzw. entfernen.
     LockPin(Option<String>),
+    /// Leistung beim Abspielen messen und eine Empfehlung zeigen.
+    MeasurePerf,
 }
 
 pub struct SettingsCtx<'a> {
     pub settings: &'a Settings,
+    /// Leistung wird gerade von Hand gemessen: Fortschritt 0…1.
+    pub perf_progress: Option<f32>,
     pub active_device: Option<&'a str>,
     /// Kennung des tatsächlich geöffneten Master-Geräts (auch bei „Systemstandard“).
     pub active_device_id: Option<&'a str>,
@@ -1322,6 +1326,18 @@ fn performance_page(ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<Settin
             out.push(SettingsAction::Lite(p));
             out.push(SettingsAction::Platters(p == Lite::NONE));
         }
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            let measuring = c.perf_progress.is_some();
+            if action(ui, tr("Leistung jetzt messen"), !measuring).clicked() {
+                out.push(SettingsAction::MeasurePerf);
+            }
+            let text = match c.perf_progress {
+                Some(p) => trf("Misst … {} % (nur solange Musik spielt)", &[&format!("{:.0}", p * 100.0)]),
+                None => tr("Misst 30 s beim Abspielen und schlägt passende Einstellungen vor.").to_owned(),
+            };
+            ui.label(RichText::new(text).size(11.5).color(theme::dim()));
+        });
     });
     let part = |ui: &mut egui::Ui, out: &mut Vec<SettingsAction>, label: &str, sub: &str, pick: fn(&mut Lite) -> &mut bool| {
         let mut parts = lite;

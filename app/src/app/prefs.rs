@@ -175,6 +175,11 @@ impl FadeWerkDjApp {
                 self.notify(tr("Caches geleert."), now);
             }
             SettingsAction::ResetAll => self.reset_all(ctx, now),
+            SettingsAction::MeasurePerf => {
+                self.perf = Some(crate::perf_probe::Probe::manual());
+                self.perf_advice = None;
+                self.notify(tr("Leistung wird gemessen, sobald Musik spielt (30 s)."), now);
+            }
             SettingsAction::LockPin(pin) => {
                 let msg = if pin.is_some() { tr("PIN gespeichert. Entsperren jetzt nur noch mit diesem PIN.") } else { tr("PIN entfernt. Beim Sperren wählst du jetzt ein Feld zum Entsperren.") };
                 self.settings.lock_pin = pin;
@@ -319,6 +324,107 @@ impl FadeWerkDjApp {
     /// Schwebende Leiste oben in der Mitte: einmalige Frage, ob nach Updates gesucht werden darf,
     /// bzw. Hinweis auf eine neue Version samt Update per Knopf. Schwebt über der Oberfläche, damit sich
     /// nichts verschiebt.
+    /// Leistungsmessung: Bildzeiten sammeln, solange ein Player spielt und die Oberfläche frei ist (der
+    /// Sperrbildschirm zeichnet weniger); am Ende Empfehlung bzw. bei manueller Messung immer ein Ergebnis.
+    pub(super) fn step_perf(&mut self, work: Option<f32>, dt: f32, now: f64) {
+        let playing = self.ctl.shared.decks.iter().any(|s| s.is_playing());
+        let Some(p) = &mut self.perf else { return };
+        if playing && !self.lock.active() {
+            p.frame(work.unwrap_or(0.0), dt as f64);
+        }
+        if !p.done() {
+            return;
+        }
+        let manual = p.manual;
+        let measured = p.result();
+        self.perf = None;
+        log::info!("Leistung gemessen: {:.1} ms je Bild, {:.0} Bilder/s, {} Aussetzer", measured.median_ms, measured.fps, measured.dropouts);
+        if !self.settings.perf_checked {
+            self.settings.perf_checked = true;
+            self.save_settings();
+        }
+        match crate::perf_probe::advise(measured, self.settings.lite, self.settings.platters, manual) {
+            Some(a) if a.verdict == crate::perf_probe::Verdict::Fast => {
+                let ms = format!("{:.0}", measured.median_ms.max(1.0));
+                self.notify(trf("Dieser Rechner schafft die Darstellung locker ({} ms je Bild).", &[&ms]), now);
+            }
+            Some(a) => self.perf_advice = Some(a),
+            None if manual => self.notify(tr("Die Einstellungen passen schon zu diesem Rechner."), now),
+            None => {}
+        }
+    }
+
+    /// Schwebende Leiste mit der Empfehlung (wie die Update-Frage, verschiebt nichts). Wartet, solange die
+    /// Update-Leiste steht oder die Oberfläche gesperrt ist.
+    pub(super) fn perf_ui(&mut self, ctx: &egui::Context, now: f64) {
+        use crate::perf_probe::Verdict;
+        let Some(a) = self.perf_advice else { return };
+        if self.update.ask || self.update.new_version.is_some() || self.lock.active() {
+            return;
+        }
+        let fps = format!("{:.0}", a.measured.fps);
+        let ms = format!("{:.0}", a.measured.median_ms.max(1.0));
+        let (head, sub) = match a.verdict {
+            Verdict::Slow if a.measured.dropouts > 0 => (
+                trf("Beim Abspielen gab es Ton-Aussetzer ({} Bilder/s, {} ms je Bild).", &[&fps, &ms]),
+                tr("Empfehlung: Sparsam, ohne Plattenspieler. Die Musik bekommt dann mehr Rechenzeit.").to_owned(),
+            ),
+            Verdict::Slow => (
+                trf("Dieser Rechner ist für die volle Optik zu langsam ({} Bilder/s, {} ms je Bild).", &[&fps, &ms]),
+                tr("Empfehlung: Sparsam, ohne Plattenspieler. Die Musik bekommt dann mehr Rechenzeit.").to_owned(),
+            ),
+            Verdict::Tight => (
+                trf("Dieser Rechner zeichnet die Oberfläche nur knapp ({} Bilder/s, {} ms je Bild).", &[&fps, &ms]),
+                tr("Empfehlung: Bildrate begrenzen, ohne Schatten, grobe Wellenformen, Frequenzbänder aus. Kaum zu sehen, entlastet auch den Ton.").to_owned(),
+            ),
+            Verdict::Room | Verdict::Fast => (
+                trf("Dieser Rechner hätte Luft für mehr ({} ms je Bild).", &[&ms]),
+                tr("Empfehlung: Volle Optik mit Plattenspielern.").to_owned(),
+            ),
+        };
+        let font = crate::fonts::bold(13.0);
+        let mut choice = None;
+        egui::Area::new(egui::Id::new("leistung")).anchor(Align2::CENTER_TOP, vec2(0.0, 12.0)).show(ctx, |ui| {
+            Frame::new()
+                .fill(theme::panel2())
+                .stroke(Stroke::new(1.0, theme::line()))
+                .corner_radius(CornerRadius::same(6))
+                .inner_margin(Margin::symmetric(14, 10))
+                .show(ui, |ui| {
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new(head).strong().color(theme::ink()));
+                            ui.label(RichText::new(sub).size(11.5).color(theme::dim()));
+                        });
+                        ui.add_space(10.0);
+                        if crate::hw::button(ui, vec2(100.0, 28.0), tr("Anwenden"), font.clone(), crate::hw::Look::Color(theme::play()), false, true).clicked() {
+                            choice = Some(0);
+                        }
+                        if crate::hw::button(ui, vec2(90.0, 28.0), tr("Ansehen"), font.clone(), crate::hw::Look::Plain, false, true).clicked() {
+                            choice = Some(1);
+                        }
+                        if crate::hw::button(ui, vec2(100.0, 28.0), tr("Nein, danke"), font.clone(), crate::hw::Look::Plain, false, true).clicked() {
+                            choice = Some(2);
+                        }
+                    });
+                });
+        });
+        match choice {
+            Some(0) => {
+                self.perf_advice = None;
+                self.settings_action(SettingsAction::Lite(a.lite), ctx, now);
+                self.settings_action(SettingsAction::Platters(a.platters), ctx, now);
+                self.notify(tr("Leistung angepasst. Ändern lässt es sich unter Einstellungen → Darstellung → Leistung."), now);
+            }
+            Some(1) => {
+                self.perf_advice = None;
+                self.settings_ui.open_at("leistung");
+            }
+            Some(_) => self.perf_advice = None,
+            None => {}
+        }
+    }
+
     pub(super) fn update_ui(&mut self, ctx: &egui::Context, now: f64) {
         use crate::self_update::Progress;
         if let Some(rx) = &self.update.rx

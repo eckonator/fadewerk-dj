@@ -393,6 +393,9 @@ pub struct FadeWerkDjApp {
     lock: crate::lock::Lock,
     /// Auto-Fade war beim Sperren aus und wurde für die Zeit der Sperre eingeschaltet.
     auto_for_lock: bool,
+    /// Laufende Leistungsmessung (beim ersten Abspielen bzw. von Hand) und die daraus folgende Empfehlung.
+    perf: Option<crate::perf_probe::Probe>,
+    perf_advice: Option<crate::perf_probe::Advice>,
     /// Rückfrage zu „Alles leeren“ ist offen.
     confirm_clear_all: bool,
     tag_editor: Option<TagEditor>,
@@ -591,6 +594,8 @@ impl FadeWerkDjApp {
             palette: Default::default(),
             lock: crate::lock::Lock::install(&cc.egui_ctx),
             auto_for_lock: false,
+            perf: None,
+            perf_advice: crate::devtools::fake_perf_advice(),
             confirm_clear_all: false,
             tag_editor: None,
             tag_batch: None,
@@ -748,6 +753,10 @@ impl FadeWerkDjApp {
         }
         // FW_CLEAR_ALL=1 (nur Debug): Rückfrage „Alles leeren“ gleich offen
         app.confirm_clear_all = cfg!(debug_assertions) && std::env::var_os("FW_CLEAR_ALL").is_some();
+        // Leistung beim ersten Abspielen messen (danach nur auf Knopfdruck)
+        if !app.settings.perf_checked {
+            app.perf = Some(crate::perf_probe::Probe::default());
+        }
         // FW_LOCK=1|wahl|pin (nur Debug): Oberfläche gleich gesperrt, mit „pin“ über den PIN 1234
         if cfg!(debug_assertions)
             && let Ok(v) = std::env::var("FW_LOCK")
@@ -1147,6 +1156,11 @@ impl eframe::App for FadeWerkDjApp {
             let errors = a.errors.load(std::sync::atomic::Ordering::Relaxed);
             if load > 1.0 || errors > self.status_errors {
                 self.dropout_until = now + DROPOUT_SHOW_SECS;
+                if let Some(p) = &mut self.perf
+                    && self.ctl.shared.decks.iter().any(|s| s.is_playing())
+                {
+                    p.dropout();
+                }
             }
             self.status_errors = errors;
             self.audio_load = load.max(self.audio_load * (-dt / 2.0).exp());
@@ -1576,6 +1590,8 @@ impl eframe::App for FadeWerkDjApp {
         }
 
         self.update_ui(&ctx, now);
+        self.step_perf(frame.info().cpu_usage, dt, now);
+        self.perf_ui(&ctx, now);
         self.learn_banner(&ctx, now);
 
         // Hinweise stehen in der Statuszeile; hier nur, wie lange sie gelten
@@ -1670,6 +1686,7 @@ impl eframe::App for FadeWerkDjApp {
             midi_error: self.midi.error.as_deref(),
             now,
             midi_learning: self.midi_learn.as_ref().filter(|l| !l.in_ui).and_then(|l| l.control),
+            perf_progress: self.perf.as_ref().filter(|p| p.manual).map(|p| p.progress()),
         };
         self.settings_ui.show(&ctx, &sctx, &mut settings_actions);
         if let Some(event) = self.tag_editor.as_mut().and_then(|ed| ed.show(&ctx, self.settings.online_lookup)) {
@@ -1748,6 +1765,7 @@ impl eframe::App for FadeWerkDjApp {
                 bands: &self.bands,
                 now: self.lock_now_playing(),
                 transition: &transition,
+                sys: &status_model.sys,
             };
             match self.lock.show(&ctx, self.settings.lock_pin.as_deref(), &view, now) {
                 crate::lock::Outcome::Unlocked => self.after_unlock(tr("Oberfläche entsperrt."), now),

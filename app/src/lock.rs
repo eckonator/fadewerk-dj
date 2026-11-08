@@ -197,6 +197,8 @@ pub struct LockView<'a> {
     pub bands: &'a Bands,
     pub now: Option<NowPlaying>,
     pub transition: &'a crate::mixer_ui::TransitionView,
+    /// Systemwerte, die auch die Statuszeile zeigt (Akku, CPU, RAM, Temperatur; Auswahl unter Aussehen).
+    pub sys: &'a crate::statusbar::SysLine,
 }
 
 /// Datum für den Sperrbildschirm, etwa „Sonntag, 8. November“.
@@ -555,7 +557,62 @@ fn stage(ui: &mut egui::Ui, screen: Rect, v: &LockView<'_>, with_pin: bool, now:
     ui.scope_builder(egui::UiBuilder::new().max_rect(trans), |ui| crate::mixer_ui::transition_bar(ui, v.transition, Some(row_h), false, true));
 
     let block = Rect::from_min_max(card.min, pos2(card.right(), meters.bottom()));
-    Stage { block, hint: pos2(cx, block.bottom() + 34.0 * k) }
+    // Wie Uhr und Marke auf der Bildschirmmitte (mit PIN steht darunter die ganze Gruppe)
+    let has_sys = sys_row(&p, pos2(mid, block.bottom() + 30.0 * k), k, v.sys, now);
+    Stage { block, hint: pos2(cx, block.bottom() + if has_sys { 66.0 } else { 34.0 } * k) }
+}
+
+/// Systemwerte unter den Gläsern, mittig: kleine Beschriftung, Wert in der Warnfarbe wie in der Statuszeile.
+/// Liefert, ob etwas gezeigt wurde.
+fn sys_row(p: &egui::Painter, c: Pos2, k: f32, s: &crate::statusbar::SysLine, now: f64) -> bool {
+    let normal = theme::ink().gamma_multiply(0.8);
+    let level = |v: f32, warn: f32, alarm: f32| if v >= alarm { theme::cue() } else if v >= warn { theme::yellow() } else { normal };
+    let mut items: Vec<(&str, String, Color32)> = Vec::new();
+    if let Some((cpu, audio, dropout)) = s.cpu {
+        if dropout {
+            items.push(("CPU", tr("AUSSETZER").to_owned(), theme::cue()));
+        } else {
+            let color = if audio >= 0.7 { theme::yellow() } else { level(cpu, 80.0, 95.0) };
+            items.push(("CPU", format!("{cpu:.0} %"), color));
+        }
+    }
+    if let Some(r) = s.ram {
+        items.push(("RAM", format!("{r:.0} %"), level(r, 85.0, 95.0)));
+    }
+    if let Some(t) = s.temp {
+        items.push(("TEMP", format!("{t:.0}°"), level(t, 80.0, 95.0)));
+    }
+    if let Some(b) = s.battery {
+        let color = match b.percent {
+            v if v >= 40.0 => theme::play(),
+            v if v >= 20.0 => theme::orange(),
+            _ => theme::cue(),
+        };
+        // Fast leer und nicht am Netz: blinkt wie in der Statuszeile
+        if b.plugged || b.percent >= 10.0 || now % 1.0 < 0.6 {
+            let value = if b.plugged { trf("{} % · Netz", &[&format!("{:.0}", b.percent)]) } else { format!("{:.0} %", b.percent) };
+            items.push((tr("AKKU"), value, color));
+        }
+    }
+    if items.is_empty() {
+        return false;
+    }
+    let (lf, vf) = (fonts::bold(10.0 * k), fonts::bold(15.0 * k));
+    let gap = 28.0 * k;
+    let laid: Vec<_> = items
+        .into_iter()
+        .map(|(label, value, color)| (p.layout_no_wrap(label.to_owned(), lf.clone(), theme::faint()), p.layout_no_wrap(value, vf.clone(), color), color))
+        .collect();
+    let total: f32 = laid.iter().map(|(l, v, _)| l.size().x + 6.0 * k + v.size().x).sum::<f32>() + gap * (laid.len() as f32 - 1.0);
+    let mut x = c.x - total / 2.0;
+    for (l, v, color) in laid {
+        // Beschriftung und Wert auf derselben Mittellinie
+        p.galley(pos2(x, c.y - l.size().y / 2.0), l.clone(), theme::faint());
+        x += l.size().x + 6.0 * k;
+        p.galley(pos2(x, c.y - v.size().y / 2.0), v.clone(), color);
+        x += v.size().x + gap;
+    }
+    true
 }
 
 /// 7-Segment-Text wie `hw::lcd_text`, die unbeleuchteten Segmente aber nur ganz schwach (groß wirken sie sonst wie
