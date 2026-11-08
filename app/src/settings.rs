@@ -144,6 +144,8 @@ pub struct Settings {
     pub online_lookup: bool,
     /// Gespielte Titel in der Historie aufzeichnen.
     pub record_history: bool,
+    /// Zuordnungen von DJ-Controllern (MIDI), gelernt oder aus einem Profil.
+    pub midi_bindings: Vec<crate::midi::Binding>,
     /// Eigene Bewertungen auch in die Tags der Dateien schreiben (gemerkt werden sie immer in `bewertung.json`).
     pub rating_to_files: bool,
     /// Bildschirm und Rechner nicht in den Ruhezustand gehen lassen, solange Musik spielt.
@@ -234,6 +236,7 @@ impl Default for Settings {
             online_lookup: false,
             record_history: true,
             rating_to_files: false,
+            midi_bindings: Vec::new(),
             keep_awake: true,
             limiter: true,
             mic_device: None,

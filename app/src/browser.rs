@@ -1613,11 +1613,12 @@ impl Browser {
                 .iter()
                 .map(|r| {
                     let m = meta_for(ctx.metas, &r.path, entry_of(r));
-                    let listens = match ctx.popularity.of(&r.path, &m) {
-                        crate::popularity::Pop::Found { listens, .. } => Some(listens),
+                    let pop = ctx.popularity.of(&r.path, &m);
+                    let popularity = match pop {
+                        crate::popularity::Pop::Found { listens, .. } => pop.share().map(|s| (s, listens)),
                         _ => None,
                     };
-                    let known = Known { bpm: ctx.bpms.get(&r.path).copied(), key: key_of(ctx.metas, ctx.keys, &r.path), stars: ctx.ratings.stars(&r.path, Some(&m)), plays: ctx.plays.get(&r.path).copied().unwrap_or(0), listens };
+                    let known = Known { bpm: ctx.bpms.get(&r.path).copied(), key: key_of(ctx.metas, ctx.keys, &r.path), stars: ctx.ratings.stars(&r.path, Some(&m)), plays: ctx.plays.get(&r.path).copied().unwrap_or(0), popularity };
                     sort_key(col, &m, &r.path, dirs, known)
                 })
                 .collect();
@@ -2181,12 +2182,12 @@ struct Known {
     key: Option<Camelot>,
     stars: u8,
     plays: u32,
-    /// Wiedergaben bei ListenBrainz.
-    listens: Option<u64>,
+    /// Beliebtheit: Länge des Balkens (Anteil am größten Hit der Gruppe) und Wiedergaben bei ListenBrainz.
+    popularity: Option<(f32, u64)>,
 }
 
 fn sort_key(col: TrackColumn, m: &TrackMeta, path: &Path, dirs: &[PathBuf], known: Known) -> Option<SortKey> {
-    let Known { bpm, key, stars, plays, listens } = known;
+    let Known { bpm, key, stars, plays, popularity } = known;
     let text = |t: &str| (!t.trim().is_empty()).then(|| SortKey::Text(fold(t)));
     match col {
         TrackColumn::Title => text(&m.title),
@@ -2204,8 +2205,9 @@ fn sort_key(col: TrackColumn, m: &TrackMeta, path: &Path, dirs: &[PathBuf], know
         // Unbewertete und nie gespielte Titel stehen wie leere Werte am Ende
         TrackColumn::Rating => (stars > 0).then_some(SortKey::Number(stars as f64)),
         TrackColumn::Plays => (plays > 0).then_some(SortKey::Number(plays as f64)),
-        // Nach absoluten Wiedergaben: so stehen auch auf Samplern die größten Hits oben
-        TrackColumn::Popularity => listens.map(|n| SortKey::Number(n as f64)),
+        // Wie der Balken (Anteil am größten Hit des Albums bzw. Ordners), bei gleichem Balken nach Wiedergaben;
+        // so werden die Balken absteigend von oben nach unten kürzer
+        TrackColumn::Popularity => popularity.map(|(share, n)| SortKey::Number(share as f64 * 1e12 + n as f64)),
         TrackColumn::Time => (m.duration_secs > 0.0).then_some(SortKey::Number(m.duration_secs)),
     }
 }

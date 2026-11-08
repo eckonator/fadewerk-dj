@@ -31,6 +31,7 @@ use crate::theme;
 mod actions;
 mod check;
 mod commands;
+mod controller;
 mod fade;
 mod library;
 mod output;
@@ -420,6 +421,9 @@ pub struct FadeWerkDjApp {
     plays: (HashMap<PathBuf, u32>, u64),
     /// Eigene Bewertungen (`bewertung.json`).
     ratings: crate::ratings::Ratings,
+    /// DJ-Controller (MIDI) und laufendes Lernen.
+    midi: crate::midi::Midi,
+    midi_learn: Option<crate::midi::Learn>,
     /// Beliebtheit bei ListenBrainz (`beliebtheit.json`) und Titel, deren Tags dafür noch gelesen werden
     /// (mit Startzeit).
     popularity: crate::popularity::Popularity,
@@ -590,6 +594,8 @@ impl FadeWerkDjApp {
             history: History::default(),
             plays: (HashMap::new(), u64::MAX),
             ratings: Default::default(),
+            midi: Default::default(),
+            midi_learn: None,
             popularity: Default::default(),
             popularity_wait: None,
             play_trackers: Default::default(),
@@ -844,6 +850,10 @@ impl FadeWerkDjApp {
                     app.ratings.set(t, [5, 3, 0, 4, 2, 0, 5, 1][i % 8], None);
                 }
             }
+            // FW_MIDI_LEARN=1: Lernmodus für Controller in der Oberfläche
+            if std::env::var_os("FW_MIDI_LEARN").is_some() {
+                app.start_learn(None, 0.0);
+            }
             // FW_POPULARITY=1: Beliebtheit der Demo-Titel abfragen (echte Abfrage bei MusicBrainz/ListenBrainz)
             if std::env::var_os("FW_POPULARITY").is_some() {
                 app.browser_action(BrowserAction::Popularity(tracks.clone()), 0.0);
@@ -993,6 +1003,7 @@ impl eframe::App for FadeWerkDjApp {
         self.last_logic = now;
 
         self.check_audio_errors(now);
+        self.step_midi(ctx, now);
         self.poll_library(ctx, now);
         self.poll_fx(now);
         self.poll_fade_preview(now);
@@ -1458,23 +1469,34 @@ impl eframe::App for FadeWerkDjApp {
             self.save_due = Some(now + 1.0);
         }
 
+        // Lernmodus für Controller: Esc beendet; angeklickte Bedienelemente werden zum Lernziel statt ausgeführt
+        if self.midi_learn.as_ref().is_some_and(|l| l.in_ui) && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.midi_learn = None;
+            self.notify(tr("Zuweisen beendet."), now);
+        }
         for (d, acts) in vout.deck.into_iter().enumerate() {
             for a in acts {
-                self.deck_action(d, a, now);
+                if !self.learn_deck(d, &a) {
+                    self.deck_action(d, a, now);
+                }
             }
         }
         for (d, item) in vout.drops {
             self.drop_on_deck(d, item, now);
         }
         for a in vout.mixer {
-            self.mixer_action(a, now);
+            if !self.learn_mixer(&a) {
+                self.mixer_action(a, now);
+            }
         }
         if let Some(t) = vout.center_tab {
             self.settings.center_tab = t.map(|t| t.key().to_owned());
             self.save_settings();
         }
         for a in vout.fade {
-            self.fade_action(a, now);
+            if !self.learn_fade(&a) {
+                self.fade_action(a, now);
+            }
         }
         for (d, acts) in vout.playlist.into_iter().enumerate() {
             for a in acts {
@@ -1488,6 +1510,7 @@ impl eframe::App for FadeWerkDjApp {
         }
 
         self.update_ui(&ctx, now);
+        self.learn_banner(&ctx, now);
 
         // Hinweise stehen in der Statuszeile; hier nur, wie lange sie gelten
         if let Some((text, until)) = self.notice.clone() {
@@ -1572,6 +1595,11 @@ impl eframe::App for FadeWerkDjApp {
             cache_sizes: self.caches.sizes,
             playing: self.ctl.shared.decks.iter().any(|s| s.is_playing()),
             compact: self.compact(),
+            midi_ports: &self.midi.ports,
+            midi_activity: &self.midi.activity,
+            midi_error: self.midi.error.as_deref(),
+            now,
+            midi_learning: self.midi_learn.as_ref().filter(|l| !l.in_ui).and_then(|l| l.control),
         };
         self.settings_ui.show(&ctx, &sctx, &mut settings_actions);
         if let Some(event) = self.tag_editor.as_mut().and_then(|ed| ed.show(&ctx, self.settings.online_lookup)) {

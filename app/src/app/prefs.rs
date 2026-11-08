@@ -52,6 +52,17 @@ impl FadeWerkDjApp {
             SettingsAction::OpenGl(on) => self.settings.opengl = on,
             SettingsAction::RecordHistory(on) => self.settings.record_history = on,
             SettingsAction::RatingToFiles(on) => self.settings.rating_to_files = on,
+            SettingsAction::MidiLearn(c) => self.start_learn(Some(c), now),
+            SettingsAction::MidiLearnUi => self.start_learn(None, now),
+            SettingsAction::MidiCancelLearn => self.midi_learn = None,
+            SettingsAction::MidiUnbind(c) => self.settings.midi_bindings.retain(|b| b.control != c),
+            SettingsAction::MidiInvert(c) => {
+                let on = !self.settings.midi_bindings.iter().any(|b| b.control == c && b.invert);
+                for b in self.settings.midi_bindings.iter_mut().filter(|b| b.control == c) {
+                    b.invert = on;
+                }
+            }
+            SettingsAction::MidiClear => self.settings.midi_bindings.clear(),
             SettingsAction::KeepAwake(on) => self.settings.keep_awake = on,
             SettingsAction::StatusItem(i, on) => {
                 let s = &mut self.settings;

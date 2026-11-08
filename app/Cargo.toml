@@ -28,6 +28,8 @@ keepawake = "0.6"
 # Statuszeile: CPU, Arbeitsspeicher, Temperatur (MIT) und Akku (ISC); app/src/sysmon.rs
 sysinfo = { version = "0.40", default-features = false, features = ["system", "component"] }
 starship-battery = "0.12"
+# DJ-Controller über MIDI (MIT); app/src/midi.rs
+midir = "0.11"
 
 # Andere Programme im Lautstärkemixer stumm schalten (app/src/quiet.rs); kommt ohnehin über cpal mit
 [target.'cfg(windows)'.dependencies]

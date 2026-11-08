@@ -27,6 +27,7 @@ mod diagnose;
 mod i18n;
 mod keynav;
 mod meter;
+mod midi;
 mod mixer_ui;
 mod plate;
 mod playlist;

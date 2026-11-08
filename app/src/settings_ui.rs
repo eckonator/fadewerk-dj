@@ -18,13 +18,15 @@ enum Page {
     /// Titel online erkennen, Caches.
     Music,
     Effects,
+    /// DJ-Controller (MIDI): Geräte und Zuordnungen.
+    Controller,
     /// Aussehen und Leistung, umgeschaltet über `SettingsUi::performance`.
     Display,
     About,
 }
 
 impl Page {
-    const ALL: [Page; 6] = [Page::General, Page::Audio, Page::Music, Page::Effects, Page::Display, Page::About];
+    const ALL: [Page; 7] = [Page::General, Page::Audio, Page::Music, Page::Effects, Page::Controller, Page::Display, Page::About];
 
     fn name(self) -> &'static str {
         match self {
@@ -32,6 +34,7 @@ impl Page {
             Page::Audio => tr("Audio"),
             Page::Music => tr("Musik"),
             Page::Effects => tr("Effekte"),
+            Page::Controller => tr("Controller"),
             Page::Display => tr("Darstellung"),
             Page::About => tr("Über"),
         }
@@ -86,6 +89,14 @@ pub enum SettingsAction {
     CheckUpdateNow,
     RecordHistory(bool),
     RatingToFiles(bool),
+    /// Controller: für eine Funktion lernen, Lernmodus in der Oberfläche, Lernen abbrechen, Zuordnung entfernen
+    /// bzw. umkehren, alle löschen.
+    MidiLearn(crate::midi::Control),
+    MidiLearnUi,
+    MidiCancelLearn,
+    MidiUnbind(crate::midi::Control),
+    MidiInvert(crate::midi::Control),
+    MidiClear,
     RecordFormat(crate::recorder::RecordFormat),
     /// Ordner für Aufnahmen wählen (öffnet den Dialog).
     RecordPickDir,
@@ -146,6 +157,13 @@ pub struct SettingsCtx<'a> {
     pub playing: bool,
     /// Kompakte Ansicht aktiv (auch automatisch)? Dann gibt es keine Plattenteller.
     pub compact: bool,
+    /// Gefundene MIDI-Eingänge, wann zuletzt etwas von ihnen kam, und die Uhr dazu.
+    pub midi_ports: &'a [String],
+    pub midi_activity: &'a std::collections::HashMap<String, f64>,
+    pub midi_error: Option<&'a str>,
+    pub now: f64,
+    /// Funktion, für die gerade gelernt wird.
+    pub midi_learning: Option<crate::midi::Control>,
 }
 
 #[derive(Default)]
@@ -166,6 +184,8 @@ pub struct SettingsUi {
     confirm_fx_reset: bool,
     /// „Caches leeren“ bzw. „Zurücksetzen“ wartet auf Bestätigung.
     confirm_clear: bool,
+    /// „Alle Zuordnungen löschen“ (Controller) wartet auf Bestätigung.
+    confirm_midi_clear: bool,
     confirm_reset: bool,
     /// Beim Leeren auch die ermittelten BPM löschen.
     clear_bpm: bool,
@@ -187,6 +207,7 @@ impl SettingsUi {
             "musik" => Page::Music,
             "ueber" => Page::About,
             "effekte" => Page::Effects,
+            "controller" => Page::Controller,
             _ => Page::General,
         };
     }
@@ -286,6 +307,7 @@ impl SettingsUi {
             }
             Page::Music => self.music_page(ui, c, out),
             Page::Effects => self.effects_page(ui, c, out),
+            Page::Controller => self.controller_page(ui, c, out),
             Page::Display if self.performance => performance_page(ui, c, out),
             Page::Display => look_page(ui, c, out),
             Page::About => self.about_page(ui, out),
@@ -293,6 +315,121 @@ impl SettingsUi {
         if self.page != Page::About {
             ui.label(RichText::new(tr("Einstellungen werden automatisch gespeichert.")).size(11.5).color(theme::faint()));
         }
+    }
+
+    /// DJ-Controller: gefundene Geräte mit Aktivitäts-LED, Zuordnungen je Funktion mit „Lernen“.
+    fn controller_page(&mut self, ui: &mut egui::Ui, c: &SettingsCtx<'_>, out: &mut Vec<SettingsAction>) {
+        use crate::midi::{Control, Group};
+        card(ui, tr("Geräte"), |ui| {
+            if let Some(e) = c.midi_error {
+                note(ui, &trf("MIDI ist nicht verfügbar: {}", &[&e]));
+            } else if c.midi_ports.is_empty() {
+                note(ui, tr("Kein MIDI-Gerät gefunden. Controller per USB anschließen; er erscheint hier nach wenigen Sekunden."));
+            }
+            for port in c.midi_ports {
+                let lit = c.midi_activity.get(port).is_some_and(|t| c.now - t < crate::midi::ACTIVITY_SECS);
+                if c.midi_activity.get(port).is_some_and(|t| c.now - t < 1.0) {
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(60));
+                }
+                ui.horizontal(|ui| {
+                    let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
+                    let color = if lit { theme::play() } else { theme::faint().gamma_multiply(0.4) };
+                    ui.painter().circle_filled(r.center(), 4.0, color);
+                    ui.label(RichText::new(port).size(13.0).color(theme::ink()));
+                    let n = c.settings.midi_bindings.iter().filter(|b| &b.device == port).count();
+                    if n > 0 {
+                        ui.label(RichText::new(trf("{} Zuordnungen", &[&n])).size(11.5).color(theme::dim()));
+                    }
+                });
+            }
+            ui.add_space(4.0);
+            note(ui, tr("Die Soundkarte eines Controllers wählst du unter Audio als Master- bzw. Kopfhörerausgang."));
+        });
+
+        card(ui, tr("Zuordnung"), |ui| {
+            note(ui, tr("„Lernen“ klicken und dann am Controller die Taste drücken oder den Regler bewegen. Schneller: „In der Oberfläche zuweisen“, dann ein Bedienelement anklicken und am Controller bewegen, beliebig oft hintereinander; Esc beendet. Fader übernehmen erst, wenn sie den Wert in FadeWerk DJ überstreichen, damit nichts springt."));
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if action(ui, tr("In der Oberfläche zuweisen …"), c.midi_error.is_none()).clicked() {
+                    out.push(SettingsAction::MidiLearnUi);
+                }
+                if self.confirm_midi_clear {
+                    ui.label(RichText::new(tr("Alle Zuordnungen löschen?")).color(theme::yellow()));
+                    if action(ui, tr("Ja, löschen"), true).clicked() {
+                        out.push(SettingsAction::MidiClear);
+                        self.confirm_midi_clear = false;
+                    }
+                    if action(ui, tr("Abbrechen"), true).clicked() {
+                        self.confirm_midi_clear = false;
+                    }
+                } else if action(ui, tr("Alle löschen …"), !c.settings.midi_bindings.is_empty()).clicked() {
+                    self.confirm_midi_clear = true;
+                }
+            });
+            let mut group = None;
+            for control in Control::all() {
+                let g = control.group();
+                if group != Some(g) {
+                    group = Some(g);
+                    ui.add_space(6.0);
+                    let title = match g {
+                        Group::Deck(d) => trf("Player {}", &[&crate::theme::deck_letter(d)]),
+                        Group::Mixer => tr("Mixer").to_owned(),
+                        Group::AutoFade => tr("Auto-Fade").to_owned(),
+                        Group::Pads => tr("Effekt-Pads").to_owned(),
+                    };
+                    ui.label(RichText::new(title.to_uppercase()).size(11.0).color(theme::dim()));
+                }
+                let bound: Vec<&crate::midi::Binding> = c.settings.midi_bindings.iter().filter(|b| b.control == control).collect();
+                let learning = c.midi_learning == Some(control);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().interact_size.y = BTN_H;
+                    let left = |ui: &mut egui::Ui, w: f32, label: egui::Label| {
+                        ui.allocate_ui_with_layout(vec2(w, BTN_H), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.set_min_width(w);
+                            ui.add(label)
+                        })
+                        .inner
+                    };
+                    left(ui, FIELD_W, egui::Label::new(RichText::new(control.name()).size(13.0).color(theme::ink())).truncate());
+                    let text = if learning {
+                        tr("Jetzt am Controller bewegen …").to_owned()
+                    } else if bound.is_empty() {
+                        "–".to_owned()
+                    } else {
+                        bound.iter().map(|b| b.input.label()).collect::<Vec<_>>().join(", ")
+                    };
+                    let color = if learning { theme::select_accent() } else if bound.is_empty() { theme::faint() } else { theme::dim() };
+                    let label = left(ui, 190.0, egui::Label::new(RichText::new(text).size(12.5).color(color)).truncate());
+                    if !bound.is_empty() {
+                        label.on_hover_text(bound.iter().map(|b| b.device.as_str()).collect::<Vec<_>>().join(", "));
+                    }
+                    let look = crate::hw::Look::Color(theme::select_accent());
+                    let r = if learning { action_look(ui, tr("Abbrechen"), look, true) } else { action(ui, tr("Lernen"), c.midi_error.is_none()) };
+                    if r.clicked() {
+                        out.push(if learning { SettingsAction::MidiCancelLearn } else { SettingsAction::MidiLearn(control) });
+                    }
+                    if !bound.is_empty() {
+                        if control.is_fader() {
+                            let inverted = bound.iter().any(|b| b.invert);
+                            let r = action_look(ui, if inverted { tr("umgekehrt") } else { tr("umkehren") }, if inverted { look } else { crate::hw::Look::Plain }, true);
+                            if r.on_hover_text(tr("Regler andersherum, etwa Pitch-Fader: oben = langsamer")).clicked() {
+                                out.push(SettingsAction::MidiInvert(control));
+                            }
+                        }
+                        let remove = crate::hw::custom_button(ui, vec2(BTN_H, BTN_H), crate::hw::Look::Plain, false, true, |p, r, color| {
+                            let r = r.shrink(8.0);
+                            let st = Stroke::new(1.6, color);
+                            p.line_segment([r.left_top(), r.right_bottom()], st);
+                            p.line_segment([r.right_top(), r.left_bottom()], st);
+                        });
+                        if remove.on_hover_text(tr("Zuordnung entfernen")).clicked() {
+                            out.push(SettingsAction::MidiUnbind(control));
+                        }
+                    }
+                });
+            }
+        });
     }
 
     /// Effekt-Pads: je Pad Symbol, Name und Datei, Anhören und Zurücksetzen auf den mitgelieferten Klang.
@@ -516,7 +653,7 @@ impl SettingsUi {
         });
 
         card(ui, tr("Verwendete Fremdbestandteile"), |ui| {
-            note(ui, tr("Schriften Chakra Petch und DSEG (SIL Open Font License 1.1), egui und eframe (MIT/Apache-2.0), cpal (Apache-2.0), Symphonia (MPL-2.0), lofty (MIT/Apache-2.0), rusty-chromaprint (MIT), LAME für MP3-Aufnahmen (LGPL) und weitere Rust-Bibliotheken. Titelerkennung über AcoustID und MusicBrainz (Daten CC0), Cover über das Cover Art Archive. Die vollständige Liste liegt jedem Release als THIRD-PARTY-LICENSES.yml bei."));
+            note(ui, tr("Schriften Chakra Petch und DSEG (SIL Open Font License 1.1), egui und eframe (MIT/Apache-2.0), cpal (Apache-2.0), Symphonia (MPL-2.0), lofty (MIT/Apache-2.0), rusty-chromaprint (MIT), midir für DJ-Controller (MIT), LAME für MP3-Aufnahmen (LGPL) und weitere Rust-Bibliotheken. Titelerkennung über AcoustID und MusicBrainz (Daten CC0), Beliebtheit über ListenBrainz (CC0), Cover über das Cover Art Archive. Die vollständige Liste liegt jedem Release als THIRD-PARTY-LICENSES.yml bei."));
         });
 
         card(ui, tr("Lizenztexte"), |ui| {
@@ -768,6 +905,13 @@ fn paint_page_icon(p: &egui::Painter, r: Rect, page: Page, color: Color32) {
             p.line_segment([at(0.44, 0.78), at(0.44, 0.08)], st);
             p.line_segment([at(0.44, 0.08), at(0.85, 0.25)], st);
             p.line_segment([at(0.85, 0.25), at(0.85, 0.42)], st);
+        }
+        // Controller: Gehäuse mit zwei Tellern und Fader
+        Page::Controller => {
+            p.rect_stroke(Rect::from_min_max(at(0.0, 0.15), at(1.0, 0.85)), 2.0, st, egui::StrokeKind::Inside);
+            p.circle_stroke(at(0.27, 0.5), r.width() * 0.17, st);
+            p.circle_stroke(at(0.73, 0.5), r.width() * 0.17, st);
+            p.line_segment([at(0.5, 0.3), at(0.5, 0.7)], st);
         }
         // Vier Pads
         Page::Effects => {

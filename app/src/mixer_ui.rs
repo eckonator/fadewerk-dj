@@ -222,14 +222,22 @@ fn eq_outer_inset(w: f32) -> f32 {
 }
 
 /// EQ-Reihe über der Pegelbrücke: links A, rechts B, je Höhen, Mitten, Bässe mit Kill-Taste darunter.
+/// Stellung eines EQ-Knopfs (0 bis 1) zu dB und zurück. 0 dB steht auf 12 Uhr: die linke Hälfte des Wegs senkt
+/// bis −26 dB, die rechte hebt bis +6 dB.
+pub fn eq_to_norm(db: f32) -> f32 {
+    if db <= 0.0 { 0.5 * (1.0 - db / settings::EQ_MIN_DB) } else { 0.5 + 0.5 * db / settings::EQ_MAX_DB }
+}
+
+pub fn eq_from_norm(n: f32) -> f32 {
+    if n <= 0.5 { settings::EQ_MIN_DB * (1.0 - 2.0 * n) } else { settings::EQ_MAX_DB * (2.0 * n - 1.0) }
+}
+
 fn eq_strip(ui: &mut egui::Ui, m: &MixerModel<'_>, out: &mut Vec<MixerAction>) {
     let w = ui.available_width();
     let (d, group_w, slot) = eq_geometry(w);
     let (label_h, kill_h) = (12.0, 15.0);
     let (rect, _) = ui.allocate_exact_size(vec2(w, label_h + d + 3.0 + kill_h), Sense::hover());
-    // 0 dB steht auf 12 Uhr: die linke Hälfte des Wegs senkt bis −26 dB, die rechte hebt bis +6 dB
-    let to_norm = |db: f32| if db <= 0.0 { 0.5 * (1.0 - db / settings::EQ_MIN_DB) } else { 0.5 + 0.5 * db / settings::EQ_MAX_DB };
-    let to_db = |n: f32| if n <= 0.5 { settings::EQ_MIN_DB * (1.0 - 2.0 * n) } else { settings::EQ_MAX_DB * (2.0 * n - 1.0) };
+    let (to_norm, to_db) = (eq_to_norm, eq_from_norm);
     let knob_y = rect.top() + label_h + d / 2.0;
     let p = ui.painter().clone();
     p.text(pos2(rect.center().x, knob_y), Align2::CENTER_CENTER, "EQ", fonts::bold(11.0), theme::dim());
