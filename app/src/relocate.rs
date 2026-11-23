@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
 
 /// Neue Orte fehlender Dateien: alter Pfad → gefundener Pfad.
@@ -41,6 +41,38 @@ pub fn find_moved(missing: &[(PathBuf, Option<u64>)], roots: &[PathBuf]) -> Hash
         }
     }
     moved
+}
+
+/// Nächster noch vorhandener Ordner über `path`, in dem sich das Suchen lohnt (nicht `/`, `/Volumes` oder der
+/// Benutzerordner selbst): bei einem umbenannten Albumordner liegt die Datei meist darunter.
+fn nearest_dir(path: &Path) -> Option<PathBuf> {
+    let home = dirs::home_dir();
+    path.ancestors()
+        .skip(1)
+        .find(|a| a.is_dir())
+        .filter(|a| a.components().count() >= 3 && home.as_deref() != Some(*a))
+        .map(Path::to_path_buf)
+}
+
+/// Sucht eine einzelne fehlende Datei im Thread `fw-relocate`: erst im nächsten vorhandenen Ordner darüber,
+/// dann in den Musikordnern. Liefert den neuen Ort, wenn er eindeutig ist.
+pub fn find_one_in_background(path: PathBuf, roots: Vec<PathBuf>, repaint: impl Fn() + Send + 'static) -> Receiver<Option<PathBuf>> {
+    let (tx, rx) = channel();
+    let spawned = std::thread::Builder::new().name("fw-relocate".into()).spawn(move || {
+        let wanted = [(path.clone(), None)];
+        let near = nearest_dir(&path);
+        let mut hit = near.as_ref().and_then(|n| find_moved(&wanted, std::slice::from_ref(n)).remove(&path));
+        if hit.is_none() {
+            let rest: Vec<PathBuf> = roots.into_iter().filter(|r| near.as_ref().is_none_or(|n| !r.starts_with(n))).collect();
+            hit = find_moved(&wanted, &rest).remove(&path);
+        }
+        let _ = tx.send(hit);
+        repaint();
+    });
+    if let Err(e) = spawned {
+        log::warn!("Suche startet nicht: {e}");
+    }
+    rx
 }
 
 /// Ergebnis einer Prüfung: Dateien, die es nicht gibt, und davon wiedergefundene.
@@ -91,6 +123,20 @@ mod tests {
         assert_eq!(moved.get(&PathBuf::from("/alt2/intro.wav")), Some(&dir.join("y/intro.wav")));
         assert_eq!(moved.get(&PathBuf::from("/alt/b.wav")), None, "Größe passt nicht");
         assert_eq!(moved.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn finds_file_after_album_folder_was_renamed() {
+        let dir = std::env::temp_dir().join(format!("fw-relocate-one-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let new = dir.join("Alben/Bravo Hits Vol/Vol.18/CD1/03 Mr. Wichtig.mp3");
+        std::fs::create_dir_all(new.parent().unwrap()).unwrap();
+        std::fs::write(&new, b"x").unwrap();
+        let old = dir.join("Alben/Bravo_Hits_Vol/Vol.18/CD1/03 Mr. Wichtig.mp3");
+        assert_eq!(nearest_dir(&old), Some(dir.join("Alben")));
+        let hit = find_one_in_background(old, Vec::new(), || {}).recv().unwrap();
+        assert_eq!(hit, Some(new));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

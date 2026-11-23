@@ -629,7 +629,11 @@ pub fn show(
             }
             // Zeiger beim Ziehen: eigener oder einer aus dem ausgeklinkten Ordnerfenster
             let foreign = foreign.filter(|&pt| rect.contains(pt));
-            let upper = |r: &egui::Response| foreign.or_else(|| r.hover_pos()).or_else(|| ui.ctx().pointer_hover_pos()).is_some_and(|pt| pt.y < rect.center().y);
+            // Auf dem geladenen Titel (steht oben, die gespielten sind weggescrollt) kommt Abgelegtes immer dahinter,
+            // also als Nächstes; davor landete es unsichtbar bei den gespielten (Nutzerbericht)
+            let upper = |r: &egui::Response| {
+                current != Some(i) && foreign.or_else(|| r.hover_pos()).or_else(|| ui.ctx().pointer_hover_pos()).is_some_and(|pt| pt.y < rect.center().y)
+            };
             if resp.dnd_hover_payload::<DragItem>().is_some() || foreign.is_some() {
                 insert_line = Some(if upper(&resp) { rect.top() } else { rect.bottom() });
             }

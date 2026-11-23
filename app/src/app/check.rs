@@ -22,7 +22,75 @@ pub(super) struct CheckDialog {
     result: Option<Checked>,
 }
 
+/// Suche nach einer Datei, die sich beim Laden in Player `deck` nicht fand (`relocate::find_one_in_background`).
+pub(super) struct Relocating {
+    deck: usize,
+    old: PathBuf,
+    index: Option<usize>,
+    autoplay: bool,
+    keep_playing: bool,
+    /// Welcher Titel im Player lag; ist inzwischen ein anderer geladen, wird nicht mehr nachgeladen.
+    loaded_id: u64,
+    rx: std::sync::mpsc::Receiver<Option<PathBuf>>,
+}
+
 impl FadeWerkDjApp {
+    /// Laden scheiterte, weil es die Datei nicht gibt: im Hintergrund suchen (umbenannter Ordner auf dem NAS),
+    /// gefunden → Playlists anpassen und erneut laden. Liefert false, wenn die Suche schon läuft.
+    pub(super) fn relocate_and_load(&mut self, d: usize, old: PathBuf, pending: Option<&Pending>, now: f64) -> bool {
+        if self.relocating.iter().any(|r| r.old == old) {
+            return false;
+        }
+        let ctx = self.repaint_ctx.clone();
+        let rx = crate::relocate::find_one_in_background(old.clone(), self.music_roots(), move || ctx.request_repaint());
+        let name = old.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        self.notify(trf("„{}“ fehlt dort, sucht den neuen Ort …", &[&name]), now);
+        self.relocating.push(Relocating {
+            deck: d,
+            old,
+            index: pending.and_then(|p| p.index),
+            autoplay: pending.is_some_and(|p| p.autoplay),
+            keep_playing: pending.is_some_and(|p| p.keep_playing),
+            loaded_id: self.decks[d].loaded_id,
+            rx,
+        });
+        true
+    }
+
+    fn poll_relocating(&mut self, now: f64) {
+        let mut done = Vec::new();
+        self.relocating.retain_mut(|r| match r.rx.try_recv() {
+            Ok(hit) => {
+                done.push((r.deck, r.old.clone(), r.index, r.autoplay, r.keep_playing, r.loaded_id, hit));
+                false
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => true,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
+        });
+        for (d, old, index, autoplay, keep_playing, loaded_id, hit) in done {
+            let name = old.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let Some(new) = hit else {
+                self.unreadable.insert(old);
+                self.notify(trf("„{}“ gibt es nicht mehr (Playlist prüfen im ⋯-Menü)", &[&name]), now);
+                continue;
+            };
+            log::info!("Verschoben: {} → {}", old.display(), new.display());
+            self.take_moved(&std::collections::HashMap::from([(old.clone(), new.clone())]));
+            self.notify(trf("„{}“ wiedergefunden", &[&name]), now);
+            // Nur nachladen, wenn der Player noch so dasteht wie beim Fehlschlag
+            let idle = self.decks[d].pending.is_none() && self.decks[d].loaded_id == loaded_id && !self.ctl.shared.decks[d].is_playing();
+            if !idle {
+                continue;
+            }
+            match index.filter(|&i| self.playlists[d].entries.get(i) == Some(&new)) {
+                Some(i) => {
+                    self.load_index(d, i, autoplay, keep_playing);
+                }
+                None => self.load_path(d, new, None, autoplay, keep_playing),
+            }
+        }
+    }
+
     /// Prüft die Dateien von `paths` im Hintergrund.
     pub(super) fn start_check(&mut self, paths: Vec<PathBuf>, what: CheckFor) {
         let ctx = self.repaint_ctx.clone();
@@ -42,6 +110,7 @@ impl FadeWerkDjApp {
     }
 
     pub(super) fn poll_check(&mut self, now: f64) {
+        self.poll_relocating(now);
         let mut done = Vec::new();
         self.check_rx.retain(|(what, rx)| match rx.try_recv() {
             Ok(checked) => {

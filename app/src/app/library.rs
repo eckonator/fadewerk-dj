@@ -199,14 +199,19 @@ impl FadeWerkDjApp {
             self.deferred_loads.push((d, i, autoplay, keep_playing));
             return true;
         }
+        self.load_path(d, path, Some(i), autoplay, keep_playing);
+        true
+    }
+
+    /// Lädt `path` in Player `d`; `index` = Platz in seiner Playlist, falls er von dort kommt.
+    pub(super) fn load_path(&mut self, d: usize, path: PathBuf, index: Option<usize>, autoplay: bool, keep_playing: bool) {
         let token = self.token();
-        self.decks[d].pending = Some(Pending { token, index: Some(i), autoplay, keep_playing, started: false });
+        self.decks[d].pending = Some(Pending { token, index, autoplay, keep_playing, started: false });
         // Cover nur für sichtbare Plattenteller (nicht in der kompakten Ansicht, nicht bei ausgeblendeten)
         let cover = self.settings.platters && !self.compact();
         // Bekannte Tags mitgeben: ohne Cover muss der Tag-Block einer MP3 dann nicht übers Netz gelesen werden
         let known = fw_library::Known { meta: self.metas.get(&path).cloned(), bpm: self.bpms.get(&path).copied(), key: self.keys.get(&path).copied(), grid: self.grids.contains_key(&path) };
         self.lib.load(d, token, path, cover, known);
-        true
     }
 
     /// Stelle, an der Player `d` nach einem Absturz mit `path` weitermacht.
@@ -419,10 +424,15 @@ impl FadeWerkDjApp {
                 }
                 Response::Failed { path, deck, error } => {
                     log::warn!("Laden fehlgeschlagen: {error}");
-                    self.unreadable.insert(path.clone());
                     if let Some(d) = deck.filter(|d| *d < 2) {
-                        self.decks[d].pending = None;
+                        let pending = self.decks[d].pending.take();
+                        // Datei weg (Ordner umbenannt, verschoben): suchen statt nur zu melden
+                        if !path.exists() {
+                            self.relocate_and_load(d, path, pending.as_ref(), now);
+                            continue;
+                        }
                     }
+                    self.unreadable.insert(path.clone());
                     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     self.notify(trf("„{}“ lässt sich nicht abspielen", &[&name]), now);
                 }

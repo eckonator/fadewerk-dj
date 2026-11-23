@@ -549,6 +549,9 @@ fn en(de: &str) -> Option<&'static str> {
         // Hinweise
         "{} Titel in Playlist {}" => "{} tracks added to playlist {}",
         "„{}“ lässt sich nicht abspielen" => "“{}” cannot be played",
+        "„{}“ fehlt dort, sucht den neuen Ort …" => "“{}” is missing there, looking for its new location …",
+        "„{}“ gibt es nicht mehr (Playlist prüfen im ⋯-Menü)" => "“{}” no longer exists (Check playlist in the ⋯ menu)",
+        "„{}“ wiedergefunden" => "“{}” found again",
         "Das Ausgabegerät hat nur {} Kanäle" => "The output device has only {} channels",
         "Der Titel ist in Player {} geladen und bleibt in dessen Playlist" => "This track is loaded in deck {} and stays in its playlist",
         "Für Sync brauchen beide Player einen Titel mit BPM" => "Sync needs a track with BPM on both decks",

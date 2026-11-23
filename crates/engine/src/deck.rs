@@ -122,7 +122,14 @@ impl Deck {
     }
 
     pub fn play(&mut self) {
-        if self.track.is_some() {
+        if let Some(track) = &self.track {
+            // Am Titelende (vorwärts) wie beim CD-Player vom Cue-Punkt starten, liegt der auch am Ende: von vorn
+            let len = track.len_frames() as f64;
+            if !self.reverse && !track.is_partial() && self.pos >= len {
+                self.pos = if self.cue < len { self.cue } else { 0.0 };
+                self.speed = 0.0;
+                self.rate = 0.0;
+            }
             self.playing = true;
             self.coasting = false;
             self.stop_pending = false;
@@ -622,6 +629,20 @@ mod tests {
         run(&mut d, &motor, 1.5);
         assert!(!d.is_playing());
         assert!(d.take_ended());
+        assert!(!d.take_ended());
+    }
+
+    #[test]
+    fn play_at_track_end_starts_from_cue() {
+        let motor = Motor { spin_up_secs: 0.01, spin_down_secs: 0.01 };
+        let mut d = deck_with_dc(1);
+        d.play();
+        run(&mut d, &motor, 1.5);
+        assert!(d.take_ended());
+        d.play();
+        run(&mut d, &motor, 0.2);
+        assert!(d.is_playing(), "läuft wieder");
+        assert!(d.position_secs() < 0.5, "von vorn: {}", d.position_secs());
         assert!(!d.take_ended());
     }
 

@@ -415,6 +415,8 @@ pub struct FadeWerkDjApp {
     session_checked: f64,
     /// Laufende Prüfung der Playlist-Dateien (`check.rs`).
     check_rx: Vec<(check::CheckFor, std::sync::mpsc::Receiver<crate::relocate::Checked>)>,
+    /// Laufende Suchen nach Dateien, die beim Laden fehlten.
+    relocating: Vec<check::Relocating>,
     check_dialog: Option<check::CheckDialog>,
     /// Titel, die sich nicht abspielen ließen (für „Playlist prüfen“).
     unreadable: HashSet<PathBuf>,
@@ -610,6 +612,7 @@ impl FadeWerkDjApp {
             session_saved: 0,
             resume: [None, None],
             check_rx: Vec::new(),
+            relocating: Vec::new(),
             check_dialog: None,
             unreadable: HashSet::new(),
             places_saved: [None, None],
